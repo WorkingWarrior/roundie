@@ -158,9 +158,10 @@ later storage/OTA architecture in spec §18.
 
 Boot logs identify the firmware version, build timestamp, ELF SHA-256 prefix, IDF
 version, detected flash and PSRAM size, free and largest internal/PSRAM
-blocks, three I²C probes, RTC and gauge read results, LCD ID/initialization,
+blocks, three I²C probes, RTC/gauge sample states, LCD ID/initialization,
 and touch press/release. The 360 × 360 screen displays identity, memory,
-device states, RTC/gauge values, touch feedback, a 30/60/100% backlight
+device states, RTC validity, gauge voltage/estimated SoC, touch feedback,
+a 30/60/100% backlight
 button, color swatches, and an animated spinner. Tapping a swatch displays
 a solid red, green, blue, or white field; tap the field to return. Touch
 reads are triggered by the CST816S IRQ and continue while a press is active;
@@ -318,6 +319,61 @@ The host check compared both complete C table declarations with the
 manufacturer's inspected commit and found exact matches. The legacy-driver
 scan covered `main/` and `components/` C/H sources; it is a source check,
 not a live I²C-bus measurement.
+
+## RTC and battery diagnostic services, 2026-10-18
+
+**Implementation decision (Milestone 1, spec §23):** The board component keeps
+the sole new-driver I²C master and owns the RTC/gauge handles. It now exposes
+typed RTC and battery samples with monotonic observation timestamps, validity
+states, and underlying `esp_err_t` values. A missing device is retried on
+later samples. One sensor worker reads both devices every five seconds; the
+GUI task copies completed samples and updates LVGL labels once per second.
+Each I²C transaction has the existing 100 ms bound. No gauge write command
+is issued. The worker and UI do not allocate a new sample per poll.
+
+**RTC behavior:** The PCF85063 interface reads seconds through years in one
+seven-byte transaction, decodes BCD, checks date, leap year, weekday and
+24-hour mode, and rejects the oscillator-stop bit as invalid time. Valid UTC
+time initializes the system wall clock at startup; `esp_timer` monotonic time
+remains independent. A later valid RTC sample can synchronize a previously
+unsynchronized wall clock. The explicit `roundie_board_rtc_set_trusted()`
+interface accepts a validated UTC calendar (2000–2099, Sunday = 0), writes
+all seven time registers together, and requires a valid readback within one
+second of the requested time. An unsupported 12-hour or stopped mode is
+rejected rather than changed implicitly. No host-time transport exists yet,
+so the invalid RTC is not set from build time or the computer clock. Setting,
+retention and synchronization after a set remain untested on the device.
+[NXP PCF85063A datasheet, Rev. 7.3](https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf),
+§§7.2–7.4, supplies register and snapshot behavior.
+
+**Gauge behavior:** The read-only BQ27220 interface uses `BatteryStatus()`
+`0x0A`, `OperationStatus()` `0x3A`, `Voltage()` `0x08` in mV,
+`FullChargeCapacity()` `0x12` and `RemainingCapacity()` `0x10` in mAh,
+`StateOfCharge()` `0x2C` in percent, `Current()` `0x0C` as signed mA
+(positive charge, negative discharge), and `Temperature()` `0x06` in 0.1 K
+(converted to 0.1 °C). It exposes `BATTPRES`, `INITCOMP`, `SLEEP`, and `DSG`
+where available. A missing `BATTPRES` is battery-absent; communication errors
+and invalid fields are distinct. SoC is unavailable until initialization,
+capacity and range checks pass. Its displayed percentage is explicitly a
+gauge estimate: chemistry/profile, calibration and accuracy have not been
+verified. A clear `DSG` means charging **or** relaxation, so the UI says
+“Charge/idle.” [TI BQ27220 Technical Reference Manual, Rev. A](https://www.ti.com/lit/ug/sluubd4a/sluubd4a.pdf),
+§2, is the command and flag source.
+
+| Evidence tier | Result and limit |
+|---|---|
+| Host logic | `cc -std=c11 -Wall -Wextra -Werror -Icomponents/roundie_board/include -Icomponents/roundie_board components/roundie_board/sensor_codec.c tests/test_sensor_codec.c -o /tmp/roundie-sensor-tests && /tmp/roundie-sensor-tests` exited 0. It covers BCD, leap day, invalid date and weekday, oscillator flag decoding, little-endian gauge words, signed current, and temperature conversion. It does not simulate I²C absence or transient failure. |
+| ESP32-S3 target compilation | Under pinned ESP-IDF v6.1, `idf.py build` exited 0. Two incremental rebuilds for final UI corrections also exited 0. Final `build/roundie.bin` is 574,528 bytes, SHA-256 `fb358ab2647446c70f5edd1d6c646fa8fe1482ffca663a63cfb651a6fce2c917`. This proves compilation, not board behavior. |
+| Deployment guard | `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_28:84:85:87:98:7C-if00` resolved to `/dev/ttyACM0`. Read-only `esptool flash-id` identified ESP32-S3 revision 0.2, MAC `28:84:85:87:98:7c`, 16 MB Flash and embedded 8 MB PSRAM. `tools/flash_bringup.py` read and accepted the live partition table, erased OTA metadata, installed bootloader compatibility, image header and slot size. The app's rounded erase length `0x8d000` is below factory slot `0x692000`. Both app-only writes reran preflight; the final one wrote only 574,528 bytes at factory-app offset `0x20000`, and esptool verified the image hash. No bootloader, partition table, NVS, OTA or asset write was requested. |
+| Physical device, unattended serial | A 125-second capture of the first image and a 35-second capture of the final image each recorded one boot, successful touch driver and LCD variant-2 startup, RTC `invalid data` with OS=1, and an explicitly unsynchronized wall clock. The final image (ELF prefix `46ee99ad6`) reported battery present, 3969 mV, SoC 84%, flags `0x5028`, operation flags `0x0024` (`INITCOMP` set). Five seconds later it logged the same voltage/SoC. Earlier USB-plus-battery boots reported 3970 mV and the same RTC OS flag; this is consistent but not meter or clock validation. No panic, watchdog or LCD-transfer error appeared in either capture. Unchanged sensor values are not logged repeatedly, so serial does not measure every five-second poll or confirm display appearance. |
+
+**Pending experiments:** A trusted host-time transport and physical RTC
+set/readback test; RTC retention with controlled power removal; independent
+battery voltage/temperature/current comparison; gauge profile and SoC
+accuracy; battery-only operation; touch and visual inspection of the new
+labels; repeated unplug/replug and transient I²C fault recovery; and a
+longer GUI-responsiveness run. These short serial captures do not close
+Milestone 1's ten-cold-start, manual-recovery, or 30-minute interaction gate.
 
 ## Manual board checklist
 
