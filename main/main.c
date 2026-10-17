@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
 
 #include "esp_app_desc.h"
 #include "esp_err.h"
@@ -29,6 +31,10 @@ typedef struct {
     lv_display_t *display;
     lv_obj_t *touch_label;
     lv_obj_t *brightness_label;
+    lv_obj_t *i2c_label;
+    lv_obj_t *rtc_label;
+    lv_obj_t *battery_label;
+    lv_obj_t *battery_detail_label;
     TaskHandle_t gui_task;
     bool transfer_pending;
     bool display_fault;
@@ -39,7 +45,179 @@ typedef struct {
     bool touch_error_logged;
     int64_t touch_retry_after_us;
     uint8_t brightness_percent;
+    bool touch_available;
 } gui_state_t;
+
+typedef struct {
+    portMUX_TYPE lock;
+    roundie_board_t *board;
+    roundie_rtc_sample_t rtc;
+    roundie_battery_sample_t battery;
+    bool wall_valid;
+} sensor_state_t;
+
+static sensor_state_t sensors = {
+    .lock = portMUX_INITIALIZER_UNLOCKED,
+};
+
+static const char *sensor_state_name(roundie_sensor_state_t state)
+{
+    switch (state) {
+    case ROUNDIE_SENSOR_VALID: return "valid";
+    case ROUNDIE_SENSOR_NOT_FOUND: return "not found";
+    case ROUNDIE_SENSOR_COMM_ERROR: return "I2C error";
+    case ROUNDIE_SENSOR_INVALID: return "invalid data";
+    case ROUNDIE_SENSOR_UNAVAILABLE: return "unavailable";
+    case ROUNDIE_SENSOR_BATTERY_ABSENT: return "battery absent";
+    case ROUNDIE_SENSOR_UNCALIBRATED: return "gauge unverified";
+    }
+    return "unknown";
+}
+
+static const char *bus_state_name(roundie_sensor_state_t state)
+{
+    if (state == ROUNDIE_SENSOR_NOT_FOUND) {
+        return "--";
+    }
+    if (state == ROUNDIE_SENSOR_COMM_ERROR) {
+        return "ERR";
+    }
+    return "OK";
+}
+
+static bool sync_wall_clock(const roundie_rtc_sample_t *sample)
+{
+    int64_t seconds;
+    if (sample->state != ROUNDIE_SENSOR_VALID ||
+        !roundie_rtc_unix_seconds(&sample->time, &seconds)) {
+        return false;
+    }
+    struct timeval now = {
+        .tv_sec = (time_t)seconds,
+        .tv_usec = 0,
+    };
+    esp_err_t error = settimeofday(&now, NULL) == 0 ? ESP_OK : ESP_FAIL;
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "System wall clock set failed: %s", esp_err_to_name(error));
+        return false;
+    }
+    ESP_LOGI(TAG, "System wall clock synchronized from valid RTC (UTC)");
+    return true;
+}
+
+static void sensor_worker(void *argument)
+{
+    sensor_state_t *shared = argument;
+    roundie_sensor_state_t last_rtc = shared->rtc.state;
+    roundie_sensor_state_t last_battery = shared->battery.state;
+    bool first_battery = true;
+    uint16_t last_voltage = 0;
+    uint16_t last_soc = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        roundie_rtc_sample_t rtc;
+        roundie_battery_sample_t battery;
+        roundie_board_rtc_read(shared->board, &rtc);
+        roundie_board_battery_read(shared->board, &battery);
+        if (rtc.state == ROUNDIE_SENSOR_VALID && !shared->wall_valid) {
+            bool synchronized = sync_wall_clock(&rtc);
+            portENTER_CRITICAL(&shared->lock);
+            shared->wall_valid = synchronized;
+            portEXIT_CRITICAL(&shared->lock);
+        } else if (rtc.state == ROUNDIE_SENSOR_INVALID &&
+                   rtc.oscillator_stopped && shared->wall_valid) {
+            portENTER_CRITICAL(&shared->lock);
+            shared->wall_valid = false;
+            portEXIT_CRITICAL(&shared->lock);
+            ESP_LOGW(TAG, "System wall clock marked unsynchronized after RTC OS flag");
+        }
+        if (rtc.state != last_rtc) {
+            ESP_LOGI(TAG, "RTC %s, OS=%u, error=%s",
+                     sensor_state_name(rtc.state), rtc.oscillator_stopped,
+                     esp_err_to_name(rtc.error));
+            last_rtc = rtc.state;
+        }
+        if (battery.state != last_battery) {
+            ESP_LOGI(TAG, "Gauge %s, present=%u, initialized=%u, error=%s",
+                     sensor_state_name(battery.state), battery.battery_present,
+                     battery.initialized, esp_err_to_name(battery.error));
+            last_battery = battery.state;
+        }
+        if (battery.voltage_valid &&
+            (first_battery || abs((int)battery.voltage_mv - last_voltage) >= 50 ||
+             (battery.soc_valid && abs((int)battery.soc_percent - last_soc) >= 5))) {
+            if (battery.soc_valid) {
+                ESP_LOGI(TAG, "Battery %u mV, gauge SoC %u%% (accuracy unverified), flags=0x%04x, op=0x%04x",
+                         battery.voltage_mv, battery.soc_percent,
+                         battery.battery_flags, battery.operation_flags);
+            } else {
+                ESP_LOGI(TAG, "Battery %u mV, gauge SoC unavailable, flags=0x%04x, op=0x%04x",
+                         battery.voltage_mv, battery.battery_flags,
+                         battery.operation_flags);
+            }
+            last_voltage = battery.voltage_mv;
+            last_soc = battery.soc_percent;
+            first_battery = false;
+        }
+        portENTER_CRITICAL(&shared->lock);
+        shared->rtc = rtc;
+        shared->battery = battery;
+        portEXIT_CRITICAL(&shared->lock);
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+static void update_sensor_labels(gui_state_t *state)
+{
+    roundie_rtc_sample_t rtc;
+    roundie_battery_sample_t battery;
+    bool wall_valid;
+    portENTER_CRITICAL(&sensors.lock);
+    rtc = sensors.rtc;
+    battery = sensors.battery;
+    wall_valid = sensors.wall_valid;
+    portEXIT_CRITICAL(&sensors.lock);
+
+    lv_label_set_text_fmt(state->i2c_label, "I2C  Touch %s  RTC %s  Gauge %s",
+                          state->touch_available ? "OK" : "--",
+                          bus_state_name(rtc.state), bus_state_name(battery.state));
+
+    if (wall_valid) {
+        time_t now = time(NULL);
+        struct tm utc;
+        gmtime_r(&now, &utc);
+        lv_label_set_text_fmt(state->rtc_label,
+                              "UTC %04d-%02d-%02d  %02d:%02d:%02d",
+                              utc.tm_year + 1900, utc.tm_mon + 1,
+                              utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec);
+    } else if (rtc.state == ROUNDIE_SENSOR_INVALID && rtc.oscillator_stopped) {
+        lv_label_set_text(state->rtc_label, "RTC invalid: oscillator stopped");
+    } else {
+        lv_label_set_text_fmt(state->rtc_label, "Time unsynced: %s",
+                              sensor_state_name(rtc.state));
+    }
+    if (battery.voltage_valid) {
+        if (battery.soc_valid) {
+            lv_label_set_text_fmt(state->battery_label, "Gauge SoC %u%%  %u mV",
+                                  battery.soc_percent, battery.voltage_mv);
+        } else {
+            lv_label_set_text_fmt(state->battery_label,
+                                  "Battery %u mV  SoC unverified",
+                                  battery.voltage_mv);
+        }
+    } else {
+        lv_label_set_text_fmt(state->battery_label, "Battery: %s",
+                              sensor_state_name(battery.state));
+    }
+    if (battery.battery_present && battery.error == ESP_OK) {
+        lv_label_set_text_fmt(state->battery_detail_label, "%s%s  %s",
+                              battery.discharging ? "Discharging" : "Charge/idle",
+                              battery.sleeping ? " (sleep)" : "",
+                              battery.initialized ? "estimate" : "gauge unverified");
+    } else {
+        lv_label_set_text(state->battery_detail_label, "");
+    }
+}
 
 static uint32_t lv_tick_now(void)
 {
@@ -243,32 +421,22 @@ static void make_screen(gui_state_t *state,
                           internal_free / 1024U, internal_largest / 1024U,
                           psram_free / 1024U, psram_largest / 1024U);
 
-    lv_obj_t *i2c = make_label(screen, "", 153, lv_color_hex(0xb6dce6));
-    lv_label_set_text_fmt(i2c, "I2C  Touch %s  RTC %s  Gauge %s",
+    state->i2c_label = make_label(screen, "", 153, lv_color_hex(0xb6dce6));
+    lv_label_set_text_fmt(state->i2c_label, "I2C  Touch %s  RTC %s  Gauge %s",
                           status->touch == ESP_OK ? "OK" : "ERR",
                           status->rtc == ESP_OK ? "OK" : "ERR",
                           status->gauge == ESP_OK ? "OK" : "ERR");
-    lv_obj_t *reads = make_label(screen, "", 180, lv_color_hex(0xc3d2e2));
-    if (status->rtc_read == ESP_OK) {
-        lv_label_set_text_fmt(reads, "RTC %02u:%02u:%02u%s",
-                              status->rtc_hours, status->rtc_minutes,
-                              status->rtc_seconds,
-                              status->rtc_voltage_low ? "  LOW V" : "");
-    } else {
-        lv_label_set_text(reads, "RTC read unavailable");
-    }
-    lv_obj_t *gauge = make_label(screen, "", 205, lv_color_hex(0xc3d2e2));
-    if (status->gauge_read == ESP_OK) {
-        lv_label_set_text_fmt(gauge, "Gauge %u mV  status %04x",
-                              status->gauge_millivolts, status->gauge_status);
-    } else {
-        lv_label_set_text(gauge, "Gauge read unavailable");
-    }
-    state->touch_label = make_label(screen, "Touch to test", 237,
+    state->rtc_label = make_label(screen, "Time unsynced", 178,
+                                  lv_color_hex(0xc3d2e2));
+    state->battery_label = make_label(screen, "Battery: reading", 204,
+                                      lv_color_hex(0xc3d2e2));
+    state->battery_detail_label = make_label(screen, "", 226,
+                                             lv_color_hex(0x9eb8d0));
+    state->touch_label = make_label(screen, "Touch to test", 246,
                                     lv_color_hex(0xffffff));
     lv_obj_t *brightness_button = lv_button_create(screen);
     lv_obj_set_size(brightness_button, 145, 30);
-    lv_obj_align(brightness_button, LV_ALIGN_TOP_MID, 0, 258);
+    lv_obj_align(brightness_button, LV_ALIGN_TOP_MID, 0, 265);
     lv_obj_add_event_cb(brightness_button, cycle_backlight, LV_EVENT_CLICKED,
                         state);
     state->brightness_label = lv_label_create(brightness_button);
@@ -313,12 +481,28 @@ void app_main(void)
         return;
     }
 
+    sensors.board = board;
+    roundie_board_rtc_read(board, &sensors.rtc);
+    roundie_board_battery_read(board, &sensors.battery);
+    ESP_LOGI(TAG, "RTC startup: %s, OS=%u, error=%s",
+             sensor_state_name(sensors.rtc.state), sensors.rtc.oscillator_stopped,
+             esp_err_to_name(sensors.rtc.error));
+    ESP_LOGI(TAG, "Gauge startup: %s, present=%u, %u mV, SoC valid=%u (%u%%), error=%s",
+             sensor_state_name(sensors.battery.state), sensors.battery.battery_present,
+             sensors.battery.voltage_mv, sensors.battery.soc_valid,
+             sensors.battery.soc_percent, esp_err_to_name(sensors.battery.error));
+    sensors.wall_valid = sync_wall_clock(&sensors.rtc);
+    if (!sensors.wall_valid) {
+        ESP_LOGW(TAG, "System wall clock unsynchronized; RTC time not trusted");
+    }
+
     lv_init();
     lv_tick_set_cb(lv_tick_now);
     gui_state_t state = {
         .board = board,
         .gui_task = xTaskGetCurrentTaskHandle(),
         .brightness_percent = 60,
+        .touch_available = status.touch == ESP_OK,
     };
     const esp_lcd_panel_io_callbacks_t callbacks = {
         .on_color_trans_done = lcd_transfer_done,
@@ -367,6 +551,7 @@ void app_main(void)
     lv_indev_set_user_data(input, &state);
     lv_indev_set_read_cb(input, read_touch);
     make_screen(&state, &status, flash_bytes, psram_bytes);
+    update_sensor_labels(&state);
 
     error = roundie_board_backlight_set(board, 60);
     if (error != ESP_OK) {
@@ -378,9 +563,19 @@ void app_main(void)
         esp_restart();
         abort();
     }
+    TaskHandle_t sensor_task = NULL;
+    if (xTaskCreate(sensor_worker, "sensors", 4096, &sensors, 4,
+                    &sensor_task) != pdPASS) {
+        ESP_LOGE(TAG, "Sensor worker creation failed; startup samples remain visible");
+    }
     int64_t next_health_log_us = esp_timer_get_time() + 300000000;
+    int64_t next_ui_update_us = esp_timer_get_time() + 1000000;
     while (true) {
         lv_timer_handler();
+        if (esp_timer_get_time() >= next_ui_update_us) {
+            update_sensor_labels(&state);
+            next_ui_update_us = esp_timer_get_time() + 1000000;
+        }
         if (esp_timer_get_time() >= next_health_log_us) {
             ESP_LOGI(TAG,
                      "Health SRAM free/largest %zu/%zu, PSRAM free/largest %zu/%zu, LCD errors %u",

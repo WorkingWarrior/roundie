@@ -14,9 +14,11 @@
 #include "esp_lcd_touch.h"
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lcd_init_tables.h"
+#include "sensor_codec.h"
 
 #define LCD_WIDTH 360
 #define LCD_HEIGHT 360
@@ -55,11 +57,6 @@ static esp_err_t read_register(i2c_master_dev_handle_t device, uint8_t address,
                                        I2C_TIMEOUT_MS);
 }
 
-static uint8_t decode_bcd(uint8_t value)
-{
-    return (uint8_t)((value >> 4) * 10 + (value & 0x0f));
-}
-
 static esp_err_t start_i2c(roundie_board_t *board, roundie_board_status_t *status)
 {
     const i2c_master_bus_config_t bus_config = {
@@ -91,51 +88,24 @@ static esp_err_t start_i2c(roundie_board_t *board, roundie_board_status_t *statu
         .device_address = 0x51,
         .scl_speed_hz = 100000,
     };
-    if (status->rtc == ESP_OK) {
-        status->rtc = i2c_master_bus_add_device(board->i2c_bus, &rtc_config,
-                                                &board->rtc);
-        if (status->rtc == ESP_OK) {
-            uint8_t raw[7] = {0};
-            status->rtc_read = read_register(board->rtc, 0x04, raw, sizeof(raw));
-            if (status->rtc_read == ESP_OK) {
-                status->rtc_voltage_low = (raw[0] & 0x80) != 0;
-                status->rtc_seconds = decode_bcd(raw[0] & 0x7f);
-                status->rtc_minutes = decode_bcd(raw[1] & 0x7f);
-                status->rtc_hours = decode_bcd(raw[2] & 0x3f);
-                if (status->rtc_seconds > 59 || status->rtc_minutes > 59 ||
-                    status->rtc_hours > 23) {
-                    status->rtc_read = ESP_ERR_INVALID_RESPONSE;
-                }
-            }
-        }
+    esp_err_t rtc_add = i2c_master_bus_add_device(board->i2c_bus, &rtc_config,
+                                                   &board->rtc);
+    if (rtc_add != ESP_OK) {
+        ESP_LOGE(TAG, "RTC handle: %s", esp_err_to_name(rtc_add));
+        status->rtc = rtc_add;
     }
-    ESP_LOGI(TAG, "RTC read: %s, %02u:%02u:%02u, voltage_low=%u",
-             esp_err_to_name(status->rtc_read), status->rtc_hours,
-             status->rtc_minutes, status->rtc_seconds, status->rtc_voltage_low);
 
     const i2c_device_config_t gauge_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = 0x55,
         .scl_speed_hz = 100000,
     };
-    if (status->gauge == ESP_OK) {
-        status->gauge = i2c_master_bus_add_device(board->i2c_bus, &gauge_config,
-                                                  &board->gauge);
-        if (status->gauge == ESP_OK) {
-            uint8_t raw[2] = {0};
-            status->gauge_read = read_register(board->gauge, 0x08, raw, sizeof(raw));
-            if (status->gauge_read == ESP_OK) {
-                status->gauge_millivolts = (uint16_t)raw[0] | ((uint16_t)raw[1] << 8);
-                status->gauge_read = read_register(board->gauge, 0x0a, raw, sizeof(raw));
-                if (status->gauge_read == ESP_OK) {
-                    status->gauge_status = (uint16_t)raw[0] | ((uint16_t)raw[1] << 8);
-                }
-            }
-        }
+    esp_err_t gauge_add = i2c_master_bus_add_device(board->i2c_bus,
+                                                     &gauge_config, &board->gauge);
+    if (gauge_add != ESP_OK) {
+        ESP_LOGE(TAG, "Gauge handle: %s", esp_err_to_name(gauge_add));
+        status->gauge = gauge_add;
     }
-    ESP_LOGI(TAG, "Gauge read: %s, voltage=%u mV, status=0x%04x",
-             esp_err_to_name(status->gauge_read), status->gauge_millivolts,
-             status->gauge_status);
     return ESP_OK;
 }
 
@@ -345,8 +315,6 @@ esp_err_t roundie_board_start(roundie_board_t **out_board,
     status->touch = ESP_ERR_NOT_FOUND;
     status->rtc = ESP_ERR_NOT_FOUND;
     status->gauge = ESP_ERR_NOT_FOUND;
-    status->rtc_read = ESP_ERR_NOT_FOUND;
-    status->gauge_read = ESP_ERR_NOT_FOUND;
 
     roundie_board_t *board = calloc(1, sizeof(*board));
     if (board == NULL) {
@@ -473,4 +441,200 @@ esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent)
         return error;
     }
     return ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
+static roundie_sensor_state_t sensor_error(roundie_board_t *board,
+                                            uint8_t address, esp_err_t error)
+{
+    if (error == ESP_ERR_NOT_FOUND) {
+        return ROUNDIE_SENSOR_NOT_FOUND;
+    }
+    if (board->i2c_bus != NULL &&
+        i2c_master_probe(board->i2c_bus, address, I2C_TIMEOUT_MS) ==
+            ESP_ERR_NOT_FOUND) {
+        return ROUNDIE_SENSOR_NOT_FOUND;
+    }
+    return ROUNDIE_SENSOR_COMM_ERROR;
+}
+
+void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample)
+{
+    if (sample == NULL) {
+        return;
+    }
+    memset(sample, 0, sizeof(*sample));
+    sample->state = ROUNDIE_SENSOR_NOT_FOUND;
+    sample->error = ESP_ERR_NOT_FOUND;
+    sample->observed_us = esp_timer_get_time();
+    if (board == NULL || board->rtc == NULL) {
+        return;
+    }
+    uint8_t control;
+    esp_err_t error = read_register(board->rtc, 0x00, &control, 1);
+    if (error == ESP_OK) {
+        uint8_t raw[7];
+        error = read_register(board->rtc, 0x04, raw, sizeof(raw));
+        if (error == ESP_OK) {
+            sample->observed_us = esp_timer_get_time();
+            if ((control & 0x22) != 0 ||
+                !roundie_rtc_decode(raw, &sample->time,
+                                    &sample->oscillator_stopped) ||
+                sample->oscillator_stopped) {
+                sample->state = ROUNDIE_SENSOR_INVALID;
+                sample->error = ESP_ERR_INVALID_RESPONSE;
+            } else {
+                sample->state = ROUNDIE_SENSOR_VALID;
+                sample->error = ESP_OK;
+            }
+            return;
+        }
+    }
+    sample->error = error;
+    sample->state = sensor_error(board, 0x51, error);
+}
+
+esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
+                                         const roundie_rtc_time_t *time)
+{
+    uint8_t raw[8];
+    if (board == NULL || time == NULL || !roundie_rtc_encode(time, &raw[1])) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (board->rtc == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    uint8_t control;
+    esp_err_t error = read_register(board->rtc, 0x00, &control, 1);
+    if (error != ESP_OK) {
+        return error;
+    }
+    if ((control & 0x22) != 0) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    raw[0] = 0x04;
+    error = i2c_master_transmit(board->rtc, raw, sizeof(raw), I2C_TIMEOUT_MS);
+    if (error != ESP_OK) {
+        return error;
+    }
+    roundie_rtc_sample_t verified;
+    roundie_board_rtc_read(board, &verified);
+    if (verified.state != ROUNDIE_SENSOR_VALID) {
+        return verified.error;
+    }
+    int64_t expected_seconds;
+    int64_t actual_seconds;
+    if (!roundie_rtc_unix_seconds(time, &expected_seconds) ||
+        !roundie_rtc_unix_seconds(&verified.time, &actual_seconds) ||
+        actual_seconds < expected_seconds || actual_seconds > expected_seconds + 1) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t gauge_read_word(roundie_board_t *board, uint8_t command,
+                                 uint16_t *value)
+{
+    uint8_t raw[2];
+    esp_err_t error = read_register(board->gauge, command, raw, sizeof(raw));
+    if (error == ESP_OK) {
+        *value = roundie_gauge_word(raw);
+    }
+    return error;
+}
+
+static void sample_error(roundie_board_t *board, roundie_battery_sample_t *sample,
+                         esp_err_t error)
+{
+    if (error != ESP_OK && sample->error == ESP_OK) {
+        sample->error = error;
+        sample->state = sensor_error(board, 0x55, error);
+    }
+}
+
+void roundie_board_battery_read(roundie_board_t *board,
+                                 roundie_battery_sample_t *sample)
+{
+    if (sample == NULL) {
+        return;
+    }
+    memset(sample, 0, sizeof(*sample));
+    sample->state = ROUNDIE_SENSOR_NOT_FOUND;
+    sample->error = ESP_ERR_NOT_FOUND;
+    sample->observed_us = esp_timer_get_time();
+    if (board == NULL || board->gauge == NULL) {
+        return;
+    }
+    esp_err_t error = gauge_read_word(board, 0x0a, &sample->battery_flags);
+    if (error != ESP_OK) {
+        sample->error = error;
+        sample->state = sensor_error(board, 0x55, error);
+        return;
+    }
+    sample->battery_present = (sample->battery_flags & 0x0008) != 0;
+    if (!sample->battery_present) {
+        sample->state = ROUNDIE_SENSOR_BATTERY_ABSENT;
+        sample->error = ESP_OK;
+        return;
+    }
+    error = gauge_read_word(board, 0x3a, &sample->operation_flags);
+    if (error != ESP_OK) {
+        sample->error = error;
+        sample->state = sensor_error(board, 0x55, error);
+        return;
+    }
+    sample->initialized = (sample->operation_flags & 0x0020) != 0 &&
+                          (sample->operation_flags & 0x0400) == 0;
+    sample->discharging = (sample->battery_flags & 0x0001) != 0;
+    sample->sleeping = (sample->battery_flags & 0x1000) != 0;
+    sample->state = sample->initialized ? ROUNDIE_SENSOR_VALID :
+                                        ROUNDIE_SENSOR_UNCALIBRATED;
+    sample->error = ESP_OK;
+
+    uint16_t value;
+    error = gauge_read_word(board, 0x08, &value);
+    if (error == ESP_OK) {
+        sample->voltage_mv = value;
+        sample->voltage_valid = value > 0 && value <= 6000;
+        if (!sample->voltage_valid) {
+            sample->state = ROUNDIE_SENSOR_INVALID;
+            sample->error = ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+    sample_error(board, sample, error);
+    error = gauge_read_word(board, 0x12, &value);
+    if (error == ESP_OK) {
+        sample->full_mah = value;
+        sample->full_valid = value > 0 && value != UINT16_MAX;
+    }
+    sample_error(board, sample, error);
+    error = gauge_read_word(board, 0x10, &value);
+    if (error == ESP_OK) {
+        sample->remaining_mah = value;
+        sample->remaining_valid = sample->full_valid && value <= sample->full_mah;
+    }
+    sample_error(board, sample, error);
+    error = gauge_read_word(board, 0x2c, &value);
+    if (error == ESP_OK) {
+        sample->soc_percent = value;
+        sample->soc_valid = sample->initialized && sample->full_valid &&
+                            sample->remaining_valid && value <= 100;
+    }
+    sample_error(board, sample, error);
+    error = gauge_read_word(board, 0x0c, &value);
+    if (error == ESP_OK) {
+        sample->current_ma = roundie_gauge_current(value);
+        sample->current_valid = true;
+    }
+    sample_error(board, sample, error);
+    error = gauge_read_word(board, 0x06, &value);
+    if (error == ESP_OK) {
+        sample->temperature_deci_c = roundie_gauge_deci_c(value);
+        sample->temperature_valid = value >= 1732 && value <= 3732;
+    }
+    sample_error(board, sample, error);
+    if (sample->initialized && (!sample->full_valid || !sample->remaining_valid ||
+                                !sample->soc_valid) && sample->error == ESP_OK) {
+        sample->state = ROUNDIE_SENSOR_UNCALIBRATED;
+    }
+    sample->observed_us = esp_timer_get_time();
 }
