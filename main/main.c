@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -371,6 +372,12 @@ void app_main(void)
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Backlight start: %s", esp_err_to_name(error));
     }
+    error = esp_task_wdt_add(NULL);
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "GUI watchdog registration: %s", esp_err_to_name(error));
+        esp_restart();
+        abort();
+    }
     int64_t next_health_log_us = esp_timer_get_time() + 300000000;
     while (true) {
         lv_timer_handler();
@@ -383,6 +390,12 @@ void app_main(void)
                      heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
                      state.transfer_errors);
             next_health_log_us = esp_timer_get_time() + 300000000;
+        }
+        error = esp_task_wdt_reset();
+        if (error != ESP_OK) {
+            ESP_LOGE(TAG, "GUI watchdog feed: %s", esp_err_to_name(error));
+            esp_restart();
+            abort();
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }

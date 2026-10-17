@@ -28,15 +28,66 @@ build. It does not flash the board. `sdkconfig`, `build/`, and
 `managed_components/` are generated; `sdkconfig.defaults` and
 `dependencies.lock` are the tracked inputs.
 
-**Do not use `idf.py flash` on the inspected device.** Its existing
+**Do not use `idf.py flash` or `idf.py app-flash` on the inspected device.** Its existing
 partition table differs from this temporary single-app build table, and
-the default flash command would rewrite that table and place the app at
-`0x10000`. The board's read-back table has NVS at `0x9000`, OTA data at
+the default flash command would rewrite that table; both generated commands
+place the app at `0x10000`. The board's read-back table has NVS at `0x9000`, OTA data at
 `0xd000`, factory app at `0x20000`, another app at `0x6c0000`, and
-assets at `0xac0000`. The authorized bring-up installation writes only
-the bootloader at `0x0` and app at `0x20000`; it leaves the installed
+assets at `0xac0000`. The earlier authorized bring-up installation wrote
+the bootloader at `0x0` and app at `0x20000`; it left the installed
 partition table and data partitions in place. This is a device-specific
 installation method, not a final REP partition design.
+
+### Guarded deployment for this diagnostic image
+
+**Architectural decision for Milestone 1:** Keep the generated single-app
+table solely for target compilation. For the already inspected 1.85B, update
+only its existing factory slot at `0x20000`; do not change the installed
+partition table, bootloader, OTA metadata, NVS, or other data. This is not
+the REP production layout: spec §§15, 18, 23, and 25 require a later,
+separately reviewed two-slot OTA layout without a factory application.
+
+**Verified source/backup facts:** The original 16 MiB backup named below has
+SHA-256 `46d2d36244a9e303cc61a65fb29d9a71b9708d41d181e9e5b5befb9261039de7`.
+Its installed table has factory offset `0x20000`, size `0x692000`, one OTA
+slot at `0x6c0000`, and assets at `0xac0000`; its OTA metadata is erased.
+The pinned IDF v6.1 bootloader's `bootloader_utility.c` defaults to the
+factory image when both OTA records are empty and a factory slot exists.
+The current generated `build/flasher_args.json` instead writes a single-app
+table at `0x8000` and an app at `0x10000`. The earlier device installation
+already installed a v6.1 bootloader. Its 21,120-byte image in the verified
+post-flash readback has SHA-256
+`c7a70b9af9d599095d524cac280838544d074bbd088f9a2e88d483aed95df26d`.
+The current clean build differs in five header bytes and the final image
+digest; its code region matches. The guarded updater checks that known
+installed image and code compatibility on the live device before any write.
+
+After a successful `idf.py set-target esp32s3 build`, with the v6.1
+environment exported, use this read-only preflight on the specific inspected
+unit and its preserved backup:
+
+```sh
+python tools/flash_bringup.py --port /dev/ttyACM0
+```
+
+Under a separately authorized device-flash operation, the same command with
+`--write` repeats preflight and writes only `build/roundie.bin` to the
+installed factory slot:
+
+```sh
+python tools/flash_bringup.py --port /dev/ttyACM0 --write
+```
+
+**Fail-closed checks:** The script verifies the original backup's size and
+hash, reads only the live partition-table sector, two OTA-metadata sectors,
+and the bootloader image range, then requires an exact table match, erased
+OTA metadata, the known installed bootloader and matching code region, the unchanged diagnostic
+flash manifest, and an app whose sector-rounded size fits the factory slot.
+It does not perform a full-Flash readback. A failed check stops deployment;
+do not bypass it by using IDF's printed flash command. A different table,
+active OTA selection, or unrecognized bootloader requires a reviewed deployment proposal.
+No repartitioning or image relocation is part of this milestone. A passing
+preflight is a layout check, not proof of boot or recovery behavior.
 
 The component manager lock resolves:
 
@@ -75,6 +126,18 @@ callback blocks that task until completion before reusing the buffer. A
 transfer timeout restarts the device rather than reusing a buffer still owned
 by DMA. The spec's proposed two-buffer strategy and final buffering policy
 remain open until board measurements.
+
+**Architectural decision for P1 supervision:** ESP-IDF initializes the task
+watchdog at boot with a 10-second timeout and panic/reboot policy. The GUI
+task subscribes after setup and feeds from its own loop only after
+`lv_timer_handler()` and health logging return. A panel-I/O call that blocks
+inside `esp_lcd_panel_draw_bitmap()` therefore cannot be masked by another
+task feeding the watchdog. The existing two-second completion wait restarts
+on timeout before LVGL can reuse the DMA buffer. On watchdog panic, the
+whole device reboots; no task attempts to free or reuse an in-flight buffer.
+Ten seconds gives substantial margin over one 14,400-byte transfer at the
+configured 3 MHz QSPI clock, but the actual worst-case GUI path and recovery
+on the physical board remain pending measurements.
 
 **Device observation and remaining assumption:** The user identified the
 unit as a 1.85B but could not inspect its PCB revision. Its LCD reported
@@ -117,6 +180,15 @@ device mode, use Wi-Fi, or configure power/sleep features.
 | ESP32-S3 target compilation | Clean `idf.py set-target esp32s3 build` under pinned v6.1 exited 0, with zero compiler warnings and zero errors. This proves target compilation only. |
 | Physical device | User confirmed 1.85B, working Roundie page/controls after idle, correct red/green/blue/white fields, moving spinner, and coherent center plus four edge touch regions with release. ESP32-S3 revision 0.2 reported 16 MB flash and 8 MB embedded Octal PSRAM; panel ID selected variant 2; CST816S ID read 181. RTC ACKed/read once with voltage-low flag, then did not ACK on later USB-only resets; gauge did not ACK. PCB revision, battery behavior, and manual recovery remain unverified. |
 | Long-running/fault injection | A short monitor run had an LVGL flush watchdog failure before the wait-callback fix. The later 65-second interrupt-driven touch run had 52 press/release pairs and zero touch I²C errors, LCD transfer errors, watchdog reports, or panics in its log. A planned 30-minute run was stopped at the user's request after about two minutes, before its first five-minute health sample. Endurance and fault injection remain pending. |
+
+### P1 remediation validation, 2026-10-17
+
+| Evidence tier | Result and limit |
+|---|---|
+| Host/source | Inspected the checked touch callback registration and failure cleanup, bus-error return path, GUI-only watchdog feed, and generated flashing offsets. No legacy I²C/I²S include or `i2c_bus_create` use was added to project sources. Offline preflight accepted the recorded post-flash layout and rejected a changed table, non-erased OTA metadata, and an unrecognized bootloader. These checks do not simulate an actual board failure. |
+| ESP32-S3 target compilation | `idf.py set-target esp32s3 build` exited 0 after regenerating config; generated `sdkconfig` has `CONFIG_ESP_TASK_WDT_PANIC=y` and a 10-second timeout. An incremental `idf.py build` after the final touch cleanup change also exited 0. Final `build/roundie.bin` is 569,968 bytes, SHA-256 `0c34a13a8ab047493e8138262b99f43b97be61e6303da00366620832a1cd7ceb`. IDF emitted Kconfig/CMake notices during the clean build; no project compiler error was reported. |
+| Physical device | **Not tested for these changes.** No preflight was run against the live unit and no firmware was flashed. Bus-creation/IRQ failure behavior, worst-case LCD timing, watchdog reset, boot, and recovery remain unverified. |
+| Long-running/fault injection | Not run for this remediation. The original pending Milestone 1 checks remain pending. |
 
 ### Milestone 1 device checklist status
 

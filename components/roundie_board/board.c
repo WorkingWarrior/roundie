@@ -43,6 +43,7 @@ struct roundie_board {
     bool touch_polling;
     esp_lcd_panel_io_handle_t lcd_io;
     esp_lcd_panel_handle_t panel;
+    bool lcd_reset_owned;
     bool spi_started;
     bool backlight_started;
 };
@@ -163,11 +164,32 @@ static esp_err_t start_touch(roundie_board_t *board)
             .reset = 0,
             .interrupt = 0,
         },
-        .interrupt_callback = touch_interrupt,
+        .interrupt_callback = NULL,
         .user_data = board,
     };
-    return esp_lcd_touch_new_i2c_cst816s(board->touch_io, &touch_config,
+    error = esp_lcd_touch_new_i2c_cst816s(board->touch_io, &touch_config,
                                           &board->touch);
+    if (error != ESP_OK) {
+        goto cleanup;
+    }
+    error = esp_lcd_touch_register_interrupt_callback(board->touch,
+                                                       touch_interrupt);
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "CST816S IRQ registration: %s", esp_err_to_name(error));
+        goto cleanup;
+    }
+    return ESP_OK;
+
+cleanup:
+    if (board->touch != NULL) {
+        log_cleanup_error("touch after failed start",
+                          esp_lcd_touch_del(board->touch));
+        board->touch = NULL;
+    }
+    log_cleanup_error("touch IO after failed start",
+                      esp_lcd_panel_io_del(board->touch_io));
+    board->touch_io = NULL;
+    return error;
 }
 
 static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *status)
@@ -180,6 +202,7 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
     if (error != ESP_OK) {
         return error;
     }
+    board->lcd_reset_owned = true;
     error = gpio_set_level(GPIO_NUM_3, 0);
     if (error != ESP_OK) {
         return error;
@@ -330,12 +353,14 @@ esp_err_t roundie_board_start(roundie_board_t **out_board,
         return ESP_ERR_NO_MEM;
     }
     esp_err_t i2c_error = start_i2c(board, status);
-    if (i2c_error == ESP_OK) {
-        /* CST816S can remain in reset until the driver toggles GPIO1.
-         * An early probe is diagnostic only, not a reason to skip init. */
-        status->touch = start_touch(board);
-        ESP_LOGI(TAG, "CST816S driver: %s", esp_err_to_name(status->touch));
+    if (i2c_error != ESP_OK) {
+        roundie_board_stop(board);
+        return i2c_error;
     }
+    /* CST816S can remain in reset until the driver toggles GPIO1.
+     * An early probe is diagnostic only, not a reason to skip init. */
+    status->touch = start_touch(board);
+    ESP_LOGI(TAG, "CST816S driver: %s", esp_err_to_name(status->touch));
 
     esp_err_t error = start_lcd(board, status);
     if (error != ESP_OK) {
@@ -366,7 +391,9 @@ void roundie_board_stop(roundie_board_t *board)
     if (board->spi_started) {
         log_cleanup_error("LCD SPI bus", spi_bus_free(SPI2_HOST));
     }
-    log_cleanup_error("LCD reset GPIO", gpio_reset_pin(GPIO_NUM_3));
+    if (board->lcd_reset_owned) {
+        log_cleanup_error("LCD reset GPIO", gpio_reset_pin(GPIO_NUM_3));
+    }
     if (board->touch != NULL) {
         log_cleanup_error("touch", esp_lcd_touch_del(board->touch));
     }
