@@ -161,3 +161,16 @@ no-change/no-new-test statement applies only to that earlier review.
 deployment path fails closed under the inspected layout assumptions. The
 Milestone 1 physical checks listed in `bringup.md` remain open. A build or
 offline preflight does not establish device behavior.
+
+Final validation on 2026-10-17 completed one clean ESP-IDF v6.1 build and
+extended the offline deployment checks with changed backup, incompatible
+bootloader code, invalid/oversized app, and mocked read-only/write command
+paths. After explicit authorization, the connected 1.85B passed live
+deployment preflight; the application-only write at `0x20000` passed
+esptool's image-hash verification. A five-minute serial smoke test showed
+normal boot and GUI-loop health telemetry with zero reported LCD errors,
+watchdog resets, or panics. See the final autonomous validation table in
+`bringup.md` for exact commands, evidence, and image hash. Bus-creation and
+IRQ-registration failure paths remain source/build verified only; visual
+LCD/touch behavior on the new image and manual ROM Download recovery remain
+**pending**, as do the other device gates.

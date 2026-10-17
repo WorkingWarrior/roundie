@@ -190,6 +190,33 @@ device mode, use Wi-Fi, or configure power/sleep features.
 | Physical device | **Not tested for these changes.** No preflight was run against the live unit and no firmware was flashed. Bus-creation/IRQ failure behavior, worst-case LCD timing, watchdog reset, boot, and recovery remain unverified. |
 | Long-running/fault injection | Not run for this remediation. The original pending Milestone 1 checks remain pending. |
 
+### Final autonomous validation, 2026-10-17
+
+The user first requested repository-only validation, then explicitly
+authorized application-only deployment and an unattended USB smoke test.
+The guarded deployment procedure below was used after that authorization.
+No manual board or touch interaction, full-Flash readback, or endurance test
+was performed.
+
+| Evidence tier | Result and limit |
+|---|---|
+| Source/host — I²C | `start_i2c()` returns the bus-creation error, records it for the three dependent devices, and `roundie_board_start()` releases partial resources before returning that error. Optional probe failures remain per-device status after a successful bus start. Project sources use `driver/i2c_master.h`; a scan found no legacy I²C/I²S include or legacy controller call in `main/` or `components/`. Forced bus failure was not run on hardware. |
+| Source/host — CST816S | The constructor receives a null callback; Roundie then checks `esp_lcd_touch_register_interrupt_callback()` and deletes the touch and IO handles if it fails. `roundie_board_stop()` deletes the touch handle before its IO and I²C bus. Touch on this new image, ISR failure, and repeated teardown remain untested on hardware. |
+| Source/host — GUI watchdog | The GUI/main task registers with Task WDT after setup and feeds only after `lv_timer_handler()` returns. Generated config enables panic and a 10-second timeout. The two-second LCD completion wait and restart-before-buffer-reuse path remain in place. LCD timing, false resets, and actual watchdog recovery on this image are pending device tests; no artificial hang was introduced. |
+| Source/host — safe deployment | The original 16 MiB backup still hashes to `46d2d36244a9e303cc61a65fb29d9a71b9708d41d181e9e5b5befb9261039de7`. Its parsed table has NVS `0x9000`, OTA metadata `0xd000`, factory app `0x20000` size `0x692000`, OTA app `0x6c0000`, and assets `0xac0000`. Offline `preflight()` accepted the saved post-flash table/bootloader and current build, then rejected a changed table, active OTA metadata, unknown installed bootloader, incompatible rebuilt bootloader code, unsupported flash manifest, invalid app header, oversized app, and changed backup. Mocked `main()` made three bounded reads and no write by default; mocked `--write` issued one factory-app write at `0x20000`. Ordinary `idf.py flash` and `idf.py app-flash` remain prohibited for this installed layout. |
+| ESP32-S3 target build | One clean `. /home/solve/.espressif/v6.1/esp-idf/export.sh` then `idf.py set-target esp32s3 build` exited **0** on IDF commit `fff9895c82d744c7237be8847347bdd1b07c6643`. `image-info` reports project `roundie`, version `0.1.0`, IDF `v6.1`, ESP32-S3, and 16 MB Flash. The app is **569,968 bytes**, SHA-256 `c8e141a5a9fc478f42572f6a50b5cadf253c77726a39bea9ad528b5c022387f5`, unchanged in size from the prior P1 build. The bootloader is 21,120 bytes, SHA-256 `04fb63e6d82c1adc7a153ee8168bb9de9f4ea90a565631474c46d3962d4213ec`; its code region passed the updater's compatibility check against the installed bootloader. The log has **zero compiler warnings and zero errors**; it has five ESP-IDF `esp_wifi`/`wpa_supplicant` component-validation CMake warnings and IDF Kconfig notices. `dependencies.lock` still pins the listed component revisions. This is target compilation, not device validation. |
+| Physical device — identity and deployment | The connected USB-Serial/JTAG device was ESP32-S3 revision v0.2, MAC `28:84:85:87:98:7c`, with detected 16 MB Flash and 8 MB embedded PSRAM. A live `python tools/flash_bringup.py --port /dev/ttyACM0` preflight exited **0** after bounded reads of the table, OTA metadata, and bootloader; it matched the inspected layout, erased OTA metadata, and known compatible bootloader. The separately authorized `--write` repeated preflight, then esptool erased only `0x20000–0xabfff`, wrote 569,968 app bytes at `0x20000`, and reported **“Hash of data verified”** before resetting. No command wrote the bootloader, partition table, NVS, OTA metadata, OTA app, or assets; their post-write bytes were not independently read back. The preserved full-Flash backup was not modified. |
+| Physical device — unattended serial smoke | A single approximately five-minute `idf.py monitor` capture after deployment recorded one boot of `roundie` 0.1.0 / IDF v6.1, 16,777,216 B Flash, 8,388,608 B PSRAM, CST816S ID 181 and driver `ESP_OK`, LCD ID `00 02 7f 7f`, and ST77916 variant 2 initialization. At 301,604 ms, the GUI loop logged internal SRAM free/largest **284,575/204,800 B**, PSRAM free/largest **8,384,620/8,257,536 B**, and **0 LCD errors**. The capture contained no LCD transfer error, task-watchdog report, panic, or reboot. Its startup probe reported RTC and gauge `ESP_ERR_NOT_FOUND` under USB power; the early touch probe also NACKed before the driver reset and successful ID read. One telemetry sample and serial output cannot establish visual fields, spinner motion, touch/release, worst-case LCD timing, or a long-term heap trend. |
+
+**Pending on the remediated image:** human inspection of LCD color fields,
+spinner motion and GUI response, plus center/four-edge touch and release.
+Manual ROM Download with read-only chip identification is pending with USB
+power and, if available, battery power. RTC/gauge checks under suitable
+power, ten controlled cold starts, PCB revision inspection, and the
+separately authorized 30-minute visual/interaction criterion also remain
+open. These checks require later physical access; Milestone 1 is not closed,
+and this record does not authorize starting Milestone 2.
+
 ### Milestone 1 device checklist status
 
 | Check | Status | Evidence and limit |
