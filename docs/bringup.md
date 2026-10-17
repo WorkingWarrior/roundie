@@ -4,8 +4,9 @@
 printed PCB revision was not visible. The documented Rev1.1 pinout was the
 working premise, and actual LCD/touch behavior is recorded below.
 
-**Evidence scope:** Source integration, target compilation, and USB-only
-device tests on 2026-10-17. Battery, cold-start, long-run, and manual recovery
+**Evidence scope:** Source integration, target compilation, USB-only device
+tests on 2026-10-17, and two short USB-plus-battery reboot logs on
+2026-10-18. Battery-only operation, cold-start, long-run, and manual recovery
 gates remain open.
 
 ## Build
@@ -211,11 +212,43 @@ was performed.
 **Pending on the remediated image:** human inspection of LCD color fields,
 spinner motion and GUI response, plus center/four-edge touch and release.
 Manual ROM Download with read-only chip identification is pending with USB
-power and, if available, battery power. RTC/gauge checks under suitable
-power, ten controlled cold starts, PCB revision inspection, and the
+power and, if available, battery power. RTC validity, battery-only behavior,
+gauge calibration, ten controlled cold starts, PCB revision inspection, and the
 separately authorized 30-minute visual/interaction criterion also remain
 open. These checks require later physical access; Milestone 1 is not closed,
 and this record does not authorize starting Milestone 2.
+
+### Battery-connected RTC and gauge check, 2026-10-18
+
+**Power condition:** The user reported a battery connected while USB stayed
+connected. The USB-Serial/JTAG device remained `/dev/ttyACM0`. Two short
+`idf.py -p /dev/ttyACM0 monitor` captures each performed a normal software
+reset and recorded one boot of the same `roundie` 0.1.0 image (ELF SHA-256
+prefix `afdcf3ed2`). No firmware rebuild, flash write, I²C configuration
+write, storage operation, or endurance test was performed.
+
+| Check | Earlier USB-only observation | USB plus battery, two fresh boots |
+|---|---|---|
+| PCF85063ATL RTC at `0x51` | ACKed once with the flagged time, then NACKed on several starts; the latest 2026-10-17 boot logged `ESP_ERR_NOT_FOUND`. | Probe and seven-byte time read returned `ESP_OK` twice. The firmware logged `01:52:10` then `01:53:40`, both with `voltage_low=1`. Communication and an advancing displayed value are verified; wall-clock validity and retention are not. |
+| BQ27220 at `0x55` | Did not ACK without a battery; no voltage/status value was available. | Probe and read-word commands returned `ESP_OK` twice. Both boots reported `3970 mV` and `BatteryStatus() = 0x5028`. This is a device-reported voltage, not an independently metered or calibrated value. |
+| Shared-bus context | The early CST816S probe may NACK while the controller is still in reset. | The early `0x15` probe again NACKed, then the touch driver read ID 181 and initialized with `ESP_OK` on both boots. No bus error, panic, or watchdog report appeared in either short log. No touch interaction was performed. |
+
+The firmware field `voltage_low` reads bit 7 of the RTC seconds register.
+For the schematic's PCF85063ATL, [NXP's PCF85063A datasheet](https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf)
+defines that bit as **OS (oscillator stop)**: when set, clock integrity is
+not guaranteed. The observed time must not be used as a valid date/time;
+the flag was neither cleared nor was the clock set during this test.
+
+Per [TI's BQ27220 reference manual](https://www.ti.com/lit/ug/sluubd4a/sluubd4a.pdf),
+`Voltage()` at `0x08` reports measured millivolts. `0x5028` in
+`BatteryStatus()` at `0x0A` has `OCVCOMP`, `SLEEP`, `OCVGD`, and `BATTPRES`
+set. `BATTPRES` corroborates the reported battery attachment, and the
+voltage is plausible, but these bits do not prove fuel-gauge configuration,
+capacity calibration, or state-of-charge accuracy. The present firmware
+does **not** read `StateOfCharge()` at `0x2C` or `OperationStatus()` at
+`0x3A`; neither a percentage nor the gauge's `INITCOMP` state was captured.
+Battery-only operation, external voltage comparison, RTC retention/setting,
+and gauge configuration/SoC validation remain pending.
 
 ### Milestone 1 device checklist status
 
@@ -224,9 +257,9 @@ and this record does not authorize starting Milestone 2.
 | Diagnostic LCD, orientation, color fields, spinner | **PASSED for this unit** | User observed the page, correct red/green/blue/white fields, and moving spinner; LCD ID `00 02 7f 7f` selected variant 2. |
 | Touch center and four reachable edge regions, release, controls after idle | **PASSED** | User explicitly confirmed all five regions and release, and controls after at least five seconds idle. The 65-second log recorded 52 press/release pairs without touch-read errors. |
 | Flash and PSRAM detection | **PASSED for detection** | Device reported 16,777,216 B Flash and 8,388,608 B PSRAM; startup heap values were logged. Executable PSRAM and memory stress are outside this gate. |
-| Shared I²C devices | **OPEN** | Touch driver read ID 181. RTC response varied between USB-only starts. BQ27220 never ACKed with no battery attached. |
-| Ten cold starts; RTC retention; battery behavior; manual ROM Download | **PENDING** | No battery was attached, no controlled cold-start series or physical BOOT procedure was performed, and the PCB revision could not be inspected. |
-| 30-minute interaction and heap trend | **PENDING** | Five-minute telemetry is installed; the requested endurance run was stopped before its first sample. |
+| Shared I²C devices | **PARTIAL** | Touch driver read ID 181. RTC and BQ27220 both ACKed and returned data on two USB-plus-battery reboots. RTC OS flag remains set, gauge SoC/calibration is unverified, and battery-only behavior was not tested. |
+| Ten cold starts; RTC retention; battery-only operation; manual ROM Download | **PENDING** | Two software resets with USB and battery are not cold starts or retention tests. No battery-only run or physical BOOT procedure was performed, and the PCB revision could not be inspected. |
+| 30-minute interaction and heap trend | **PENDING** | A separate five-minute unattended run logged one health sample and zero LCD errors; the 30-minute visual/interaction run and a heap trend remain untested. |
 
 ### Device installation and data preservation
 
@@ -332,10 +365,11 @@ port, logs, and each pass/failure. Do not erase partitions or change eFuses.
 
 ## Known blockers and pending experiments
 
-- **Device gate open:** the USB-only device established boot, LCD variant 2,
-  touch, and memory detection, but did not establish battery-dependent
-  behavior, RTC/gauge reliability, manual ROM recovery, ten cold starts, or
-  the 30-minute visual/interaction criterion. Printed PCB revision and R5/TE
+- **Device gate open:** USB-only testing established boot, LCD variant 2,
+  touch, and memory detection. Two USB-plus-battery reboots established RTC
+  and gauge I²C communication, but not valid RTC time, fuel-gauge accuracy,
+  battery-only operation, manual ROM recovery, ten cold starts, or the
+  30-minute visual/interaction criterion. Printed PCB revision and R5/TE
   population could not be inspected.
 - **LCD identity:** the tested unit returned `00 02 7f 7f`. The other
   documented ID `00 7f 7f 7f` remains source-supported but untested here.
@@ -346,7 +380,10 @@ port, logs, and each pass/failure. Do not erase partitions or change eFuses.
 - **Power/recovery:** test the BOOT/PWR procedure with USB and battery,
   including a confirmed independent debug path. Schematic inference is
   not a recovery result.
-- **RTC/gauge:** RTC responded once with a voltage-low indication but did not
-  ACK on several subsequent USB-only starts. The gauge did not ACK without a
-  battery. Repeat under controlled power conditions and measure I²C levels
-  if intermittent RTC behavior persists; do not infer a software-only cause.
+- **RTC/gauge:** The USB-only RTC intermittently NACKed and the gauge never
+  ACKed without a battery. With USB and battery, both ACKed and returned data
+  on two resets, but the RTC oscillator-stop flag remained set and gauge SoC
+  was not read or calibrated. Test battery-only operation and RTC retention;
+  compare voltage with an external meter when available. If intermittent
+  RTC behavior persists under controlled power, measure I²C levels rather
+  than assuming a software-only cause.
