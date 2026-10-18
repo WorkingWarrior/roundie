@@ -331,7 +331,8 @@ GUI task copies completed samples and updates LVGL labels once per second.
 Each I²C transaction has the existing 100 ms bound. No gauge write command
 is issued. The worker and UI do not allocate a new sample per poll.
 
-**RTC behavior:** The PCF85063 interface reads seconds through years in one
+**RTC behavior at the initial sensor-service checkpoint (superseded by the
+host synchronization addendum below):** The PCF85063 interface reads seconds through years in one
 seven-byte transaction, decodes BCD, checks date, leap year, weekday and
 24-hour mode, and rejects the oscillator-stop bit as invalid time. Valid UTC
 time initializes the system wall clock at startup; `esp_timer` monotonic time
@@ -443,3 +444,66 @@ port, logs, and each pass/failure. Do not erase partitions or change eFuses.
   compare voltage with an external meter when available. If intermittent
   RTC behavior persists under controlled power, measure I²C levels rather
   than assuming a software-only cause.
+
+## RTC host synchronization and retention addendum, 2026-10-18
+
+This addendum supersedes the earlier statements that no trusted-time transport
+exists and RTC setting/OS clearing are untested. It does not close the broader
+Milestone 1 physical interaction, recovery, power, or endurance gate.
+
+**Implementation decision:** PCF85063 stores UTC, restricted to calendar
+years 2000–2099. A versioned line protocol uses the existing secondary USB
+Serial/JTAG console through the standard IDF interrupt driver. One existing
+sensor worker serializes RTC operations; LVGL remains on the GUI task.
+`CONFIG_ROUNDIE_DEV_TIME_SYNC` is explicitly enabled for this diagnostic image
+and must be disabled for production. It permits unauthenticated physical-host
+time setting and an explicit software restart for retention testing.
+
+**Source-verified:** Complete calendar writes include OS=0 in Seconds and do
+not modify control/alarm/gauge configuration. Successful SET requires valid
+immediate readback, a measured 1.2-second progression check with OS clear,
+then system-clock initialization. Failed SET stays explicitly unsynchronized
+until another successful SET during that boot. RTC/system tolerance is one
+second; host verification allows three seconds and bounds serial latency.
+No timezone changes or build-time synchronization are used. An old conversion
+bug affecting December's day count was fixed and covered across all supported
+dates. See [RTC protocol, dependencies, CLI, validation rules and manual test
+steps](rtc-time-sync.md) for the full focused record and NXP/IDF sources.
+
+On CachyOS, install `python-pyserial` (`sudo pacman -S python python-pyserial`).
+Use the actual device path, preferably its stable by-id symlink:
+
+```sh
+PORT=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_28:84:85:87:98:7C-if00
+python tools/roundie_time.py --port "$PORT" status
+python tools/roundie_time.py --port "$PORT" sync
+python tools/roundie_time.py --port "$PORT" verify
+python tools/roundie_time.py --port "$PORT" verify --restart
+```
+
+`status` reports invalid time without writing RTC; `sync` explicitly writes
+host UTC and confirms an independent GET; plain `verify` is read-only for RTC.
+`verify --restart` explicitly asks firmware to call `esp_restart()` and
+reconnects within a bounded retry budget. DTR/RTS both asserted avoided
+reset-on-open on this Linux USB Serial/JTAG device; forcing them low caused
+resets in an earlier failed candidate. Logs cannot match a tool request unless
+they contain its strict protocol prefix and identifier. Exit 2 indicates a
+transport/permission/deadline failure, exit 3 a time-validation failure.
+
+| Evidence tier | Result and limitation |
+|---|---|
+| Host tests | C11 and C23 codec/parser suites exited 0, including four seconds on every supported date and negative framing/calendar cases. All 15 Python protocol/timeout/error/reconnect tests passed. Simulated I²C error replies do not establish hardware fault recovery. |
+| Target compilation | Pinned ESP-IDF v6.1 build exited 0. App 587,088 B, SHA-256 `f9fa9d6b8584fd1b1fb3e95d7aea48c29ff3655a774d786a4e0f308c80ee40cf`; ELF SHA-256 `27c13741c6ffc7e6e44be7948eda1068c7b495d88f009e95b110e924a89823f9`. Compilation alone is not device evidence. |
+| Guarded app deployment | Verified the connected ESP32-S3 rev 0.2, MAC `28:84:85:87:98:7c`, 16 MB Flash and 8 MB PSRAM. `tools/flash_bringup.py --write` repeated live layout/bootloader/backup checks before each candidate write; only factory application offset `0x20000` was written, and esptool image-hash verification passed. No bootloader, table, NVS, OTA metadata, gauge calibration or other data write was requested. |
+| Physical device: synchronization | Initial RTC invalid with OS=1 and no wall synchronization. Explicit SET cleared OS and verified progression/readback. Final host sync at 09:02:07 UTC returned RTC/system `1792314127`, RTT 1.221 s, approximate host difference -0.07 s. Independent GET and plain `verify` passed. |
+| Physical device: Test A | RTC advanced `1792314258` → `1792314263` (+5 s) over 5.0105 s monotonic elapsed; OS remained 0. GET RTT 10.3 ms; system time agreed within one second. |
+| Physical device: Test B | CLI `verify --restart` passed (+2 s RTC over approximately 1.87 s). Final same-connection capture separately recorded `RTC_SW_CPU_RST`, valid RTC startup/OS=0 and system synchronization; RTC `1792314266` → `1792314270`, wall `1792314270` afterward. This proves software restart retention only. |
+| Physical device: rejection paths | Extra argument, negative timestamp, both range boundaries, oversized integer, overlong frame and expired partial frame returned expected `BAD_COMMAND`/`RANGE`/`FRAME`. A fresh GET afterward was valid with OS=0. No malformed command changed time. |
+| Physical device: existing diagnostics | Loaded ELF prefix `27c13741c`, LCD variant 2, CST816S driver OK, RTC/gauge ACK, battery present, 3971 mV and estimated SoC 84%. No panic/watchdog failure in short restart captures. New GUI labels, spinner/touch appearance and battery accuracy were not physically inspected. |
+| Physical device: Test C | **PENDING.** No cable removal, battery reconnection or PWR press was performed. The linked procedure separately tests USB removal/battery-only operation, PWR hardware off with USB removed, restoration, then verification before any resync. Software restart does not establish these power-state results. |
+
+Earlier checkpoint descriptions of OS=1 remain historical evidence. The RTC
+is now valid on the tested USB-plus-battery unit. Brownout/complete RTC power
+loss, physical I²C failure injection, long-term drift, electrical battery
+comparison and the existing 30-minute visual gate remain pending. No later
+milestone was implemented.
