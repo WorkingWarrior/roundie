@@ -20,6 +20,26 @@ INSTALLED_BOOTLOADER_SHA256 = "c7a70b9af9d599095d524cac280838544d074bbd088f9a2e8
 FACTORY_OFFSET = 0x20000
 FACTORY_SIZE = 0x692000
 SECTOR_SIZE = 0x1000
+LEGACY_TABLE_SHA256 = "7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820"
+
+
+def check_legacy_build(build):
+    """Offline checks must pass before opening a physical serial port.
+
+    Check identity inside the app too: copying a REP image over roundie.bin
+    must not make it eligible for the legacy updater.
+    """
+    if (build / "roundie-profile.txt").read_text().strip() != "legacy":
+        raise ValueError("factory updater requires the legacy build profile")
+    table = (build / "partition_table/partition-table.bin").read_bytes()
+    if sha256(table) != LEGACY_TABLE_SHA256:
+        raise ValueError("built partition table is not the pinned legacy table")
+    app = (build / "roundie.bin").read_bytes()
+    if (len(app) < 288 or app[0] != 0xE9 or
+            app[32:36] != b"\x32\x54\xcd\xab" or
+            app[80:112].split(b"\0", 1)[0] != b"roundie"):
+        raise ValueError("application embedded identity is not the legacy roundie image")
+    return app
 
 
 def sha256(data):
@@ -71,8 +91,8 @@ def main():
                         help="after preflight, write only the factory app at 0x20000")
     args = parser.parse_args()
 
+    app = check_legacy_build(ROOT / "build")
     backup = BACKUP.read_bytes()
-    app = (ROOT / "build/roundie.bin").read_bytes()
     built_bootloader = (ROOT / "build/bootloader/bootloader.bin").read_bytes()
     flash_files = json.loads((ROOT / "build/flasher_args.json").read_text())["flash_files"]
     bootloader_read_size = (len(built_bootloader) + SECTOR_SIZE - 1) // SECTOR_SIZE * SECTOR_SIZE
@@ -88,17 +108,20 @@ def main():
         preflight(backup, table, otadata, live_bootloader, built_bootloader,
                   app, flash_files)
 
-    print(f"Preflight passed: factory app at {FACTORY_OFFSET:#x}, {len(app)} bytes")
-    if not args.write:
-        print("Check only; no Flash write requested")
-        return
+        print(f"Preflight passed: factory app at {FACTORY_OFFSET:#x}, {len(app)} bytes")
+        if not args.write:
+            print("Check only; no Flash write requested")
+            return
 
-    subprocess.run(
-        [sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", args.port,
-         "--after", "hard-reset", "write-flash", hex(FACTORY_OFFSET),
-         str(ROOT / "build/roundie.bin")],
-        check=True,
-    )
+        # A concurrent build must not replace the image after validation.
+        checked_app = temporary / "roundie-legacy-validated.bin"
+        checked_app.write_bytes(app)
+        subprocess.run(
+            [sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", args.port,
+             "--after", "hard-reset", "write-flash", hex(FACTORY_OFFSET),
+             str(checked_app)],
+            check=True,
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,99 @@
+#include "storage_diagnostics.h"
+
+#include <inttypes.h>
+#include <string.h>
+#include "esp_app_desc.h"
+#include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
+#include "roundie_storage.h"
+
+static const char *TAG = "storage";
+static roundie_storage_t *storage;
+
+typedef struct {
+    const char *label;
+    esp_partition_type_t type;
+    esp_partition_subtype_t subtype;
+    uint32_t offset;
+    uint32_t size;
+} layout_entry_t;
+
+static bool rep_layout_matches(void)
+{
+    static const layout_entry_t expected[] = {
+        {"nvs", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, 0x9000, 0x4000},
+        {"otadata", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, 0xd000, 0x2000},
+        {"phy_init", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_PHY, 0xf000, 0x1000},
+        {"ota_0", ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, 0x10000, 0x380000},
+        {"ota_1", ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, 0x390000, 0x380000},
+        {"storage", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, 0x710000, 0x8d0000},
+        {"coredump", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, 0xfe0000, 0x20000},
+    };
+    size_t count = 0;
+    esp_partition_iterator_t iterator = esp_partition_find(ESP_PARTITION_TYPE_ANY,
+                                                           ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (iterator != NULL) {
+        const esp_partition_t *partition = esp_partition_get(iterator);
+        bool found = false;
+        for (size_t index = 0; index < sizeof(expected) / sizeof(expected[0]); index++) {
+            const layout_entry_t *entry = &expected[index];
+            if (strcmp(partition->label, entry->label) == 0 &&
+                partition->type == entry->type && partition->subtype == entry->subtype &&
+                partition->address == entry->offset && partition->size == entry->size &&
+                !partition->encrypted && !partition->readonly) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            esp_partition_iterator_release(iterator);
+            return false;
+        }
+        count++;
+        iterator = esp_partition_next(iterator);
+    }
+    return count == sizeof(expected) / sizeof(expected[0]);
+}
+
+void roundie_storage_diagnostics(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    bool rep = rep_layout_matches();
+    const char *profile = strcmp(esp_app_get_description()->project_name,
+                                 "roundie_rep") == 0 ? "rep" : "legacy";
+    if (running != NULL) {
+        ESP_LOGI(TAG, "Build profile=%s; active=%s type=%u subtype=0x%02x offset=0x%" PRIx32
+                 " size=0x%" PRIx32 "; detected layout=%s", profile, running->label,
+                 (unsigned)running->type, (unsigned)running->subtype,
+                 running->address, running->size, rep ? "rep-v1" : "legacy/unknown");
+    } else {
+        ESP_LOGE(TAG, "Build profile=%s; active partition unavailable", profile);
+    }
+    const esp_partition_t *partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+        ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, "storage");
+    ESP_LOGI(TAG, "LittleFS partition %s", partition != NULL ? "available" : "unavailable");
+    if (!rep || strcmp(profile, "rep") != 0 || running == NULL ||
+        running->type != ESP_PARTITION_TYPE_APP ||
+        (running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+         running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1)) {
+        ESP_LOGW(TAG, "Storage not mounted: REP build and exact REP layout required; total/used unavailable");
+        return;
+    }
+    roundie_storage_result_t result = roundie_storage_init(&storage);
+    if (result == ROUNDIE_STORAGE_OK) {
+        result = roundie_storage_mount(storage);
+    }
+    roundie_storage_status_t status;
+    if (result == ROUNDIE_STORAGE_OK) {
+        result = roundie_storage_capacity(storage, &status);
+    }
+    roundie_storage_status(storage, &status);
+    ESP_LOGI(TAG, "LittleFS mounted=%u result=%s underlying=%s capacity_valid=%u total=%zu used=%zu",
+             status.mounted, roundie_storage_result_name(result),
+             esp_err_to_name(status.underlying_error), status.capacity_valid,
+             status.total_bytes, status.used_bytes);
+    if (!status.mounted) {
+        roundie_storage_deinit(&storage);
+    }
+}

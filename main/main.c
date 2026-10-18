@@ -24,6 +24,7 @@
 #include "lvgl.h"
 #include "roundie_board.h"
 #include "time_protocol.h"
+#include "storage_diagnostics.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -625,6 +626,7 @@ void app_main(void)
     char elf_hash[65] = {0};
     esp_app_get_elf_sha256(elf_hash, sizeof(elf_hash));
     ESP_LOGI(TAG, "Firmware ELF SHA-256 prefix: %s", elf_hash);
+    roundie_storage_diagnostics();
 
     uint32_t flash_bytes = 0;
     esp_err_t error = esp_flash_get_size(NULL, &flash_bytes);

@@ -1,4 +1,7 @@
 /build/
+/build-rep/
+/sdkconfig.rep
+/sdkconfig.rep.old
 /managed_components/
 /sdkconfig
 /sdkconfig.old

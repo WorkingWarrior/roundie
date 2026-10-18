@@ -1,0 +1,8 @@
+# Explicit target layout, never deploy through flash_bringup.py.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/rep.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# Reserve coredump space; enabling capture needs a separate measured gate.
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+# No Flash/cache policy change without comparative measurements.
+# CONFIG_SPIRAM_XIP_FROM_PSRAM is not set

@@ -12,6 +12,60 @@ if(NOT ROUNDIE_IDF_GIT_RESULT EQUAL 0 OR
     message(FATAL_ERROR "Roundie requires ESP-IDF v6.1 commit ${ROUNDIE_IDF_COMMIT}")
 endif()
 
+set(ROUNDIE_PROFILE "legacy" CACHE STRING "Flash layout: legacy or rep")
+set_property(CACHE ROUNDIE_PROFILE PROPERTY STRINGS legacy rep)
+if(ROUNDIE_PROFILE STREQUAL "rep")
+    set(SDKCONFIG "${CMAKE_SOURCE_DIR}/sdkconfig.rep")
+    set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.rep.defaults")
+    set(ROUNDIE_PROJECT_NAME roundie_rep)
+elseif(ROUNDIE_PROFILE STREQUAL "legacy")
+    set(SDKCONFIG "${CMAKE_SOURCE_DIR}/sdkconfig")
+    set(SDKCONFIG_DEFAULTS "sdkconfig.defaults")
+    set(ROUNDIE_PROJECT_NAME roundie)
+else()
+    message(FATAL_ERROR "Unknown ROUNDIE_PROFILE: ${ROUNDIE_PROFILE}")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 set(PROJECT_VER "0.1.0")
-project(roundie)
+project(${ROUNDIE_PROJECT_NAME})
+
+# LittleFS 1.22.2 otherwise converts a negative lfs_fs_size() result to a
+# successful full-disk report. Keep managed sources pristine and fail closed
+# on upstream drift. Only this translation unit is replaced in the build.
+idf_component_get_property(ROUNDIE_LITTLEFS_DIR joltwallet__littlefs COMPONENT_DIR)
+idf_component_get_property(ROUNDIE_LITTLEFS_LIB joltwallet__littlefs COMPONENT_LIB)
+set(ROUNDIE_LITTLEFS_SOURCE "${ROUNDIE_LITTLEFS_DIR}/src/esp_littlefs.c")
+set(ROUNDIE_LITTLEFS_PATCHED "${CMAKE_BINARY_DIR}/esp_littlefs_capacity.c")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/tools/patch_littlefs.py" "${ROUNDIE_LITTLEFS_SOURCE}")
+execute_process(COMMAND ${PYTHON} "${CMAKE_SOURCE_DIR}/tools/patch_littlefs.py"
+    "${ROUNDIE_LITTLEFS_SOURCE}" "${ROUNDIE_LITTLEFS_PATCHED}"
+    RESULT_VARIABLE ROUNDIE_PATCH_RESULT)
+if(NOT ROUNDIE_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "LittleFS capacity error patch failed")
+endif()
+get_target_property(ROUNDIE_LITTLEFS_SOURCES ${ROUNDIE_LITTLEFS_LIB} SOURCES)
+list(REMOVE_ITEM ROUNDIE_LITTLEFS_SOURCES "${ROUNDIE_LITTLEFS_SOURCE}")
+list(APPEND ROUNDIE_LITTLEFS_SOURCES "${ROUNDIE_LITTLEFS_PATCHED}")
+set_property(TARGET ${ROUNDIE_LITTLEFS_LIB} PROPERTY SOURCES "${ROUNDIE_LITTLEFS_SOURCES}")
+set_property(SOURCE "${ROUNDIE_LITTLEFS_PATCHED}" DIRECTORY "${ROUNDIE_LITTLEFS_DIR}"
+    PROPERTY COMPILE_FLAGS "-DLFS_CONFIG=lfs_config.h")
+
+if(NOT CONFIG_ESPTOOLPY_FLASHSIZE_16MB OR
+   NOT CONFIG_PARTITION_TABLE_OFFSET EQUAL 32768)
+    message(FATAL_ERROR "Roundie requires 16 MiB Flash and table at 0x8000")
+endif()
+if(ROUNDIE_PROFILE STREQUAL "rep")
+    if(NOT CONFIG_PARTITION_TABLE_CUSTOM OR
+       NOT CONFIG_PARTITION_TABLE_CUSTOM_FILENAME STREQUAL "partitions/rep.csv" OR
+       NOT CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)
+        message(FATAL_ERROR "REP profile/config mismatch; regenerate sdkconfig.rep")
+    endif()
+else()
+    if(NOT CONFIG_PARTITION_TABLE_SINGLE_APP OR CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)
+        message(FATAL_ERROR "Legacy profile/config mismatch; regenerate sdkconfig")
+    endif()
+endif()
+file(WRITE "${CMAKE_BINARY_DIR}/roundie-profile.txt" "${ROUNDIE_PROFILE}\n")
+message(STATUS "Roundie layout: ${ROUNDIE_PROFILE}; image: ${ROUNDIE_PROJECT_NAME}.bin")
