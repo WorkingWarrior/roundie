@@ -40,12 +40,26 @@
 - Use the **1.85B** board's verified pinout, not the non-B model's. Keep GPIO0 available for ROM Download; do not repurpose PSRAM pins. Do not assume LCD TE, a programmable PWR button, software power-off, or a wake source without the specified schematic and device checks.
 - Do not present deep sleep as hardware power-off.
 - Keep one managed I²C master for the shared devices. Treat physical behavior, battery-dependent behavior, current draw, and wake reliability as device-test questions.
-- Never flash hardware unless the task explicitly calls for it. Never change eFuses, enable Secure Boot/Flash Encryption/hardware anti-rollback, disable ROM Download, or irreversibly change USB recovery capability without a separately tested recovery plan and explicit approval.
-- Do not auto-format LittleFS on mount failure or auto-erase NVS on initialization errors. Do not erase NVS, LittleFS, or all Flash without explicit approval. Installation and recovery must preserve user data by default; do not overwrite an active ELF or expose raw system partitions through MTP.
+- Firmware flashing and other hardware modifications require explicit authorization scoped to the current task or goal. Build or commit authorization does not authorize flashing. Never change eFuses, enable Secure Boot/Flash Encryption/hardware anti-rollback, disable ROM Download, or irreversibly change USB recovery capability without a separately tested recovery plan and separate explicit approval.
+- Do not auto-format LittleFS on mount failure or auto-erase NVS on initialization errors. Destructive Flash operations, including erasing NVS, LittleFS, or all Flash, and repartitioning require separate explicit authorization; ordinary flashing authorization does not cover them. Installation and recovery must preserve user data by default; do not overwrite an active ELF or expose raw system partitions through MTP.
 - Use the standard ESP-IDF bootloader with two OTA slots and application-confirmed rollback. Confirm an OTA image only after the critical self-test; do not begin another OTA while confirmation is pending. Safe Mode is in the firmware and must start without LittleFS, apps, registry, MTP, or Wi-Fi. Preserve a manually usable ROM Download recovery path, including when TinyUSB takes over the normal USB interface; verify the procedure on the actual board.
 
 ## Validation and documentation
 
 - Follow the spec §23 order and gates: hardware audit; IDF/BSP bring-up; storage/OTA/recovery; ELF proof of concept; runtime; round UI; packages/SDK; MTP; power; stabilization. The ELF proof of concept is a critical gate: if it fails, review the architecture before building the full runtime or stabilizing ABI.
 - Use focused host tests for pure logic, target builds for toolchain/layout issues, and actual board tests for hardware, Flash/PSRAM concurrency, OTA, recovery, UI responsiveness, and power. Measure before optimizing; include failure paths, cleanup, cancellation, power interruption, and repeated load/unload where relevant.
+- Within the authorized milestone, perform relevant local builds, short software tests, documentation updates, and focused Git commits autonomously. Respect task-specific restrictions; this does not authorize hardware operations. Run long-running or endurance tests only when explicitly authorized for the current task or goal. Do not repeat full-Flash readbacks without a concrete new validation need and explicit authorization.
+- When a test needs physical user interaction, record it as PENDING with the missing evidence and continue independent authorized work. Do not block unattended work on button presses, touch input, cable changes, or battery reconnection.
 - Document significant decisions and behavior changes when they are made. Keep confirmed behavior separate from proposals and pending experiments. Create detailed component documents as implementation reaches them, rather than copying the full specification into new files.
+
+## Git workflow
+
+- Create Git commits autonomously after completing coherent changes.
+- Use Conventional Commits with descriptive English messages.
+- Keep commits focused and logically separated. Stage only task-related changes and preserve unrelated work.
+- Run relevant verification before committing when feasible.
+- Never amend or rewrite existing commits without approval.
+- Do not commit generated artifacts, backups, or secrets.
+- Do not push to remotes unless explicitly requested.
+- Report commit hashes in the final summary.
+- Treat committing code and flashing hardware as separate actions.
