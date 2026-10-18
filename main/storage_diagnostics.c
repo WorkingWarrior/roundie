@@ -1,7 +1,12 @@
 #include "storage_diagnostics.h"
 
 #include <inttypes.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -10,6 +15,103 @@
 
 static const char *TAG = "storage";
 static roundie_storage_t *storage;
+
+/* Only a deliberately provisioned request enables this bounded boot diagnostic.
+ * Claim it before writing: an interrupted/failed test is never retried on boot.
+ * This runs before GUI startup, with exclusive storage lifecycle ownership.
+ */
+static void migration_filesystem_test(void)
+{
+    const char *request = "/storage/.roundie-m2b-request";
+    const char *claimed = "/storage/.roundie-m2b-running";
+    const char *path = "/storage/.roundie-m2b-data";
+    static const char token[] = "Roundie Milestone 2B filesystem check v1\n";
+    uint8_t expected[256];
+    uint8_t actual[257];
+    struct stat info;
+    int descriptor = open(request, O_RDONLY);
+    if (descriptor < 0) {
+        if (errno != ENOENT) {
+            ESP_LOGE(TAG, "M2B request open failed: errno=%d", errno);
+        }
+        return;
+    }
+    ssize_t count = read(descriptor, actual, sizeof(actual));
+    int close_result = close(descriptor);
+    if (count != (ssize_t)(sizeof(token) - 1) || close_result != 0 ||
+        memcmp(actual, token, sizeof(token) - 1) != 0) {
+        ESP_LOGE(TAG, "M2B request invalid; no test writes performed");
+        return;
+    }
+    errno = 0;
+    if (stat(claimed, &info) == 0 || errno != ENOENT) {
+        ESP_LOGE(TAG, "M2B previous test state exists or cannot be checked; stopped");
+        return;
+    }
+    if (rename(request, claimed) != 0) {
+        ESP_LOGE(TAG, "M2B request claim failed: errno=%d", errno);
+        return;
+    }
+    for (size_t index = 0; index < sizeof(expected); index++) {
+        expected[index] = (uint8_t)(index ^ 0xa5);
+    }
+    const char *stage = "create";
+    descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (descriptor < 0) {
+        goto failed;
+    }
+    stage = "write/sync/close";
+    count = write(descriptor, expected, sizeof(expected));
+    int sync_result = fsync(descriptor);
+    close_result = close(descriptor);
+    if (count != (ssize_t)sizeof(expected) || sync_result != 0 || close_result != 0) {
+        goto failed;
+    }
+    stage = "unmount/remount";
+    if (roundie_storage_unmount(storage) != ROUNDIE_STORAGE_OK ||
+        roundie_storage_mount(storage) != ROUNDIE_STORAGE_OK) {
+        goto failed;
+    }
+    stage = "read/integrity";
+    descriptor = open(path, O_RDONLY);
+    if (descriptor < 0) {
+        goto failed;
+    }
+    count = read(descriptor, actual, sizeof(actual));
+    close_result = close(descriptor);
+    if (count != (ssize_t)sizeof(expected) || close_result != 0 ||
+        memcmp(actual, expected, sizeof(expected)) != 0) {
+        goto failed;
+    }
+    stage = "delete";
+    if (unlink(path) != 0 || unlink(claimed) != 0) {
+        goto failed;
+    }
+    stage = "deletion persistence";
+    if (roundie_storage_unmount(storage) != ROUNDIE_STORAGE_OK ||
+        roundie_storage_mount(storage) != ROUNDIE_STORAGE_OK) {
+        goto failed;
+    }
+    const char *removed[] = {path, request, claimed};
+    for (size_t index = 0; index < sizeof(removed) / sizeof(removed[0]); index++) {
+        errno = 0;
+        if (stat(removed[index], &info) == 0 || errno != ENOENT) {
+            goto failed;
+        }
+    }
+    roundie_storage_status_t status;
+    stage = "capacity";
+    if (roundie_storage_capacity(storage, &status) != ROUNDIE_STORAGE_OK) {
+        goto failed;
+    }
+    ESP_LOGI(TAG, "M2B filesystem PASS: create/write/sync/remount/read/integrity/delete/remount; "
+             "bytes=%zu total=%zu used=%zu; request consumed", sizeof(expected),
+             status.total_bytes, status.used_bytes);
+    return;
+
+failed:
+    ESP_LOGE(TAG, "M2B filesystem FAIL at %s (errno=%d); no automatic retry/format", stage, errno);
+}
 
 typedef struct {
     const char *label;
@@ -95,5 +197,7 @@ void roundie_storage_diagnostics(void)
              status.total_bytes, status.used_bytes);
     if (!status.mounted) {
         roundie_storage_deinit(&storage);
+    } else if (result == ROUNDIE_STORAGE_OK) {
+        migration_filesystem_test();
     }
 }

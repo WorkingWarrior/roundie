@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -626,6 +627,8 @@ void app_main(void)
     char elf_hash[65] = {0};
     esp_app_get_elf_sha256(elf_hash, sizeof(elf_hash));
     ESP_LOGI(TAG, "Firmware ELF SHA-256 prefix: %s", elf_hash);
+    esp_err_t nvs_error = nvs_flash_init();
+    ESP_LOGI(TAG, "NVS initialization: %s; no erase fallback", esp_err_to_name(nvs_error));
     roundie_storage_diagnostics();
 
     uint32_t flash_bytes = 0;

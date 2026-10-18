@@ -69,3 +69,15 @@ else()
 endif()
 file(WRITE "${CMAKE_BINARY_DIR}/roundie-profile.txt" "${ROUNDIE_PROFILE}\n")
 message(STATUS "Roundie layout: ${ROUNDIE_PROFILE}; image: ${ROUNDIE_PROJECT_NAME}.bin")
+
+# Generated IDF flashing bypasses the live partition/profile guards. Require
+# the project updaters for both profiles, including app-only development work.
+add_custom_target(roundie_raw_flash_forbidden
+    COMMAND ${CMAKE_COMMAND} -E echo
+        "Raw IDF flashing is disabled. Use tools/flash_rep.py or tools/flash_bringup.py."
+    COMMAND ${CMAKE_COMMAND} -E false)
+foreach(ROUNDIE_FLASH_TARGET flash app-flash bootloader-flash partition-table-flash otadata-flash)
+    if(TARGET ${ROUNDIE_FLASH_TARGET})
+        add_dependencies(${ROUNDIE_FLASH_TARGET} roundie_raw_flash_forbidden)
+    endif()
+endforeach()
