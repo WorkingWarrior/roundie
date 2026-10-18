@@ -1,5 +1,18 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+## Milestone 2C.1 OTA foundation — 2026-10-18
+
+Local streamed USB OTA, explicit activation, core self-test confirmation and
+rollback eligibility are implemented; see [OTA ownership, commands, source
+contract and validation gates](ota.md). A bounded read-only device inspection
+confirmed the installed rollback-capable 2B bootloader, original 0.1.0 image,
+VALID A metadata/CRC and an unbootable erased B header. Firmware resumed and
+RT1 GET passed afterwards. No 2C.1 Flash write or physical OTA/rollback test
+has been authorized or performed. The existing ROM recovery route is preserved.
+The new 0.2.1 application requires a separately authorized initial app-only A
+bootstrap before RO1 can exercise genuine A/B updates. This does not close the
+older visual/touch, battery, power or endurance questions listed below.
+
 **Current deployment (Milestone 2B, 2026-10-18):** the connected device now
 uses REP v1 with OTA A at `0x10000`, OTA B at `0x390000`, and provisioned
 LittleFS at `0x710000`. The manufacturer-layout installation commands below

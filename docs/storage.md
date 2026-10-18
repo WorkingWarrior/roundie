@@ -1,5 +1,11 @@
 # Milestones 2A–2B: storage foundation and physical provisioning
 
+**Milestone 2C.1 addendum:** the [OTA manager and USB utility](ota.md) now implement
+application updates, self-test confirmation and rollback guards offline.
+Physical A/B validation remains PENDING authorization. The historical 2A–2B
+statements below about missing OTA behavior describe that earlier firmware;
+the installed 0.1.0 image still has that behavior until an approved bootstrap.
+
 ## Status and decisions
 
 **Architectural decision, 2026-10-18 (REP §§14–15, 18, 23):** select the

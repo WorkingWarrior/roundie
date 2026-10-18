@@ -169,6 +169,17 @@ files and device identifiers are not committed.
 
 ## REP development updates
 
+For 2C.1 the installed 2B bootloader already supports rollback. Rebuilding it
+changes timestamp metadata, so the optional
+`--installed-m2b-bootloader /path/to/exact-21200-byte-readback.bin` selects the
+**pinned known 2B hash** for live comparison instead of the newly built artifact.
+It never writes the bootloader. Unknown bytes/hashes fail before serial access.
+All original initial-VALID-A, table, device and security checks remain. This is
+only for the separately authorized app-only bootstrap of the first OTA-capable
+firmware; see [the exact sequence and evidence boundary](ota.md).
+Subsequent A/B updates must use `tools/roundie_ota.py`; direct flashing is not
+evidence of OTA, and this bootstrap guard rejects noninitial metadata.
+
 Only use this procedure when the current task separately authorizes a
 hardware write. It updates the **currently selected initial OTA A image in
 place**, with no power-loss safety or previous-image fallback. It does not
