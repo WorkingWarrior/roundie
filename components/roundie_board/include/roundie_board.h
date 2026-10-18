@@ -75,6 +75,8 @@ esp_err_t roundie_board_touch_read(roundie_board_t *board, bool *pressed,
 esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent);
 
 /* Sensor calls use the board's shared master and bounded 100 ms transactions.
+ * The sensor worker serializes RTC reads and sets after startup. Set verifies
+ * immediate readback only; its caller must confirm progression before wall sync.
  * A failed probe is retried on later samples; no handle is permanently absent. */
 void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample);
 esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,

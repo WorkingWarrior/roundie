@@ -41,7 +41,7 @@ bool roundie_rtc_time_valid(const roundie_rtc_time_t *time)
 bool roundie_rtc_unix_seconds(const roundie_rtc_time_t *time, int64_t *seconds)
 {
     static const uint8_t month_days[12] = {
-        31, 28, 31, 30, 31, 30, 31, 31, 30, 31,
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
     };
     if (seconds == NULL || !roundie_rtc_time_valid(time)) {
         return false;
@@ -90,6 +90,56 @@ bool roundie_rtc_decode(const uint8_t raw[7], roundie_rtc_time_t *time,
     time->year = 2000 + year;
     int64_t seconds;
     return roundie_rtc_unix_seconds(time, &seconds);
+}
+
+bool roundie_rtc_from_unix(int64_t seconds, roundie_rtc_time_t *time)
+{
+    if (time == NULL || seconds < INT64_C(946684800) ||
+        seconds > INT64_C(4102444799)) {
+        return false;
+    }
+    static const uint8_t month_days[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    };
+    int64_t days = (seconds - INT64_C(946684800)) / 86400;
+    time->weekday = (uint8_t)((seconds / 86400 + 4) % 7);
+    time->year = 2000;
+    while (days >= (leap_year(time->year) ? 366 : 365)) {
+        days -= leap_year(time->year) ? 366 : 365;
+        time->year++;
+    }
+    time->month = 1;
+    for (;;) {
+        unsigned length = month_days[time->month - 1];
+        if (time->month == 2 && leap_year(time->year)) {
+            length++;
+        }
+        if (days < length) {
+            break;
+        }
+        days -= length;
+        time->month++;
+    }
+    time->day = (uint8_t)(days + 1);
+    time->hour = (uint8_t)(seconds % 86400 / 3600);
+    time->minute = (uint8_t)(seconds % 3600 / 60);
+    time->second = (uint8_t)(seconds % 60);
+    return true;
+}
+
+bool roundie_rtc_readback_matches(int64_t expected, int64_t actual)
+{
+    return expected >= INT64_C(946684800) &&
+           expected <= INT64_C(4102444799) &&
+           actual >= expected && actual <= INT64_C(4102444799) &&
+           actual - expected <= 1;
+}
+
+bool roundie_rtc_progress_matches(int64_t first, int64_t next, int64_t elapsed_us)
+{
+    return first >= INT64_C(946684800) && next <= INT64_C(4102444799) &&
+           elapsed_us >= 1100000 && elapsed_us <= 3000000 &&
+           next > first && next - first <= elapsed_us / 1000000 + 1;
 }
 
 bool roundie_rtc_encode(const roundie_rtc_time_t *time, uint8_t raw[7])

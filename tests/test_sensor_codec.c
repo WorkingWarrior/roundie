@@ -44,9 +44,60 @@ static void test_gauge(void)
     assert(roundie_gauge_deci_c(2982) == 250);
 }
 
+static void test_utc_conversion(void)
+{
+    roundie_rtc_time_t calendar;
+    assert(!roundie_rtc_from_unix(INT64_MIN, &calendar));
+    assert(!roundie_rtc_from_unix(946684799, &calendar));
+    assert(!roundie_rtc_from_unix(4102444800, &calendar));
+    assert(!roundie_rtc_from_unix(INT64_MAX, &calendar));
+    assert(!roundie_rtc_from_unix(946684800, NULL));
+    assert(roundie_rtc_from_unix(946684800, &calendar));
+    assert(calendar.year == 2000 && calendar.month == 1 && calendar.day == 1);
+    assert(calendar.weekday == 6 && calendar.hour == 0 && calendar.second == 0);
+    assert(roundie_rtc_from_unix(4102444799, &calendar));
+    assert(calendar.year == 2099 && calendar.month == 12 && calendar.day == 31);
+    assert(calendar.hour == 23 && calendar.minute == 59 && calendar.second == 59);
+    assert(roundie_rtc_from_unix(951782400, &calendar));
+    assert(calendar.year == 2000 && calendar.month == 2 && calendar.day == 29);
+    assert(roundie_rtc_from_unix(951868800, &calendar));
+    assert(calendar.month == 3 && calendar.day == 1);
+    assert(roundie_rtc_from_unix(1740787200, &calendar));
+    assert(calendar.year == 2025 && calendar.month == 3 && calendar.day == 1);
+    /* Every supported date, with both sides of every midnight/year boundary. */
+    for (int64_t day = 946684800; day <= 4102358400; day += 86400) {
+        const int64_t offsets[] = {0, 1, 86398, 86399};
+        for (unsigned i = 0; i < 4; i++) {
+            int64_t expected = day + offsets[i];
+            assert(roundie_rtc_from_unix(expected, &calendar));
+            int64_t actual;
+            assert(roundie_rtc_unix_seconds(&calendar, &actual));
+            assert(actual == expected);
+            uint8_t raw[7];
+            bool os;
+            roundie_rtc_time_t decoded;
+            assert(roundie_rtc_encode(&calendar, raw));
+            assert(roundie_rtc_decode(raw, &decoded, &os) && !os);
+            assert(roundie_rtc_unix_seconds(&decoded, &actual) && actual == expected);
+        }
+    }
+    assert(roundie_rtc_readback_matches(1709251199, 1709251200));
+    assert(!roundie_rtc_readback_matches(1709251199, 1709251198));
+    assert(!roundie_rtc_readback_matches(1709251199, 1709251201));
+    assert(!roundie_rtc_readback_matches(4102444799, 4102444800));
+    assert(roundie_rtc_progress_matches(1709251199, 1709251200, 1200000));
+    assert(roundie_rtc_progress_matches(1709251199, 1709251201, 1200000));
+    assert(!roundie_rtc_progress_matches(1709251199, 1709251199, 1200000));
+    assert(!roundie_rtc_progress_matches(1709251199, 1709251198, 1200000));
+    assert(!roundie_rtc_progress_matches(1709251199, 1709251202, 1200000));
+    assert(!roundie_rtc_progress_matches(1709251199, 1709251200, 500000));
+    assert(!roundie_rtc_progress_matches(1709251199, 1709251200, 3100000));
+}
+
 int main(void)
 {
     test_rtc();
+    test_utc_conversion();
     test_gauge();
     puts("sensor codec tests passed");
     return 0;

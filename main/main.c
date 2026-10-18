@@ -1,10 +1,14 @@
 #include <inttypes.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #include "esp_app_desc.h"
 #include "esp_err.h"
@@ -19,6 +23,13 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "roundie_board.h"
+#include "time_protocol.h"
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
+#endif
+
+_Static_assert(sizeof(time_t) == 8, "RTC requires ESP-IDF 64-bit time_t");
 
 #define DISPLAY_WIDTH 360
 #define DISPLAY_HEIGHT 360
@@ -54,6 +65,7 @@ typedef struct {
     roundie_rtc_sample_t rtc;
     roundie_battery_sample_t battery;
     bool wall_valid;
+    bool sync_failed; /* A failed explicit SET requires another successful SET. */
 } sensor_state_t;
 
 static sensor_state_t sensors = {
@@ -105,6 +117,134 @@ static bool sync_wall_clock(const roundie_rtc_sample_t *sample)
     return true;
 }
 
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC
+static void time_command(sensor_state_t *shared,
+                          const roundie_time_frame_t *frame)
+{
+    roundie_time_command_t command;
+    const char *result = roundie_time_parse(frame, &command);
+    roundie_rtc_sample_t rtc;
+    esp_err_t error = ESP_OK;
+    bool wall_valid = shared->wall_valid;
+    if (strcmp(result, "OK") == 0 && command.set) {
+        wall_valid = false;
+        shared->sync_failed = true;
+        portENTER_CRITICAL(&shared->lock);
+        shared->wall_valid = false;
+        portEXIT_CRITICAL(&shared->lock);
+        roundie_rtc_time_t calendar;
+        roundie_rtc_from_unix(command.seconds, &calendar);
+        error = roundie_board_rtc_set_trusted(shared->board, &calendar);
+        if (error != ESP_OK) {
+            result = "RTC_SET";
+        } else {
+            roundie_rtc_sample_t first;
+            roundie_board_rtc_read(shared->board, &first);
+            if (first.state != ROUNDIE_SENSOR_VALID) {
+                result = "RTC_READ";
+                error = first.error;
+            } else {
+                int64_t first_seconds;
+                int64_t next_seconds;
+                roundie_rtc_unix_seconds(&first.time, &first_seconds);
+                /* Yield only the sensor worker. GUI and touch continue. */
+                vTaskDelay(pdMS_TO_TICKS(1200));
+                roundie_board_rtc_read(shared->board, &rtc);
+                if (rtc.state != ROUNDIE_SENSOR_VALID) {
+                    result = rtc.oscillator_stopped ? "RTC_INVALID" : "RTC_READ";
+                    error = rtc.error;
+                } else if (!roundie_rtc_unix_seconds(&rtc.time, &next_seconds) ||
+                           !roundie_rtc_progress_matches(first_seconds, next_seconds,
+                                                       rtc.observed_us - first.observed_us)) {
+                    result = "RTC_VERIFY";
+                    error = ESP_ERR_INVALID_RESPONSE;
+                } else {
+                    wall_valid = sync_wall_clock(&rtc);
+                    if (!wall_valid) {
+                        result = "CLOCK";
+                        error = ESP_FAIL;
+                    } else {
+                        shared->sync_failed = false;
+                    }
+                }
+            }
+        }
+    }
+    /* Fresh status, also on failure. Never substitute a cached valid sample. */
+    roundie_board_rtc_read(shared->board, &rtc);
+    if (rtc.state != ROUNDIE_SENSOR_VALID) {
+        wall_valid = false;
+        if (strcmp(result, "OK") == 0) {
+            result = rtc.state == ROUNDIE_SENSOR_INVALID ? "RTC_INVALID" : "RTC_READ";
+            error = rtc.error;
+        }
+    } else if (strcmp(result, "OK") == 0 && !wall_valid && !shared->sync_failed) {
+        wall_valid = sync_wall_clock(&rtc);
+        if (!wall_valid) {
+            result = "CLOCK";
+            error = ESP_FAIL;
+        }
+    }
+    if (command.set && strcmp(result, "OK") != 0) {
+        shared->sync_failed = true;
+        wall_valid = false;
+    }
+    portENTER_CRITICAL(&shared->lock);
+    shared->rtc = rtc;
+    shared->wall_valid = wall_valid;
+    portEXIT_CRITICAL(&shared->lock);
+    int64_t rtc_seconds = -1;
+    if (rtc.state == ROUNDIE_SENSOR_VALID) {
+        roundie_rtc_unix_seconds(&rtc.time, &rtc_seconds);
+    }
+    int os = (rtc.state == ROUNDIE_SENSOR_VALID || rtc.state == ROUNDIE_SENSOR_INVALID) ?
+             rtc.oscillator_stopped : -1;
+    char response[192];
+    int length = snprintf(response, sizeof(response),
+                          "\n!RT1 %s %s state=%d os=%d rtc=%" PRId64
+                          " wall=%" PRId64 " err=%d\n",
+                          command.id, result, (int)rtc.state, os, rtc_seconds,
+                          wall_valid ? (int64_t)time(NULL) : INT64_C(-1), (int)error);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        /* Enqueue one contiguous record under the driver's TX mutex. Logs use
+         * this same driver, so they cannot be inserted inside the response.
+         * Bulk TX also avoids one USB packet per byte in the pinned VFS. */
+        if (usb_serial_jtag_write_bytes(response, (size_t)length,
+                                         pdMS_TO_TICKS(100)) != length) {
+            ESP_LOGW(TAG, "Time response transport write failed");
+        }
+    }
+    if (command.restart && strcmp(result, "OK") == 0) {
+        /* Dedicated retention test, not a general command interpreter. */
+        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
+    }
+}
+
+static void poll_time_commands(int serial_fd, sensor_state_t *shared,
+                                roundie_time_frame_t *frame, int64_t *started_us)
+{
+    int64_t now = esp_timer_get_time();
+    if (frame->used > 0 && now - *started_us > 2000000) {
+        frame->discard = true; /* Never execute a suffix of an expired frame. */
+    }
+    char bytes[64];
+    ssize_t count = read(serial_fd, bytes, sizeof(bytes));
+    for (ssize_t i = 0; i < count; i++) {
+        if (frame->used == 0) {
+            *started_us = now;
+        }
+        if (roundie_time_feed(frame, bytes[i])) {
+            if (frame->used > 0 || frame->discard) {
+                time_command(shared, frame);
+            }
+            *frame = (roundie_time_frame_t){0};
+        }
+    }
+}
+#endif
+
 static void sensor_worker(void *argument)
 {
     sensor_state_t *shared = argument;
@@ -113,23 +253,51 @@ static void sensor_worker(void *argument)
     bool first_battery = true;
     uint16_t last_voltage = 0;
     uint16_t last_soc = 0;
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC
+    /* Secondary VFS RX in this IDF requires its standard interrupt driver.
+     * Two fixed 256-byte rings, no extra task or per-command allocations. */
+    usb_serial_jtag_driver_config_t usb_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    esp_err_t usb_error = usb_serial_jtag_driver_install(&usb_config);
+    int serial_fd = -1;
+    if (usb_error == ESP_OK) {
+        usb_serial_jtag_vfs_use_driver();
+        usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
+        serial_fd = open("/dev/secondary", O_RDWR | O_NONBLOCK);
+    } else {
+        ESP_LOGE(TAG, "Development RTC USB driver: %s", esp_err_to_name(usb_error));
+    }
+    roundie_time_frame_t frame = {0};
+    int64_t started_us = 0;
+    ESP_LOGI(TAG, "Development RTC protocol RT1 %s",
+             serial_fd >= 0 ? "enabled on USB Serial/JTAG" : "unavailable");
+#endif
+    int64_t next_sample_us = esp_timer_get_time() + 5000000;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(50));
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC
+        if (serial_fd >= 0) {
+            poll_time_commands(serial_fd, shared, &frame, &started_us);
+        }
+#endif
+        if (esp_timer_get_time() < next_sample_us) {
+            continue;
+        }
+        next_sample_us = esp_timer_get_time() + 5000000;
         roundie_rtc_sample_t rtc;
         roundie_battery_sample_t battery;
         roundie_board_rtc_read(shared->board, &rtc);
         roundie_board_battery_read(shared->board, &battery);
-        if (rtc.state == ROUNDIE_SENSOR_VALID && !shared->wall_valid) {
+        if (rtc.state == ROUNDIE_SENSOR_VALID && !shared->wall_valid &&
+            !shared->sync_failed) {
             bool synchronized = sync_wall_clock(&rtc);
             portENTER_CRITICAL(&shared->lock);
             shared->wall_valid = synchronized;
             portEXIT_CRITICAL(&shared->lock);
-        } else if (rtc.state == ROUNDIE_SENSOR_INVALID &&
-                   rtc.oscillator_stopped && shared->wall_valid) {
+        } else if (rtc.state != ROUNDIE_SENSOR_VALID && shared->wall_valid) {
             portENTER_CRITICAL(&shared->lock);
             shared->wall_valid = false;
             portEXIT_CRITICAL(&shared->lock);
-            ESP_LOGW(TAG, "System wall clock marked unsynchronized after RTC OS flag");
+            ESP_LOGW(TAG, "System wall clock marked unsynchronized after RTC failure");
         }
         if (rtc.state != last_rtc) {
             ESP_LOGI(TAG, "RTC %s, OS=%u, error=%s",
@@ -163,7 +331,6 @@ static void sensor_worker(void *argument)
         shared->rtc = rtc;
         shared->battery = battery;
         portEXIT_CRITICAL(&shared->lock);
-        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
@@ -182,12 +349,12 @@ static void update_sensor_labels(gui_state_t *state)
                           state->touch_available ? "OK" : "--",
                           bus_state_name(rtc.state), bus_state_name(battery.state));
 
-    if (wall_valid) {
+    if (rtc.state == ROUNDIE_SENSOR_VALID && wall_valid) {
         time_t now = time(NULL);
         struct tm utc;
         gmtime_r(&now, &utc);
         lv_label_set_text_fmt(state->rtc_label,
-                              "UTC %04d-%02d-%02d  %02d:%02d:%02d",
+                              "Synced UTC %04d-%02d-%02d %02d:%02d:%02d",
                               utc.tm_year + 1900, utc.tm_mon + 1,
                               utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec);
     } else if (rtc.state == ROUNDIE_SENSOR_INVALID && rtc.oscillator_stopped) {

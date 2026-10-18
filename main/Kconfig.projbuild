@@ -1,0 +1,11 @@
+menu "Roundie development diagnostics"
+
+config ROUNDIE_DEV_TIME_SYNC
+    bool "Enable development USB Serial/JTAG RTC commands"
+    default n
+    depends on ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+    help
+        Allows a physically connected host to read RTC status and explicitly
+        overwrite RTC UTC time. No authentication. Disable for production.
+
+endmenu

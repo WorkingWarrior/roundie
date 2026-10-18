@@ -476,9 +476,9 @@ void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample
         error = read_register(board->rtc, 0x04, raw, sizeof(raw));
         if (error == ESP_OK) {
             sample->observed_us = esp_timer_get_time();
-            if ((control & 0x22) != 0 ||
-                !roundie_rtc_decode(raw, &sample->time,
-                                    &sample->oscillator_stopped) ||
+            bool calendar_valid = roundie_rtc_decode(raw, &sample->time,
+                                                     &sample->oscillator_stopped);
+            if ((control & 0xa2) != 0 || !calendar_valid ||
                 sample->oscillator_stopped) {
                 sample->state = ROUNDIE_SENSOR_INVALID;
                 sample->error = ESP_ERR_INVALID_RESPONSE;
@@ -508,10 +508,12 @@ esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
     if (error != ESP_OK) {
         return error;
     }
-    if ((control & 0x22) != 0) {
+    if ((control & 0xa2) != 0) {
         return ESP_ERR_NOT_SUPPORTED;
     }
     raw[0] = 0x04;
+    /* NXP Rev. 7.3 §§7.3.1.1, 7.4: write seconds..years in one access.
+     * Encoded seconds writes OS=0. No control/alarm/offset bits are changed. */
     error = i2c_master_transmit(board->rtc, raw, sizeof(raw), I2C_TIMEOUT_MS);
     if (error != ESP_OK) {
         return error;
@@ -525,7 +527,7 @@ esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
     int64_t actual_seconds;
     if (!roundie_rtc_unix_seconds(time, &expected_seconds) ||
         !roundie_rtc_unix_seconds(&verified.time, &actual_seconds) ||
-        actual_seconds < expected_seconds || actual_seconds > expected_seconds + 1) {
+        !roundie_rtc_readback_matches(expected_seconds, actual_seconds)) {
         return ESP_ERR_INVALID_RESPONSE;
     }
     return ESP_OK;

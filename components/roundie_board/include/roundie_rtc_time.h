@@ -16,3 +16,8 @@ typedef struct {
 
 /* Rejects invalid calendar values and weekday/date disagreement. */
 bool roundie_rtc_unix_seconds(const roundie_rtc_time_t *time, int64_t *seconds);
+bool roundie_rtc_from_unix(int64_t seconds, roundie_rtc_time_t *time);
+
+/* Seconds-resolution comparisons; never accept backward or frozen time. */
+bool roundie_rtc_readback_matches(int64_t expected, int64_t actual);
+bool roundie_rtc_progress_matches(int64_t first, int64_t next, int64_t elapsed_us);
