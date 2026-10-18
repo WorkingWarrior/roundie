@@ -283,8 +283,10 @@ missing/invalid fallback, and host protocol/schema/identity failures. Existing
 RTC and storage tests are included. This does not emulate bootloader execution.
 Host C tests require a compiler and OpenSSL development headers/library.
 The common main changes also compile in an incremental legacy-profile build.
-The armed-reset branch passes a separate pinned-Xtensa syntax check; it has
-not been linked as an armed test image or run on the device.
+For the original normal A-to-B run the armed branch had only a pinned-Xtensa
+syntax check. The separate fully linked armed candidate and stronger focused
+tests are recorded in the rollback preparation section below; its physical
+execution still requires separate approval.
 
 ```sh
 . /home/solve/.espressif/v6.1/esp-idf/export.sh
@@ -465,4 +467,156 @@ the frozen candidate remain those of commit `03d66af`.
 automatic/explicit rollback, physical fault injection, power interruption,
 battery-dependent behavior, endurance, detailed callback/GUI timing and broader
 stack-budget validation remain PENDING. No armed image was built or deployed
-after this run, and no Safe Mode or subsequent milestone was started.
+as part of that normal sequence, and no Safe Mode or subsequent milestone was
+started. The later, separately scoped rollback preparation follows.
+
+## Controlled automatic rollback — preparation, 2026-10-18
+
+**Status: PHYSICAL ROLLBACK: PENDING.** The user requested preparation of one
+deliberately unconfirmed-image experiment. Previous approval covered only the
+normal A-to-B sequence, so no armed-image upload or activation is authorized
+yet. Do not run a second experiment or repair A automatically after this one.
+
+**Fresh read-only preflight, before building:** RO1 reported normal 0.2.1 in
+VALID B (`0x390000`), stable boot selection, passed core self-test and compatible
+VALID A as inactive/fallback. Both ELF identities matched the original normal
+image. A bounded ROM inspection matched the recorded USB serial to ROM MAC,
+ESP32-S3, 16 MiB and disabled security features, compared the exact installed
+2B rollback bootloader and REP table, and checked both OTA metadata CRCs:
+A sequence 1 / VALID, B sequence 2 / VALID (selected). The 668,528 physical B
+bytes matched the frozen normal image byte-for-byte and SHA-256
+`198b1053405e85f4da660a728f4df8dd41f025a8f1432ecc6ab047198509d925`;
+A's 288-byte descriptor prefix also matched. Total read: 734,352 bytes, not a
+whole-Flash backup. The original 16 MiB backup and documented manual ROM
+procedure remain available. A bounded normal return capture and fresh RO1/RT1
+queries reconfirmed VALID B/A, self-test and valid RTC OS=0. No unexplained
+mismatch was found and no physical Flash write was performed in preparation.
+
+**Pinned source semantics:** IDF commit
+`fff9895c82d744c7237be8847347bdd1b07c6643`,
+`components/bootloader_support/src/bootloader_utility.c` lines 393–400 changes
+PENDING_VERIFY to ABORTED on the next boot before normal slot selection;
+lines 443–447 changes the selected NEW image to PENDING_VERIFY. Inactive
+metadata can already change in `esp_ota_begin()`. The experiment uses these
+mechanisms without raw metadata management or bootloader changes.
+
+### Test-only control-flow correction and focused verification
+
+Source commit `1f03b79` corrects a safety ambiguity in the earlier test hook:
+its failed guard formerly fell through to `boot_result(false)`, whose ordinary
+policy may explicitly mark INVALID/reboot. That is not the intended automatic
+ABORTED experiment. The armed branch now has only two outcomes:
+
+- Core self-test evidence received/passed, running PENDING_VERIFY, compatible
+  VALID fallback and IDF rollback eligibility: log the passed conditions and
+  suppressed confirmation, bound USB TX drain to 100 ms, delay 100 ms and call
+  `esp_restart()` once without confirming or invalidating either image.
+- Otherwise, including failed/absent GUI evidence, early critical startup
+  failure, nonpending state or unavailable fallback: hold unconfirmed with a
+  recorded error and uploads blocked; no confirmation, explicit invalidation
+  or intentional restart. Even an unexpectedly returning reset call cannot
+  fall through to normal confirmation/rejection. Timeout evidence is decided
+  once, preventing a retry/log loop.
+
+The internal hold method does not access Flash or expose a USB command. Normal
+builds retain the ordinary confirmation/failure policy. The compile-time option
+cannot be armed over RO1. CMake now accepts standard explicit `SDKCONFIG` and
+`PROJECT_VER` overrides for a separate external build and rejects armed images
+without a version ending in `-rollback-test`; defaults remain normal 0.2.1.
+
+**Verified offline:** 12 focused OTA host tests PASS. They compile/run the actual
+orchestration in both normal and armed modes with ASan/UBSan and exercise 112
+combinations of image state, fallback eligibility and passed/failed/timed-out/
+early-failed self-test. System and manager calls are spies; actual-manager
+tests separately prove eligibility and hold semantics, preserved pending/
+fallback metadata, zero confirmation/rejection calls and blocked new sessions.
+Host framing/image/transfer tests remain included. These tests are not bootloader
+or physical rollback evidence. No unrelated endurance/full-suite repeat ran.
+
+### Frozen armed candidate
+
+Artifacts and evidence are outside Git in
+`/mnt/Dane/Development/roundie-backups/rollback-2c1-2026-10-18/`.
+`frozen-test/` holds the exact app, ELF, generated config/header, explicit SDK
+config and partition table; `candidate.json` records identities and scope.
+`initial-preflight.log`, `initial-result.json`, bounded raw readbacks,
+`initial-return-boot.log`, `focused-tests.log`, `build.log`, `layout.log` and
+`image-info.log` preserve the preparation evidence. Local identifiers/raw logs
+are not committed.
+
+| Frozen test artifact | Verified value |
+|---|---|
+| Source commit | `1f03b79a1985f55550e74adbdcb3823cf4dfae7c` |
+| Project / version / IDF | `roundie_rep` / `0.2.1-rollback-test` / pinned `v6.1` |
+| Image bytes | 668,384 |
+| Image SHA-256 | `126f41255befc470e215c18dec756056407c13a99b456afbde1bb17413ba5fbb` |
+| Full ELF identity | `d4fccb9270e536d06102288db389962c2308c391cd6ef2a275c9e4ca8943afef` (matches ELF file hash) |
+| Target / format | ESP32-S3, valid IDF descriptor, checksum and validation hash |
+| Config difference from normal frozen JSON | Only `ROUNDIE_OTA_TEST_UNCONFIRMED_RESET: false -> true` |
+| Other build identification | Explicit CMake `PROJECT_VER=0.2.1-rollback-test` |
+| Normal image/config | Preserved unchanged; armed option disabled; original SHA-256 verified |
+| Destination partition | Inactive A, `0x010000..0x390000` |
+| Actual A erase/write sector envelope | `0x010000..0x0b4000` |
+| Metadata envelope | `0x00d000..0x00f000`, potentially modified from BEGIN onwards |
+
+The separate external build, exact REP layout validator and esptool image
+checksum/hash validation passed. No security, partition, driver, storage or
+other production configuration changed. The test image identity is distinct
+from the normal firmware. Build command (already executed once; do not rebuild
+or substitute bytes under an approval for this frozen artifact):
+
+```sh
+idf.py -B /mnt/Dane/Development/roundie-backups/rollback-2c1-2026-10-18/build \
+  -DROUNDIE_PROFILE=rep \
+  -DSDKCONFIG=/mnt/Dane/Development/roundie-backups/rollback-2c1-2026-10-18/sdkconfig.rollback \
+  -DPROJECT_VER=0.2.1-rollback-test build
+```
+
+### Proposed single physical experiment — approval required
+
+1. Immediately before BEGIN, repeat critical read-only device, normal B hash,
+   bootloader/table, metadata and RO1/RTC preflight. An unexplained mismatch
+   stops preparation; do not assume the earlier state is still current.
+2. Start a bounded serial capture able to reconnect to the same verified USB
+   identity across both software resets; retain host receipt timestamps as
+   well as device boot timestamps. Upload **the frozen test binary** via
+   existing RO1/OTAManager into A. Verify READY/digest/ELF, and B still selected
+   and VALID before activation. Upload is already a Flash write, including
+   possible metadata changes in BEGIN.
+3. ACTIVATE A, verify NEW, and request one RO1 restart. A must log its distinct
+   test identity and PENDING_VERIFY, then passed core checks and the explicitly
+   armed unconfirmed reset. It must never log confirmation or VALID.
+4. Observe the second bootloader selecting/loading normal B automatically.
+   Require fresh RO1 status: B VALID/running/selected with its original full
+   ELF identity; A ABORTED with the armed ELF identity; core self-test passed.
+   IDF's installed INFO-level loader need not emit its DEBUG-only ABORTED line;
+   actual resulting metadata plus loader selection and the captured preceding
+   unconfirmed restart must establish the rollback.
+5. Check LittleFS mount/capacity, NVS initialization, RTC OS/progression without
+   SET, USB diagnostics and absence of unexpected panic/watchdog events.
+   Preserve timings at their actual precision; host receipt time bounds are
+   not exact Flash/GUI/reset execution times.
+6. Stop after one attempt. Unexpected states or missing evidence mean no PASS;
+   preserve all records and perform only read-only diagnostics. Do not
+   reactivate the test or automatically reflash. If normal recovery fails,
+   retain the [verified manual ROM route](rom-recovery.md); any Flash repair
+   requires a separate reviewed authorization. Bootloader, table, NVS,
+   LittleFS, PHY and coredump are outside the proposed writes.
+
+**Expected final state:** A ABORTED, B VALID/running. This intentionally removes
+A as an eligible fallback: `rollback_possible` is expected to become false.
+The armed binary may remain structurally valid in A but is not confirmed
+redundancy. Manual rollback remains separately unverified.
+
+### Redundancy restoration — separate later authorization
+
+Do not repair A as part of this experiment. To restore two confirmed copies,
+first obtain separate approval for the preserved normal 0.2.1 binary (SHA-256
+`198b1053405e85f4da660a728f4df8dd41f025a8f1432ecc6ab047198509d925`,
+668,528 bytes), destination A `0x010000..0x0b4000` plus metadata
+`0x00d000..0x00f000`. With known-good B running/VALID, upload that normal image
+through RO1, verify it, activate A and boot it. Require A to pass its ordinary
+self-test and become VALID, then independently query **both** A and B as VALID
+with normal identities. Merely uploading a structurally valid A image does
+not restore a confirmed fallback. This procedure ends with A running and B as
+fallback; no return-to-B operation or extra update is implied or authorized.

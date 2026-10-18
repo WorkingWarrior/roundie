@@ -18,6 +18,18 @@ normal A/B success does not verify it. Full evidence and measurement limits are
 in [the physical execution record](ota.md#authorized-physical-a-to-b-execution--2026-10-18).
 This does not close older visual/touch, battery, power or endurance questions.
 
+**Controlled rollback preparation:** a fresh read-only preflight reconfirmed
+normal VALID B, compatible VALID A, exact installed bootloader/table/metadata
+and normal B bytes. Source commit `1f03b79` makes armed-test refusals hold
+unconfirmed without entering ordinary explicit rollback. Twelve focused host
+tests (including 112 normal/armed boot-gate combinations) and a separate
+`0.2.1-rollback-test` target build passed. The image is frozen outside Git;
+its complete identity, write scope, single-experiment approval checkpoint and
+separately authorized redundancy-restoration plan are in
+[the preparation record](ota.md#controlled-automatic-rollback--preparation-2026-10-18).
+**PHYSICAL ROLLBACK: PENDING** separate explicit authorization. No armed image
+has been uploaded or selected, and no Safe Mode work was started.
+
 **Current deployment (Milestone 2C.1, 2026-10-18):** the connected device
 uses REP v1 with OTA A at `0x10000`, OTA B at `0x390000`, and provisioned
 LittleFS at `0x710000`; active B and fallback A both contain validated 0.2.1.
