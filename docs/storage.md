@@ -1,4 +1,4 @@
-# Milestone 2A: partition and storage foundation
+# Milestones 2A–2B: storage foundation and physical provisioning
 
 ## Status and decisions
 
@@ -14,9 +14,13 @@ CSV and generated binary. LittleFS 1.22.2 resolves with IDF v6.1 and compiles
 on Xtensa. Host tests exercise the actual manager against a mock VFS/partition
 backend and pthread mutexes. These are not hardware filesystem tests.
 
-**Device evidence for this milestone:** none. No serial access, Flash
-write/erase/readback, migration, provisioning, endurance test, or physical
-interaction was performed. Milestone 1's existing open checks stay open.
+**Historical Milestone 2A evidence:** offline only. **Milestone 2B device
+evidence:** REP is installed; LittleFS mount, capacity query, 256-byte file
+write/sync/remount/read/integrity/delete/remount passed. NVS and PHY were
+preserved during migration. See the execution record in
+[flash-migration.md](flash-migration.md). Existing Milestone 1 open checks,
+fault injection, power interruption, concurrency budgets and OTA rollback
+remain outside this result.
 
 ## Build profiles
 
@@ -180,6 +184,58 @@ Storage tests use ASan/UBSan and real pthread synchronization around a mock
 VFS; artifact tests inject profile, metadata, bounds, subtype, flags,
 manifest, configuration, image-identity, size, and backup errors.
 
-Actual results and migration blockers are recorded in
-[flash-migration.md](flash-migration.md). Hardware mount, corruption/I/O
-faults, power interruption, physical migration and rollback remain PENDING.
+Actual results are recorded in [flash-migration.md](flash-migration.md).
+Milestone 2B closes physical migration, provisioning, mount and the bounded
+filesystem/remount test. Hardware corruption/I/O fault injection, power
+interruption, concurrency and OTA rollback remain PENDING.
+
+## Milestone 2B provisioning and one-shot diagnostic
+
+The component's host dependency is pinned to `littlefs-python==0.15.0`.
+Provisioning creates a new host buffer explicitly; it never opens a serial
+port or reformats an existing image. To reproduce the installed initial
+filesystem, after exporting the pinned IDF environment and building REP:
+
+```sh
+python -m venv build-rep/littlefs_py_venv
+build-rep/littlefs_py_venv/bin/pip install \
+  -r managed_components/joltwallet__littlefs/image-building-requirements.txt
+build-rep/littlefs_py_venv/bin/python tools/provision_littlefs.py \
+  --diagnostic --output build-rep/storage-initial.bin
+```
+
+Output creation is exclusive: choose a new output path if it already exists.
+Without `--diagnostic`, the image is empty and contains no test request.
+Neither output is an ordinary deployment payload; programming storage would
+replace its contents and requires explicit provisioning authorization.
+The guarded application updater never writes it.
+
+The generator takes geometry from the validated partition/configuration:
+2,256 × 4,096-byte blocks, read/program 128, cache 512, lookahead 128,
+block cycles 512, name maximum 64, on-disk 2.1. Target page size is 256.
+Two host generations were byte-identical; independent host mount/read and
+actual target mount passed. Physical capacity was 9,240,576 total, 8,192
+used and 9,232,384 free bytes, both initially and after cleanup.
+
+The only provisioned file was `.roundie-m2b-request` with an exact versioned
+token. Boot diagnostics run before GUI ownership and before other storage
+users exist. They claim the request by renaming it to `.roundie-m2b-running`,
+create `.roundie-m2b-data` with exclusive creation, write/fsync/close 256
+known binary bytes, remount, compare exact content/length, delete data and
+claimed request, remount again and confirm absence. Every descriptor is
+closed before unmount. Errors preserve evidence and do not trigger format,
+retries or NVS erasure. Routine startup only checks for the request; a
+successful test is not repeated. This is a boot diagnostic, not a generic
+command framework or storage benchmark.
+
+Actual first boot logged filesystem PASS; an explicit software restart
+remounted with unchanged usage and no second test. A 185-second smoke run
+had no panic, watchdog failure or unexpected reboot. NVS initialization
+returned `ESP_OK` without an erase fallback. RTC remained valid/OS=0 and
+restored system UTC on restart; the separate 3-second host UTC check failed
+at approximately -3.6 seconds and was not hidden by resynchronization.
+
+The entire hardware gate for Milestone 2 is not closed: OTA manager,
+application confirmation/rollback, power interruption and Safe Mode are
+outside Milestone 2B. See [development flashing](flash-migration.md#rep-development-updates)
+for the initial-OTA-A-only procedure and ROM recovery limits.

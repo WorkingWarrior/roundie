@@ -1,8 +1,225 @@
-# Manufacturer layout to REP v1 — migration proposal
+# Manufacturer layout to REP v1 — migration and provisioning
+
+**Current status (Milestone 2B, 2026-10-18):** the authorized physical migration
+has been programmed and verified. REP boots from OTA A; LittleFS mounts and
+the bounded filesystem test passes. The execution record below supersedes
+the historical Milestone 2A proposal and its no-device-access statements.
+
+## Milestone 2B physical execution — 2026-10-18
+
+**Authorization:** the goal explicitly authorized replacing the Waveshare
+layout, affected data loss, matched bootloader/table/application/OTA writes,
+LittleFS provisioning, verification and short device tests. No eFuse,
+security enablement or battery/gauge configuration operation was performed.
+The layout in **Selected REP v1 layout** below was installed unchanged.
+
+**Verified preflight:** the original backup at
+`/mnt/Dane/Development/roundie-backups/preflash-2026-10-17-pMVcHN/flash-16MiB.bin`
+was rehashed: 16,777,216 bytes, SHA-256
+`46d2d36244a9e303cc61a65fb29d9a71b9708d41d181e9e5b5befb9261039de7`.
+esptool 5.6.0 recognized its ESP32-S3 bootloader (original IDF v5.5.3), valid
+checksum and validation hash. Its table matches all six documented
+Waveshare entries. The backup was not modified.
+
+The live ESP32-S3 rev. 0.2 was matched to the previously recorded ROM MAC
+and USB serial identity through the expected `303a:1001` Serial/JTAG
+interface. Direct ROM identification, JEDEC identification (16 MiB), and
+security status passed. Secure Boot and Flash Encryption were disabled.
+A bounded `0..0x20000` read matched the exact original partition-table
+sector, erased OTA data and previously verified installed v6.1 bring-up
+bootloader. No full-Flash readback or broad hardware audit was repeated.
+The frozen prefix was checked again on the same programming connection
+before any Flash write. Local device identities are kept in untracked
+evidence, not added to this record.
+
+**Build/toolchain facts:** pinned ESP-IDF v6.1 commit
+`fff9895c82d744c7237be8847347bdd1b07c6643`, Xtensa
+`esp-15.2.0_20251204`, esptool 5.6.0, joltwallet/littlefs 1.22.2 with the
+existing capacity-error patch. REP target build and artifact validator
+passed. The 644,256-byte `roundie_rep` 0.1.0 image fits either 3,670,016-byte
+slot. Firmware source is commit `220caa3`; subsequent tool/documentation
+changes do not alter the installed binary.
+
+| Artifact | SHA-256 |
+|---|---|
+| Bootloader, 21,200 bytes | `f7c33fe831a564d16b8b00406c20ac2e79b8b7146f75e862263764656f349188` |
+| Generated table, 3,072 bytes | `a273fbb4600b658c91775e2c7e85bcf4f49339afbd57f848820515912f1563b1` |
+| Initial OTA data, 8,192 erased bytes | `7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f` |
+| Application `.bin` | `8ed7ecd43afaf2ac31c70c29522c232d3ee68c7035fcbe2428617e1dea32d155` |
+| Application ELF / embedded ELF hash | `f929fe67dda2fcc3aab482d9fe0e0c6ed3f5d01e3202f39645ac4f412f95a5cb` |
+| Provisioned LittleFS, 9,240,576 bytes | `697b97b62c23ddfb8fbec589ef151776acdc7865e182daf8a88026503d34994f` |
+
+**Provisioning decision:** use the component's pinned host tool
+`littlefs-python==0.15.0` in a dedicated build-directory venv. The
+[image generator](../tools/provision_littlefs.py) derives partition size
+and parameters from the validated REP build. Explicit host formatting uses
+4,096-byte blocks × 2,256, read/program granularity 128, cache 512,
+lookahead 128, block cycles 512, name maximum 64; target page size is 256.
+An independent no-format-fallback host mount verified on-disk version 2.1
+and the sole diagnostic request file. A second generation using identical
+inputs produced a byte-identical image. Normal target startup still has no
+format or erase fallback.
+
+**Programming and erasure:** a local, goal-specific installer froze all
+artifact bytes and derived offsets from the validated table/configuration.
+It programmed these sector-aligned envelopes in one ROM/stub connection,
+without an intervening reset:
+
+| Range (half-open) | Programmed contents |
+|---|---|
+| `0x000000..0x008000` | REP bootloader, reservation padded with `0xff` |
+| `0x008000..0x009000` | REP table, sector padded with `0xff` |
+| `0x00d000..0x00f000` | Two erased OTA metadata sectors |
+| `0x010000..0x390000` | REP application in OTA A, entire slot tail erased |
+| `0x390000..0x710000` | Entire OTA B erased |
+| `0x710000..0xfe0000` | Valid provisioned LittleFS image |
+| `0xfe0000..0x1000000` | Coredump reservation erased |
+
+The unchanged NVS `0x9000..0xd000` and PHY `0xf000..0x10000` regions were
+preserved and compared byte-for-byte before normal boot. Old application,
+assets and unknown tail data in the listed envelopes were intentionally
+overwritten. Clearing both app slots prevents legacy executable remnants
+being selected; clearing coredump prevents stale tail data looking like a
+new dump. This establishes deterministic contents without a whole-chip
+erase. Every envelope passed write-time digest verification and a separate
+esptool verification; a bounded prefix read confirmed the exact REP table
+and preservation checks. All commands exited 0. No verification failure
+or offset adjustment occurred.
+
+**Initial selection:** source inspection of the pinned bootloader verified
+that erased OTA metadata with no factory app selects OTA 0 and writes
+sequence 1 with `ESP_OTA_IMG_VALID` after app validation. The actual startup
+log reports `active=ota_0`, subtype `0x10`, offset `0x10000`, size `0x380000`
+and exact `rep-v1`. OTA B has no previous firmware. This initial USB install
+does not test application self-confirmation or A/B rollback.
+
+**Reset/boot evidence:** automatic esptool entry into ROM succeeded without
+buttons. A subsequent RTS reset remained in ROM: no application output,
+no RT1 response, OTA metadata still erased. No reflash was attempted.
+The operator disconnected USB and reconnected without BOOT, leaving the
+battery connected; normal startup then succeeded. USB capture began at
+about 752 ms, in application/PSRAM startup. Early bootloader console lines
+were not captured on the secondary USB console. Bootloader integrity is
+direct Flash verification; its successful handoff is established by the
+matching running application and exact runtime partition diagnostics. The
+subsequent software-restart capture includes the complete early console:
+`ESP-IDF v6.1 2nd stage bootloader`, all seven exact REP table entries,
+image segment validation/loading and `Loaded app from partition at offset
+0x10000`. Thus early bootloader startup was also directly observed, on the
+second normal boot.
+
+**Actual device results:** NVS initialized `ESP_OK` with no erase fallback.
+LittleFS mounted `ESP_OK`: total 9,240,576, used 8,192, free 9,232,384 bytes.
+The request-gated 256-byte test passed create/write/fsync/close, unmount,
+remount, exact-length read/content comparison, deletion and another remount
+confirming deletion. Final capacity remained total 9,240,576 / used 8,192.
+The request is claimed before writing, so failures/interruption leave
+evidence and do not automatically retry. Successful completion removes all
+three dedicated diagnostic files. No production package or ELF was created.
+
+RTC startup was valid, OS=0, `ESP_OK`; RT1 GET returned equal RTC/system UTC
+without an RTC SET. BQ27220 was accessible, battery present, approximately
+3,973 mV, reported SoC 84% (accuracy remains unverified). LCD ID selected
+ST77916 variant 2 and initialization succeeded at 3 MHz QSPI. The initial
+CST816S address probe returned `ESP_ERR_NOT_FOUND`, followed by successful
+driver initialization/IC ID 181, matching the existing diagnostic behavior;
+no touch interaction is claimed.
+
+**Bounded runtime validation:** a 185-second serial capture contained one
+application startup, a successful live RT1 GET, and no panic, watchdog
+failure, LCD transfer failure or unexpected reboot. A separate explicit
+RT1 software restart then passed in a roughly 12-second focused check:
+bootloader/OTA A startup, NVS initialization, LittleFS remount with unchanged
+8,192-byte usage, RTC OS=0, battery and LCD initialization. No second
+`M2B filesystem` test ran. RTC advanced 12 seconds over 12.09 seconds; system
+UTC was restored from RTC without writing RTC hardware.
+
+**Separate failed time-reference check:** the existing RTC verification
+helper rejected host UTC agreement at -3.63 seconds (its unchanged limit is
+3 seconds), before requesting a restart. This was preserved in
+`restart-host-reference-failure.log`. The dedicated retention test checks
+RTC validity/OS, RTC-to-system agreement and progression across restart;
+it does not claim host synchronization passed. Independent later status
+was approximately -3.77 seconds relative to the host. No tolerance was
+changed and no RTC resynchronization was performed. Without a pre-migration
+host-offset measurement, the source of this offset is unestablished.
+
+**Offline validation:** 32 Python tests passed, including actual
+StorageManager/mock-backend and pinned capacity-helper ASan/UBSan tests,
+partition/artifact fault injection, legacy rejection and REP state guards.
+The CMake-generated dependencies were inspected to confirm all five raw
+flashing targets depend on the fail target. The new REP updater's full
+physical app-write path was not exercised: migration used the frozen
+goal-specific image set, and no redundant application flash was performed.
+
+**Remaining limits:** visual LCD/touch interaction is pending, while LCD
+initialization and short GUI watchdog operation are verified by logs.
+Host UTC agreement failed as recorded above. Battery calibration/SoC
+accuracy, long runs, power interruption, corruption/fault injection on
+Flash, cache/PSRAM concurrency, OTA self-test/confirmation/rollback and
+Safe Mode remain unverified or future work. No 30-minute test, networking,
+package/runtime work or Milestone 2C implementation was started.
+
+**Evidence archive (outside Git):**
+`/mnt/Dane/Development/roundie-backups/rep-migration-2026-10-18/` contains
+the frozen images and their exact padded-envelope hashes in
+`image-manifest.json`, `migrate.py`, build/validator/provisioning/test logs,
+pre/post-programming prefix reads and serial captures. These generated
+files and device identifiers are not committed.
+
+## REP development updates
+
+Only use this procedure when the current task separately authorizes a
+hardware write. It updates the **currently selected initial OTA A image in
+place**, with no power-loss safety or previous-image fallback. It does not
+implement an OTA updater or switch to OTA B.
+
+```sh
+cd /mnt/Dane/Development/roundie
+. /home/solve/.espressif/v6.1/esp-idf/export.sh
+idf.py -B build-rep -DROUNDIE_PROFILE=rep build
+python tools/flash_rep.py --port /dev/ttyACM0
+# Once the current task authorizes the application-only write:
+python tools/flash_rep.py --port /dev/ttyACM0 --write
+```
+
+Preflight connects through ROM and may reset the running application even
+without `--write`. It requires the REP build/config/image identity, exact
+live REP table, matching bootloader, matching USB serial/ROM MAC, ESP32-S3,
+16 MiB Flash, disabled security features and initial sequence-1 VALID OTA A
+metadata. Any later, pending, alternative or unknown OTA state fails closed
+and requires a reviewed procedure. Frozen app bytes are revalidated, the
+destination derives from the verified table, and written app data is hash
+verified. Table/OTA state are read again after a write. It never writes the
+bootloader, table, NVS, filesystem or OTA metadata.
+
+If the final RTS reset remains in ROM on this unit, disconnect and reconnect
+USB **without BOOT**, leaving the battery connected, as in the tested normal
+return above. Do not repeat a verified write to solve a reset issue.
+If USB removal leaves the board powered, stop and reassess the latch state.
+
+The legacy updater checks exact equality against the original Waveshare
+table before writing anything, so a REP device is rejected even when given
+a valid legacy app. Offline tests exercise this rejection and changed REP
+table, bootloader, OTA sequence/state/CRC/second-record failures. CMake also
+blocks raw `flash`, `app-flash`, `bootloader-flash`, `partition-table-flash`
+and `otadata-flash` targets for both profiles. Reconfigure historical build
+trees to install the block; never bypass the guard with printed esptool
+commands. This cannot prevent an explicitly invoked low-level programmer.
+
+For an unbootable firmware use the already physically verified
+[ROM Download recovery procedure](rom-recovery.md): disconnect USB, hold
+BOOT while reconnecting, wait about two seconds and release BOOT, then
+rediscover/identify the port. If disconnecting USB does not stop the board,
+follow the documented latch/PWR checks instead of assuming a reset.
+ROM recovery does not depend on LittleFS or a working application.
+Restoring the original 16 MiB backup would destroy current REP data and
+requires separate authorization; ordinary development updates never restore
+it. Safe Mode and tested OTA rollback remain future milestone work.
 
 ## Authorization and evidence boundary
 
-**Not executed.** Milestone 2A authorizes implementation and offline tests
+**Historical Milestone 2A scope, before migration.** Milestone 2A authorized implementation and offline tests
 only. No physical Flash, partition table, bootloader, OTA metadata, NVS,
 application, filesystem, backup, or eFuse was modified. No serial connection
 or full-Flash readback was made. Each future migration requires separate
@@ -25,7 +242,7 @@ confirmation are future work. A hardware recovery route was physically
 validated separately in [rom-recovery.md](rom-recovery.md); that fact does
 not validate this proposed migration.
 
-## Current manufacturer partition table
+## Original manufacturer partition table
 
 Ranges in this document are half-open: offset through end, excluding end.
 All addresses are derived from the backup/table, not guessed.
@@ -100,7 +317,7 @@ because offsets match. This foundation firmware does not initialize NVS.
 The original backup cannot recover later user changes or newly set RTC
 time; RTC is a separate battery-backed device.
 
-## Fresh REP installation — future, separately authorized
+## Historical fresh REP installation proposal (Milestone 2A)
 
 **Precondition:** the user explicitly accepts replacing the layout and all
 Flash contents, including NVS, assets, alternate apps, and any unknown tail

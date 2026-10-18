@@ -1,5 +1,35 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Current deployment (Milestone 2B, 2026-10-18):** the connected device now
+uses REP v1 with OTA A at `0x10000`, OTA B at `0x390000`, and provisioned
+LittleFS at `0x710000`. The manufacturer-layout installation commands below
+are historical. Use the guarded REP updater described in
+[flash-migration.md](flash-migration.md#rep-development-updates); the legacy
+updater rejects this device. Raw IDF flash targets are disabled after CMake
+regeneration. Historical generated build trees must be reconfigured before
+relying on that block; direct esptool commands always bypass it.
+
+**Milestone 2B device validation:** complete early v6.1 bootloader/table
+logs were captured on software restart; REP boots OTA A with ELF identity
+`f929fe67d`. NVS returned `ESP_OK`, LittleFS mounted 9,240,576 total /
+8,192 used bytes, and the one-shot 256-byte filesystem/remount test passed.
+RTC remained valid with OS=0; BQ27220 was accessible (about 3,973 mV,
+reported 84%, calibration unverified); ST77916 variant 2 initialized.
+One 185-second serial smoke capture had no panic, watchdog failure or
+unexpected reboot. A short software restart remounted storage without
+repeating the diagnostic and retained RTC progression. The existing host
+UTC comparison failed by approximately 3.6–3.8 seconds against its unchanged
+3-second threshold; no RTC SET was issued. Full image identities and
+separate evidence tiers are in the migration record. Latest-image visual
+and touch interaction remain pending.
+
+**Observed reset limitation:** esptool RTS reset after migration remained
+in ROM. The operator's USB disconnect/reconnect without BOOT returned to
+normal operation; no second flash was needed. For deliberately entering
+ROM with an unbootable image, use the tested BOOT/reconnect procedure in
+[rom-recovery.md](rom-recovery.md), preserving the battery connection and
+checking whether USB removal actually stopped the board.
+
 **Board target:** User-identified Waveshare ESP32-S3 Touch-LCD-1.85B; the
 printed PCB revision was not visible. The documented Rev1.1 pinout was the
 working premise, and actual LCD/touch behavior is recorded below.
