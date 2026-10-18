@@ -8,10 +8,12 @@ enablement or partition migration is part of this milestone.
 **Evidence boundary:** offline tests and target builds are separate from device
 tests. The read-only baseline, explicitly authorized A bootstrap, genuine
 streamed A-to-B OTA, activation and B's first-boot confirmation **PASSED**.
-The device now runs 0.2.1 in VALID B, with compatible VALID A available for
-rollback. Mount/capacity, NVS initialization and RTC progression checks passed.
-The deliberate automatic-rollback experiment is **PENDING separate
-authorization**. Visual/touch inspection, GUI latency during Flash writes,
+The separately authorized automatic-rollback experiment also **PASSED**:
+the device now runs normal 0.2.1 in VALID B and the armed A is ABORTED.
+**Only B is currently eligible; restoring two confirmed copies requires
+separate authorization.** Mount/capacity, NVS initialization and RTC progression
+checks passed after recovery. Manual rollback remains unverified.
+Visual/touch inspection, GUI latency during Flash writes,
 byte-for-byte user-data comparison, power cuts and endurance remain unverified.
 
 ## Verified pre-test installed baseline — 2026-10-18
@@ -285,8 +287,8 @@ Host C tests require a compiler and OpenSSL development headers/library.
 The common main changes also compile in an incremental legacy-profile build.
 For the original normal A-to-B run the armed branch had only a pinned-Xtensa
 syntax check. The separate fully linked armed candidate and stronger focused
-tests are recorded in the rollback preparation section below; its physical
-execution still requires separate approval.
+tests are recorded in the rollback preparation section below; its later
+explicit approval and physical execution are also recorded below.
 
 ```sh
 . /home/solve/.espressif/v6.1/esp-idf/export.sh
@@ -297,8 +299,8 @@ python tools/validate_storage_layout.py --build build-rep
 
 **Physical baseline and normal A-to-B sequence PASSED**, as recorded below.
 The following reviewed sequence was necessary because the original installed
-0.1.0 had no RO1 protocol. The deliberate rollback experiment in step 6 is
-still PENDING and was not included in the user's approval:
+0.1.0 had no RO1 protocol. The deliberate rollback experiment in step 6 was
+outside that approval; its later separate authorization/execution follow below:
 
 1. Freeze the normal 0.2.1 app, its SHA-256/full ELF identity and exact sector
    envelope. Preserve the installed original bootloader and old app evidence.
@@ -463,19 +465,20 @@ the READY/activation/restart/final status and RTC JSON, and
 creation; no physical write was repeated after success. Firmware sources and
 the frozen candidate remain those of commit `03d66af`.
 
-**Stop boundary:** the approved normal sequence is complete. Deliberate
+**Historical stop boundary after the normal sequence:** deliberate
 automatic/explicit rollback, physical fault injection, power interruption,
 battery-dependent behavior, endurance, detailed callback/GUI timing and broader
-stack-budget validation remain PENDING. No armed image was built or deployed
+stack-budget validation were PENDING at that checkpoint. No armed image was built or deployed
 as part of that normal sequence, and no Safe Mode or subsequent milestone was
 started. The later, separately scoped rollback preparation follows.
 
 ## Controlled automatic rollback — preparation, 2026-10-18
 
-**Status: PHYSICAL ROLLBACK: PENDING.** The user requested preparation of one
-deliberately unconfirmed-image experiment. Previous approval covered only the
-normal A-to-B sequence, so no armed-image upload or activation is authorized
-yet. Do not run a second experiment or repair A automatically after this one.
+**Status: PHYSICAL AUTOMATIC ROLLBACK: PASSED.** Preparation initially stopped
+at the separate authorization boundary. The user subsequently approved exactly
+one frozen-image experiment, which passed as recorded below. Previous normal
+A-to-B approval was not reused. Do not run a second experiment or repair A
+automatically; redundancy restoration remains separately scoped.
 
 **Fresh read-only preflight, before building:** RO1 reported normal 0.2.1 in
 VALID B (`0x390000`), stable boot selection, passed core self-test and compatible
@@ -574,6 +577,9 @@ idf.py -B /mnt/Dane/Development/roundie-backups/rollback-2c1-2026-10-18/build \
 
 ### Proposed single physical experiment — approval required
 
+This was the reviewed plan at the authorization checkpoint. It was subsequently
+approved and executed once; it is not permission to replay the experiment.
+
 1. Immediately before BEGIN, repeat critical read-only device, normal B hash,
    bootloader/table, metadata and RO1/RTC preflight. An unexplained mismatch
    stops preparation; do not assume the earlier state is still current.
@@ -620,3 +626,121 @@ self-test and become VALID, then independently query **both** A and B as VALID
 with normal identities. Merely uploading a structurally valid A image does
 not restore a confirmed fallback. This procedure ends with A running and B as
 fallback; no return-to-B operation or extra update is implied or authorized.
+
+## Physical automatic rollback — authorized execution, 2026-10-18
+
+**Result: PASSED — automatic rollback, not manual rollback.** The user answered
+“Zatwierdzam jeden test rollbacku” to the exact frozen-artifact/range/behavior
+request before execution. Approval covered one upload to A, activation and
+host restart, the guarded unconfirmed restart and observation of B recovery.
+It excluded repeated experiments, A repair, unrelated Flash regions and
+bootloader replacement. The approved image was not rebuilt or substituted:
+SHA-256 `126f41255befc470e215c18dec756056407c13a99b456afbde1bb17413ba5fbb`,
+668,384 bytes, ELF
+`d4fccb9270e536d06102288db389962c2308c391cd6ef2a275c9e4ca8943afef`.
+
+`execute_once.py` rechecked that artifact and its single-attempt guard, then
+repeated the critical read-only preflight immediately before writing. Both
+metadata CRCs/states, selected VALID B, normal B bytes/hash, A descriptor,
+device identity, installed rollback bootloader, exact table and backup
+availability still matched. It returned to normal B and reconfirmed RO1/RTC
+before uploading. No mismatch or recovery interaction was required. No
+whole-Flash dump or bootloader write was performed.
+
+### Actual transaction and two boot attempts
+
+The real RO1/OTAManager path streamed the test into inactive A. READY reported
+all 668,384 bytes, the approved digest and test ELF, with B still VALID and
+selected. ACTIVATE reported A NEW and selected; one RO1 RESTART was acknowledged.
+The continuous serial capture recorded:
+
+```text
+I (259) boot: Loaded app from partition at offset 0x10000
+I (1146) ota: slot=ota_0 version=0.2.1-rollback-test state=PENDING_VERIFY other=ota_1/VALID image=1 rollback=1 self_test=0/0 result=ESP_OK
+I (2986) ota: ARMED core self-test PASS: PENDING_VERIFY with compatible VALID fallback; confirmation suppressed
+W (2986) ota: ARMED DEVELOPMENT TEST: reset before confirmation; expect ABORTED + fallback
+rst:0xc (RTC_SW_CPU_RST),boot:0xa (SPI_FAST_FLASH_BOOT)
+I (263) boot: Loaded app from partition at offset 0x390000
+I (1060) ota: slot=ota_1 version=0.2.1 state=VALID other=ota_0/ABORTED image=1 rollback=0 self_test=0/0 result=ESP_OK
+I (3070) ota: Core self-test result: ESP_OK
+I (3070) ota: slot=ota_1 version=0.2.1 state=VALID other=ota_0/ABORTED image=1 rollback=0 self_test=1/1 result=ESP_OK
+```
+
+Boot timestamps restart at each boot; the first host-requested reset also
+reported `RTC_SW_CPU_RST`. There was one test A load, one guarded reset intent,
+and one automatic normal B load in the experiment capture. A never reported
+VALID or the refused/returned reset path. No host reactivation, explicit INVALID
+rollback request, second experiment or A repair occurred.
+
+The installed bootloader's INFO log does not emit its DEBUG-only “marking as
+ABORTED” message. The pinned source transition, captured unconfirmed A reset,
+automatic B loader selection and fresh actual A=ABORTED metadata together
+establish that behavior; a DEBUG message is not claimed as observed.
+
+The independent final RO1 query/normal-image verification passed:
+
+| Final property | Observed value |
+|---|---|
+| Running / selected partition | `ota_1` / `ota_1`, address `0x390000` |
+| B metadata | `VALID` |
+| B full ELF | `1e55c7a475ee573d9f38139f14e5498a631df2eabfd959e00ef8cdcdcfc92a02` (original normal image) |
+| A metadata | `ABORTED` |
+| A full ELF | `d4fccb9270e536d06102288db389962c2308c391cd6ef2a275c9e4ca8943afef` (approved armed image) |
+| A structural image validity | Valid image bytes, but **ineligible** ABORTED state |
+| Core / manager state | `checked=1`, `passed=1`, `last_error=0`, `phase=IDLE` |
+| Eligible rollback destination | None: `rollback=0` |
+
+### Recovery services and measurements
+
+In normal B's boot portion, NVS initialized ESP_OK with no erase fallback.
+LittleFS mounted/capacity-queried ESP_OK at the unchanged 9,240,576 total /
+8,192 used bytes; the M2B filesystem write test did not rerun. RTC remained
+valid, OS=0, within one second of system time, and advanced 76 seconds over
+75.388 s monotonic test time, passing the unchanged two-second progression
+criterion. There was no RTC SET, formatting or storage erase. These are service
+continuity/capacity checks, not bytewise comparison of all NVS/user files or
+a host-UTC synchronization result.
+
+Normal B core self-test and USB RO1/RT1 availability passed. The complete
+transfer/two-boot capture contains no unexpected panic, task-watchdog trigger,
+stack-canary failure, brownout or LCD transfer error. This is one controlled
+experiment, not a GUI/endurance/fault-injection reliability campaign.
+
+| Metric | Actual evidence / precision |
+|---|---|
+| Test upload through END | 68.475 s host monotonic |
+| Activation | Success; A selected NEW, B still VALID |
+| First A loader line received | 0.401 s after the host RESTART request |
+| First A PENDING_VERIFY app log received | 1.304 s after that request |
+| Observed pending app log to reset-intent log | 1.840 s (device boot timestamps 1146 to 2986 ms) |
+| Reset-intent to next ROM reset-cause receipt | Approximately 0.100 s, host receipt interval |
+| Reset-intent to B loader line receipt | 0.384 s, host receipt interval |
+| B diagnostics independently received | By 6.605 s after host RESTART request |
+| Final normal B self-test log | Device timestamp 3070 ms in B's second boot |
+
+PENDING_VERIFY began in bootloader selection before A's application log, so
+**1.840 s is an observed lower bound, not the full time spent in that state**.
+The reset-intent log precedes bounded TX drain and a 100 ms delay; it is not
+an instrumented timestamp of the reset instruction. Host receipt intervals
+include USB buffering and 100 ms serial polling. The final RO1 query followed
+a deliberate 300 ms settling interval after B's passed self-test log; 6.605 s
+is an observed availability bound, not its exact first available instant.
+
+### Evidence, stop state and remaining work
+
+Generated evidence remains outside Git at
+`/mnt/Dane/Development/roundie-backups/rollback-2c1-2026-10-18/`:
+`authorization.md`, `execute_once.py`, `execution-start.json`,
+`approved-result.json`, approved bounded readbacks/return log,
+`execution-result.log`, `rollback-serial.log`, `capture-events.json`,
+`before-write.json`, `ready.json`, `activation.json`, `restart-ack.json`,
+`final-status.json`, `final-rtc.json`, `metrics.json` and `acceptance.json`.
+Raw logs retain device identifiers locally. Acceptance was checked against
+the actual serial messages and status/identity fields, not just the PASS file.
+
+**Current state: A ABORTED, B VALID/running; only B is an eligible normal image.**
+Two-copy redundancy has **not** been restored. The normal-image procedure above
+requires separate explicit approval and must select, boot and confirm A before
+claiming both slots VALID. No such update was performed. Manual rollback,
+Safe Mode, Milestone 2C.2, power cuts, visual/touch testing and endurance remain
+outside this result. No further hardware operation is needed for this goal.

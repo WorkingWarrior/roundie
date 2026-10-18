@@ -2,9 +2,11 @@
 
 **Current status (Milestone 2C.1, 2026-10-18):** the separately approved
 app-only A bootstrap and genuine USB OTA into B passed. The device now runs
-0.2.1 in VALID B, with VALID A available for rollback; the installed 2B
-bootloader and partition table were preserved. See [OTA execution evidence
-and remaining rollback gate](ota.md). The initial-A bootstrap updater now
+normal 0.2.1 in VALID B. The separately approved automatic rollback passed and
+left armed test A ABORTED, unavailable as fallback; restoring two confirmed
+copies requires separate approval. The installed 2B bootloader and table were
+preserved. See [OTA/rollback evidence and restoration plan](ota.md).
+The initial-A bootstrap updater now
 rejects the changed metadata, as intended; use the OTA workflow thereafter.
 
 **Historical Milestone 2B status (2026-10-18):** the authorized physical migration

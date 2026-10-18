@@ -2,10 +2,12 @@
 
 **Milestone 2C.1 addendum:** the [OTA manager and USB utility](ota.md) now implement
 application updates, self-test confirmation and rollback guards. The explicitly
-approved bootstrap A and genuine A-to-B OTA passed: 0.2.1 now runs in VALID B,
-with VALID A available for rollback. LittleFS mount/capacity and NVS startup
+approved bootstrap A, genuine A-to-B OTA and later automatic rollback passed.
+Normal 0.2.1 runs in VALID B; armed test A is ABORTED and not a fallback.
+Restoration of two confirmed copies requires separate approval. LittleFS
+mount/capacity and NVS startup
 checks passed with unchanged total/used; whole-data byte comparison was not
-performed. Deliberate rollback validation remains PENDING separate approval.
+performed. Manual rollback remains unverified.
 The historical 2A–2B statements below about missing OTA behavior describe the
 earlier firmware; see [actual physical evidence and limits](ota.md).
 

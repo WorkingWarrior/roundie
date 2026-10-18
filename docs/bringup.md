@@ -9,12 +9,12 @@ confirmed the installed rollback-capable 2B bootloader, original 0.1.0 image,
 VALID A metadata/CRC and an unbootable erased B header. Firmware resumed and
 RT1 GET passed afterwards. The user then explicitly approved the frozen 0.2.1
 app-only A bootstrap and genuine RO1 OTA into B. Both passed: B startup was
-captured in PENDING_VERIFY and then VALID after its core self-test. Current
-firmware is 0.2.1 in VALID B, with compatible VALID A as a rollback destination.
+captured in PENDING_VERIFY and then VALID after its core self-test. That normal
+sequence initially established normal 0.2.1 in both VALID slots.
 LittleFS mounted with unchanged total/used, NVS initialized ESP_OK, and RTC
 retained OS=0 and correct progression without SET. The bootloader was preserved.
-The deliberate rollback experiment remains PENDING separate authorization;
-normal A/B success does not verify it. Full evidence and measurement limits are
+The later separately authorized automatic rollback also passed, as summarized
+below. Normal A/B success alone did not verify it. Full normal-test evidence is
 in [the physical execution record](ota.md#authorized-physical-a-to-b-execution--2026-10-18).
 This does not close older visual/touch, battery, power or endurance questions.
 
@@ -27,12 +27,21 @@ tests (including 112 normal/armed boot-gate combinations) and a separate
 its complete identity, write scope, single-experiment approval checkpoint and
 separately authorized redundancy-restoration plan are in
 [the preparation record](ota.md#controlled-automatic-rollback--preparation-2026-10-18).
-**PHYSICAL ROLLBACK: PENDING** separate explicit authorization. No armed image
-has been uploaded or selected, and no Safe Mode work was started.
+**PHYSICAL AUTOMATIC ROLLBACK: PASSED** after separate explicit approval of the
+668,384-byte frozen image. Genuine RO1 upload to A, NEW selection, test A's
+PENDING_VERIFY, passed core checks and deliberate unconfirmed restart were
+captured. The bootloader automatically loaded normal B; fresh RO1 observed
+A ABORTED, B VALID/running with original normal ELF identity and passed core
+self-test. LittleFS/NVS/RTC recovery checks passed without SET/format/erase.
+No second experiment or A repair occurred. Manual rollback remains unverified.
+See [actual rollback evidence and timing limits](ota.md#physical-automatic-rollback--authorized-execution-2026-10-18).
 
 **Current deployment (Milestone 2C.1, 2026-10-18):** the connected device
 uses REP v1 with OTA A at `0x10000`, OTA B at `0x390000`, and provisioned
-LittleFS at `0x710000`; active B and fallback A both contain validated 0.2.1.
+LittleFS at `0x710000`; active B is normal 0.2.1 VALID, while A contains the
+armed 0.2.1-rollback-test image in ABORTED state and is **not** a fallback.
+There is only one eligible normal image. Restoring two confirmed copies needs
+separate approval to upload, select, boot and confirm normal A; it was not done.
 The manufacturer-layout installation commands below are historical. Use the
 [local OTA workflow](ota.md) for separately authorized future updates. The
 bootstrap-only REP updater intentionally rejects the changed A/B metadata;
