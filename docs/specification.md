@@ -1168,6 +1168,14 @@ Ostateczna tabela partycji musi uwzględniać:
 
 ## 15.3. Coredump
 
+**Decyzja implementacyjna Milestone 2A (2026-10-18):** profil `rep-v1`
+wybiera dwa sloty po 3,5 MiB i LittleFS 8,8125 MiB. Tabela oraz plan
+migracji są opisane w [flash-migration.md](flash-migration.md), a zakres
+StorageManager w [storage.md](storage.md). Układ jest zweryfikowany offline;
+nie został wgrany na urządzenie. Rezerwa coredump 128 KiB jest tymczasowa,
+zapis coredump pozostaje wyłączony do pomiarów. Nie zamyka to sprzętowej
+bramki etapu 2 ani przyszłych testów OTA/recovery.
+
 Należy przewidzieć dedykowaną partycję coredump albo inny zweryfikowany mechanizm trwałej diagnostyki panic.
 
 Jej rozmiar zostanie dobrany po określeniu konfiguracji tasków i zakresu zapisywanych danych.
@@ -1943,8 +1951,9 @@ Następujące zagadnienia wymagają pomiarów lub osobnego rozstrzygnięcia:
 7. Konfiguracja wykonywania ELF z PSRAM.
 8. Włączenie XIP from PSRAM.
 9. Budżety SRAM i PSRAM.
-10. Ostateczna tabela partycji Flash.
-11. Wielkość partycji coredump.
+10. Tabela Flash: układ `rep-v1` wybrany w Milestone 2A i zweryfikowany offline
+    ([plan migracji](flash-migration.md)); migracja i walidacja sprzętowa pozostają otwarte.
+11. Wielkość partycji coredump: rezerwa 128 KiB w `rep-v1`, finalny zakres i rozmiar wymagają pomiarów.
 12. Format manifestu.
 13. Format pakietu aplikacji.
 14. Algorytm podpisu pakietów.

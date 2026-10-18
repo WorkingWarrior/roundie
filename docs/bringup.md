@@ -15,6 +15,16 @@ long-run gate remain open.
 
 ## Build
 
+**Milestone 2A addendum:** the default `legacy` profile preserves this
+bring-up workflow. Explicit commands are `idf.py -B build
+-DROUNDIE_PROFILE=legacy build` and, for the incompatible future REP layout,
+`idf.py -B build-rep -DROUNDIE_PROFILE=rep build`. Do not deploy REP through
+the factory-app updater. It now rejects missing/wrong profile markers,
+changed generated legacy tables, and REP embedded app identities before
+opening the serial port. See [storage/build profiles](storage.md) and the
+[unexecuted migration proposal](flash-migration.md). Historical results and
+remaining Milestone 1 hardware checks below retain their original scope.
+
 The selected ESP-IDF is tag `v6.1`, commit
 `fff9895c82d744c7237be8847347bdd1b07c6643`. The local toolchain used
 for this gate is `xtensa-esp-elf esp-15.2.0_20251204`. The IDF Python
