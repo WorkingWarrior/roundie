@@ -12,7 +12,7 @@ import struct
 import sys
 import zlib
 
-from validate_storage_layout import ROOT, validate_build, require
+from validate_storage_layout import ROOT, validate_app, validate_build, require
 
 
 def check_device(prefix, table, bootloader):
@@ -41,8 +41,10 @@ def main():
     build = args.build.resolve()
     table = validate_build(build, generator)
     app = (build / "roundie_rep.bin").read_bytes()
+    validate_app(app)
     bootloader = (build / "bootloader/bootloader.bin").read_bytes()
     table_bytes = (build / "partition_table/partition-table.bin").read_bytes()
+    require(table_bytes == table.to_binary(), "partition table changed during preflight")
     slot = next(p for p in table if p.name == "ota_0")
     # All artifact bytes are frozen before opening the port.
     import esptool
@@ -73,6 +75,7 @@ def main():
         else:
             print("Read-only preflight; no Flash write requested")
         device.hard_reset()
+        print("If still in ROM, reconnect USB without BOOT; do not repeat the write.")
 
 
 if __name__ == "__main__":
