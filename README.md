@@ -15,7 +15,10 @@ idf.py -B build -DROUNDIE_PROFILE=legacy build
 ```
 
 The connected board was migrated to REP v1 in Milestone 2B. The default build
-profile remains `legacy`, so select `rep` explicitly. Raw IDF flash targets
+profile remains `legacy`, so select `rep` explicitly. The approved Milestone
+2C.1 A-to-B OTA passed: the device now runs 0.2.1 in VALID B, with VALID A as
+fallback. Deliberate rollback testing remains pending separate approval.
+Raw IDF flash targets
 are disabled; never run the printed esptool commands. The first OTA-capable
 firmware needs a separately authorized app-only bootstrap with `flash_rep.py`
 and the exact installed 2B bootloader identity. Later updates use

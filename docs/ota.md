@@ -6,12 +6,15 @@ No network transport, TinyUSB, MTP, Safe Mode, Boot Guard, ELF runtime, security
 enablement or partition migration is part of this milestone.
 
 **Evidence boundary:** offline tests and target builds are separate from device
-tests. The read-only physical baseline below passed. Physical bootstrap, OTA
-transfer, first-boot confirmation, rollback, GUI responsiveness during Flash
-writes and data-retention checks are **PENDING separate authorization**.
-No Flash writes were performed for 2C.1 during this offline implementation.
+tests. The read-only baseline, explicitly authorized A bootstrap, genuine
+streamed A-to-B OTA, activation and B's first-boot confirmation **PASSED**.
+The device now runs 0.2.1 in VALID B, with compatible VALID A available for
+rollback. Mount/capacity, NVS initialization and RTC progression checks passed.
+The deliberate automatic-rollback experiment is **PENDING separate
+authorization**. Visual/touch inspection, GUI latency during Flash writes,
+byte-for-byte user-data comparison, power cuts and endurance remain unverified.
 
-## Verified installed baseline — 2026-10-18
+## Verified pre-test installed baseline — 2026-10-18
 
 Pinned ESP-IDF v6.1 is commit `fff9895c82d744c7237be8847347bdd1b07c6643`.
 Its `components/bootloader/Kconfig.app_rollback`,
@@ -290,8 +293,10 @@ python -m unittest discover -s tests -v
 python tools/validate_storage_layout.py --build build-rep
 ```
 
-**Physical baseline PASSED; all update tests PENDING.** Installed 0.1.0 has no
-RO1 protocol. A genuine OTA test therefore requires an authorized bootstrap:
+**Physical baseline and normal A-to-B sequence PASSED**, as recorded below.
+The following reviewed sequence was necessary because the original installed
+0.1.0 had no RO1 protocol. The deliberate rollback experiment in step 6 is
+still PENDING and was not included in the user's approval:
 
 1. Freeze the normal 0.2.1 app, its SHA-256/full ELF identity and exact sector
    envelope. Preserve the installed original bootloader and old app evidence.
@@ -367,6 +372,97 @@ the armed-reset image, corruption tests, power cuts, erasure or another mileston
 The automatic-rollback experiment still needs its own frozen-image review and
 authorization after the first normal OTA establishes a known-good fallback.
 
-Power interruption, battery-dependent behavior, endurance, physical callback
-latencies, touch/visual operation and worker stack reserves during OTA remain
-unverified. They cannot be inferred from compilation, mocks or the ROM readback.
+## Authorized physical A-to-B execution — 2026-10-18
+
+**Authorization:** the user explicitly approved bootstrap A and the normal OTA
+B test with the exact frozen image, sector envelopes and metadata range above.
+The approval excluded the armed rejection/rollback experiment and bootloader
+replacement. Both operations used exactly 668,528 bytes with SHA-256
+`198b1053405e85f4da660a728f4df8dd41f025a8f1432ecc6ab047198509d925`.
+No firmware rebuild, new image, partition migration, Flash-wide readback,
+filesystem test write, RTC SET, eFuse/security operation or fault injection
+was performed for this sequence.
+
+**Bootstrap A:** the frozen config/image and unique recorded USB identity were
+checked before serial programming. The reviewed updater matched USB identity
+to ROM MAC, checked chip/Flash/security, compared the exact installed 2B
+bootloader, REP table and initial VALID A metadata, and wrote only the approved
+A application envelope. Write-time digest verification and separate application
+verification passed. The post-write bounded prefix passed the same bootloader,
+table and metadata checks. Updater exit was 0. RTS reset returned directly to
+firmware; no physical cable/button action or second write was needed.
+
+Captured startup and RO1 status established exact 0.2.1 ELF identity, VALID A,
+passed core self-test, absent B and no rollback destination. This direct
+bootstrap did **not** exercise OTA confirmation: existing A metadata was
+already VALID. NVS initialized ESP_OK, LittleFS mounted with 9,240,576 total /
+8,192 used bytes, and RTC was valid/OS=0. The old original image and bootloader
+copies remain in the evidence archive.
+
+**Genuine OTA B:** `normal_ota_test.py` used the actual `roundie_ota.py` request,
+upload and verification functions with a serial-recording wrapper. It streamed
+512-byte chunks through RO1/OTAManager into inactive B while A was running.
+All progress responses succeeded. END reported READY, the exact declared
+SHA-256, valid B image and expected full ELF identity, with A still selected.
+ACTIVATE selected B and returned its NEW state. An explicitly acknowledged
+RESTART then produced the captured first-boot sequence:
+
+```text
+I (1147) ota: slot=ota_1 version=0.2.1 state=PENDING_VERIFY other=ota_0/VALID image=1 rollback=1 self_test=0/0 result=ESP_OK
+I (3257) ota: Core self-test result: ESP_OK
+I (3257) ota: slot=ota_1 version=0.2.1 state=VALID other=ota_0/VALID image=1 rollback=1 self_test=1/1 result=ESP_OK
+```
+
+The final independent RO1 query/identity verification reported `running=ota_1`,
+address `0x390000`, `boot=ota_1`, `phase=IDLE`, `ota_state=VALID`,
+`checked=1`, `passed=1`, `last_error=0` and `rollback=1`. A's state was VALID,
+its image was valid and both slots had the expected full ELF identity
+`1e55c7a475ee573d9f38139f14e5498a631df2eabfd959e00ef8cdcdcfc92a02`.
+This is evidence of real streamed OTA, activation and application confirmation,
+not merely a successful ROM application flash. It establishes eligibility for
+a future rollback test, **not execution of automatic or explicit rollback**.
+
+| Measurement | One approved physical run |
+|---|---|
+| Host upload duration, including END validation | 65.826 s |
+| Largest DATA request round trip | 60.797 ms |
+| BEGIN round trip | 101.608 ms |
+| END round trip / largest overall | 294.618 ms |
+| ACTIVATE round trip | 293.484 ms |
+| Instrumented successful RO1 requests | 1,313, including final status |
+| Worker stack minimum remaining at END | 2,200 bytes of the configured 8,192 |
+| Pending startup log to VALID log | 2.110 s; VALID log at boot timestamp 3.257 s |
+| RTC progression across upload/restart/inspection | 81 seconds over 81.163 s monotonic elapsed |
+
+These are combined host/USB/firmware request latencies, **not measured GUI
+frame times or isolated Flash erase times**. No panic, task-watchdog event,
+LCD transfer timeout or unexpected extra reboot appeared in the captured
+transfer/boot records. LCD initialization and core DMA checks passed; human
+visual/touch inspection remains PENDING.
+
+**Data-retention evidence and limits:** after B boot, NVS again initialized
+ESP_OK without erase fallback. LittleFS again mounted/capacity-queried ESP_OK
+with exactly 9,240,576 total / 8,192 used bytes; the M2B write/remount diagnostic
+did not rerun. RTC retained valid OS=0 data, agreed with system time within
+one second and met the existing two-second progression criterion without an
+RTC SET. This checks service continuity and filesystem capacity, plus the
+reviewed OTA destination guards; it does not claim bytewise comparison of all
+NVS/user files. No host-UTC synchronization pass is claimed (the older offset
+question is separate). Bootloader/table were preserved by the app-only updater;
+the OTA component has no write path to those or NVS/LittleFS/PHY/coredump.
+
+**Evidence, outside Git:** in
+`/mnt/Dane/Development/roundie-backups/ota-2c1-2026-10-18/`, see
+`bootstrap_capture.py`, `bootstrap-write.log`, `bootstrap-result.log`,
+`bootstrap-a-boot.log`, A status/RTC JSON, `normal_ota_test.py`,
+`normal-ota-protocol.log`, `normal-ota-result.log`, `normal-ota-b-boot.log`,
+the READY/activation/restart/final status and RTC JSON, and
+`normal-ota-metrics.json`. The scripts reject replay through exclusive log
+creation; no physical write was repeated after success. Firmware sources and
+the frozen candidate remain those of commit `03d66af`.
+
+**Stop boundary:** the approved normal sequence is complete. Deliberate
+automatic/explicit rollback, physical fault injection, power interruption,
+battery-dependent behavior, endurance, detailed callback/GUI timing and broader
+stack-budget validation remain PENDING. No armed image was built or deployed
+after this run, and no Safe Mode or subsequent milestone was started.

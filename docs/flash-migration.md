@@ -1,6 +1,13 @@
 # Manufacturer layout to REP v1 — migration and provisioning
 
-**Current status (Milestone 2B, 2026-10-18):** the authorized physical migration
+**Current status (Milestone 2C.1, 2026-10-18):** the separately approved
+app-only A bootstrap and genuine USB OTA into B passed. The device now runs
+0.2.1 in VALID B, with VALID A available for rollback; the installed 2B
+bootloader and partition table were preserved. See [OTA execution evidence
+and remaining rollback gate](ota.md). The initial-A bootstrap updater now
+rejects the changed metadata, as intended; use the OTA workflow thereafter.
+
+**Historical Milestone 2B status (2026-10-18):** the authorized physical migration
 has been programmed and verified. REP boots from OTA A; LittleFS mounts and
 the bounded filesystem test passes. The execution record below supersedes
 the historical Milestone 2A proposal and its no-device-access statements.

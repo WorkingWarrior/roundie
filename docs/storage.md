@@ -1,10 +1,13 @@
 # Milestones 2A–2B: storage foundation and physical provisioning
 
 **Milestone 2C.1 addendum:** the [OTA manager and USB utility](ota.md) now implement
-application updates, self-test confirmation and rollback guards offline.
-Physical A/B validation remains PENDING authorization. The historical 2A–2B
-statements below about missing OTA behavior describe that earlier firmware;
-the installed 0.1.0 image still has that behavior until an approved bootstrap.
+application updates, self-test confirmation and rollback guards. The explicitly
+approved bootstrap A and genuine A-to-B OTA passed: 0.2.1 now runs in VALID B,
+with VALID A available for rollback. LittleFS mount/capacity and NVS startup
+checks passed with unchanged total/used; whole-data byte comparison was not
+performed. Deliberate rollback validation remains PENDING separate approval.
+The historical 2A–2B statements below about missing OTA behavior describe the
+earlier firmware; see [actual physical evidence and limits](ota.md).
 
 ## Status and decisions
 

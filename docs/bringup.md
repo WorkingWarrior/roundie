@@ -7,18 +7,24 @@ rollback eligibility are implemented; see [OTA ownership, commands, source
 contract and validation gates](ota.md). A bounded read-only device inspection
 confirmed the installed rollback-capable 2B bootloader, original 0.1.0 image,
 VALID A metadata/CRC and an unbootable erased B header. Firmware resumed and
-RT1 GET passed afterwards. No 2C.1 Flash write or physical OTA/rollback test
-has been authorized or performed. The existing ROM recovery route is preserved.
-The new 0.2.1 application requires a separately authorized initial app-only A
-bootstrap before RO1 can exercise genuine A/B updates. This does not close the
-older visual/touch, battery, power or endurance questions listed below.
+RT1 GET passed afterwards. The user then explicitly approved the frozen 0.2.1
+app-only A bootstrap and genuine RO1 OTA into B. Both passed: B startup was
+captured in PENDING_VERIFY and then VALID after its core self-test. Current
+firmware is 0.2.1 in VALID B, with compatible VALID A as a rollback destination.
+LittleFS mounted with unchanged total/used, NVS initialized ESP_OK, and RTC
+retained OS=0 and correct progression without SET. The bootloader was preserved.
+The deliberate rollback experiment remains PENDING separate authorization;
+normal A/B success does not verify it. Full evidence and measurement limits are
+in [the physical execution record](ota.md#authorized-physical-a-to-b-execution--2026-10-18).
+This does not close older visual/touch, battery, power or endurance questions.
 
-**Current deployment (Milestone 2B, 2026-10-18):** the connected device now
+**Current deployment (Milestone 2C.1, 2026-10-18):** the connected device
 uses REP v1 with OTA A at `0x10000`, OTA B at `0x390000`, and provisioned
-LittleFS at `0x710000`. The manufacturer-layout installation commands below
-are historical. Use the guarded REP updater described in
-[flash-migration.md](flash-migration.md#rep-development-updates); the legacy
-updater rejects this device. Raw IDF flash targets are disabled after CMake
+LittleFS at `0x710000`; active B and fallback A both contain validated 0.2.1.
+The manufacturer-layout installation commands below are historical. Use the
+[local OTA workflow](ota.md) for separately authorized future updates. The
+bootstrap-only REP updater intentionally rejects the changed A/B metadata;
+the legacy updater rejects the REP table. Raw IDF flash targets are disabled after CMake
 regeneration. Historical generated build trees must be reconfigured before
 relying on that block; direct esptool commands always bypass it.
 
