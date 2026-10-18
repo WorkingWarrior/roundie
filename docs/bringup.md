@@ -5,9 +5,11 @@ printed PCB revision was not visible. The documented Rev1.1 pinout was the
 working premise, and actual LCD/touch behavior is recorded below.
 
 **Evidence scope:** Source integration, target compilation, USB-only device
-tests on 2026-10-17, and two short USB-plus-battery reboot logs on
-2026-10-18. Battery-only operation, cold-start, long-run, and manual recovery
-gates remain open.
+tests on 2026-10-17, USB-plus-battery synchronization/restart tests, and one
+user-performed approximately 90-minute battery-backed RTC hardware PWR-off
+retention test on 2026-10-18. RTC retention passed under those conditions;
+active battery-only operation, cold-start reliability, latest-image visual/
+touch verification, long-run and manual recovery gates remain open.
 
 ## Build
 
@@ -253,13 +255,18 @@ and gauge configuration/SoC validation remain pending.
 
 ### Milestone 1 device checklist status
 
+Updated for the user-performed retention test on 2026-10-18. Earlier visual
+and touch passes remain evidence for their tested image; they do not establish
+the latest synchronization image's appearance or touch behavior.
+
 | Check | Status | Evidence and limit |
 |---|---|---|
-| Diagnostic LCD, orientation, color fields, spinner | **PASSED for this unit** | User observed the page, correct red/green/blue/white fields, and moving spinner; LCD ID `00 02 7f 7f` selected variant 2. |
-| Touch center and four reachable edge regions, release, controls after idle | **PASSED** | User explicitly confirmed all five regions and release, and controls after at least five seconds idle. The 65-second log recorded 52 press/release pairs without touch-read errors. |
+| Diagnostic LCD, orientation, color fields, spinner | **PASSED on earlier image; latest image PENDING** | User observed the page, correct red/green/blue/white fields, and moving spinner; LCD ID `00 02 7f 7f` selected variant 2. Latest synchronization image still needs visual confirmation. |
+| Touch center and four reachable edge regions, release, controls after idle | **PASSED on earlier image; latest image PENDING** | User explicitly confirmed all five regions and release, and controls after at least five seconds idle. The 65-second log recorded 52 press/release pairs without touch-read errors. Latest-image recheck remains open. |
 | Flash and PSRAM detection | **PASSED for detection** | Device reported 16,777,216 B Flash and 8,388,608 B PSRAM; startup heap values were logged. Executable PSRAM and memory stress are outside this gate. |
-| Shared I²C devices | **PARTIAL** | Touch driver read ID 181. RTC and BQ27220 both ACKed and returned data on two USB-plus-battery reboots. RTC OS flag remains set, gauge SoC/calibration is unverified, and battery-only behavior was not tested. |
-| Ten cold starts; RTC retention; battery-only operation; manual ROM Download | **PENDING** | Two software resets with USB and battery are not cold starts or retention tests. No battery-only run or physical BOOT procedure was performed, and the PCB revision could not be inspected. |
+| Shared I²C devices | **PARTIAL** | Touch driver read ID 181; RTC/gauge ACKs and data reads passed. RTC now has valid time and OS=0, including after the physical retention test. Gauge accuracy/calibration and full active battery-only behavior remain unverified. |
+| RTC battery-backed hardware PWR-off retention | **PASSED — approximately 90 minutes, one physical test** | User disconnected USB, left the battery connected, used PWR off, then powered on/reconnected and ran `status` without resync. Valid RTC, OS=0 and restored system UTC. [Exact evidence and limits](rtc-time-sync.md#test-c--physical-retention-passed). |
+| Ten cold starts; active battery-only operation; manual ROM Download | **PENDING** | One PWR-off retention cycle does not complete ten cold starts, active battery-only diagnostics or manual recovery. Physical BOOT/ROM identification and PCB revision inspection remain open. |
 | 30-minute interaction and heap trend | **PENDING** | A separate five-minute unattended run logged one health sample and zero LCD errors; the 30-minute visual/interaction run and a heap trend remain untested. |
 
 ### Device installation and data preservation
@@ -423,11 +430,12 @@ port, logs, and each pass/failure. Do not erase partitions or change eFuses.
 ## Known blockers and pending experiments
 
 - **Device gate open:** USB-only testing established boot, LCD variant 2,
-  touch, and memory detection. Two USB-plus-battery reboots established RTC
-  and gauge I²C communication, but not valid RTC time, fuel-gauge accuracy,
-  battery-only operation, manual ROM recovery, ten cold starts, or the
-  30-minute visual/interaction criterion. Printed PCB revision and R5/TE
-  population could not be inspected.
+  touch, and memory detection. Subsequent tests established valid RTC time,
+  software restart retention and one approximately 90-minute battery-backed
+  hardware PWR-off retention pass. Fuel-gauge accuracy, active battery-only
+  operation, manual ROM recovery, ten cold starts, latest-image LCD/touch
+  inspection and the 30-minute visual/interaction criterion remain open.
+  Printed PCB revision and R5/TE population could not be inspected.
 - **LCD identity:** the tested unit returned `00 02 7f 7f`. The other
   documented ID `00 7f 7f 7f` remains source-supported but untested here.
 - **LCD timing/buffering:** measure 3 MHz flush latency, GUI response, DMA
@@ -438,12 +446,13 @@ port, logs, and each pass/failure. Do not erase partitions or change eFuses.
   including a confirmed independent debug path. Schematic inference is
   not a recovery result.
 - **RTC/gauge:** The USB-only RTC intermittently NACKed and the gauge never
-  ACKed without a battery. With USB and battery, both ACKed and returned data
-  on two resets, but the RTC oscillator-stop flag remained set and gauge SoC
-  was not read or calibrated. Test battery-only operation and RTC retention;
-  compare voltage with an external meter when available. If intermittent
-  RTC behavior persists under controlled power, measure I²C levels rather
-  than assuming a software-only cause.
+  ACKed without a battery in earlier tests. Later USB-plus-battery tests
+  established valid RTC time with OS=0, and the user confirmed battery-backed
+  PWR-off retention. Gauge SoC remains an uncalibrated estimate. Active
+  battery-only operation and independent gauge voltage/temperature/current/
+  SoC accuracy checks remain open. If intermittent RTC behavior persists
+  under controlled power, measure I²C levels rather than assuming a
+  software-only cause.
 
 ## RTC host synchronization and retention addendum, 2026-10-18
 
@@ -500,10 +509,42 @@ transport/permission/deadline failure, exit 3 a time-validation failure.
 | Physical device: Test B | CLI `verify --restart` passed (+2 s RTC over approximately 1.87 s). Final same-connection capture separately recorded `RTC_SW_CPU_RST`, valid RTC startup/OS=0 and system synchronization; RTC `1792314266` → `1792314270`, wall `1792314270` afterward. This proves software restart retention only. |
 | Physical device: rejection paths | Extra argument, negative timestamp, both range boundaries, oversized integer, overlong frame and expired partial frame returned expected `BAD_COMMAND`/`RANGE`/`FRAME`. A fresh GET afterward was valid with OS=0. No malformed command changed time. |
 | Physical device: existing diagnostics | Loaded ELF prefix `27c13741c`, LCD variant 2, CST816S driver OK, RTC/gauge ACK, battery present, 3971 mV and estimated SoC 84%. No panic/watchdog failure in short restart captures. New GUI labels, spinner/touch appearance and battery accuracy were not physically inspected. |
-| Physical device: Test C | **PENDING.** No cable removal, battery reconnection or PWR press was performed. The linked procedure separately tests USB removal/battery-only operation, PWR hardware off with USB removed, restoration, then verification before any resync. Software restart does not establish these power-state results. |
+| Physical device: Test C | **PASSED — approximately 90 minutes, one user-performed physical test.** USB disconnected, battery retained, hardware PWR off; after restoration, `status` without resync showed valid RTC/OS=0 and restored system time. [Exact output and limits](rtc-time-sync.md#test-c--physical-retention-passed). Offset -1.27 s at observation is not calibrated drift. |
 
 Earlier checkpoint descriptions of OS=1 remain historical evidence. The RTC
 is now valid on the tested USB-plus-battery unit. Brownout/complete RTC power
 loss, physical I²C failure injection, long-term drift, electrical battery
 comparison and the existing 30-minute visual gate remain pending. No later
 milestone was implemented.
+
+## Remaining Milestone 1 validation gates
+
+Milestone 1 is **OPEN**. The user-performed retention test closes only the
+battery-backed RTC hardware PWR-off check under its recorded conditions.
+The remaining acceptance work includes:
+
+- **Manual ROM Download recovery:** physically entered BOOT/ROM enumeration
+  and read-only chip identification on the installed image, including the
+  battery-connected condition and a usable console/debug path.
+- **Cold-start reliability:** the documented ten controlled cold starts with
+  boot/error/memory records; one retention cycle is not this series.
+- **Latest-image LCD/touch:** UTC/RTC and battery labels, orientation, color
+  fields, spinner, center/four-edge press/release and controls after idle.
+  Earlier-image passes remain recorded above.
+- **GUI endurance:** at least 30 minutes of interaction/backlight changes,
+  stable visual output and heap trend, with zero logged transfer errors.
+- **Battery/gauge:** active battery-only diagnostics and independent checks
+  of voltage, temperature, signed current, profile/calibration and SoC
+  accuracy. RTC retention does not validate these measurements.
+
+PCB revision/markings remain unconfirmed. Brownout, depleted/disconnected
+battery retention, long-term RTC accuracy and other pending experiments keep
+their existing separate scope; this result does not resolve them or authorize
+Milestone 2.
+
+**Smallest useful next validation:** one supervised manual ROM Download entry
+and read-only chip-identity check using step 9 of the existing
+[manual board checklist](#manual-board-checklist), recording power/battery
+conditions and console availability. This checks recovery before a larger
+reliability or interaction run. It was not performed or requested from the
+user during this documentation-only closure.

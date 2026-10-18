@@ -202,6 +202,7 @@ Results below concern this milestone only, not the complete hardware gate.
 | Device sync | Initially OS=1, invalid RTC, unsynchronized wall clock. Explicit host SET cleared OS, confirmed advancement, and initialized system UTC. Final utility sync at 09:02:07 UTC returned RTC/system `1792314127`, RTT 1.221 s and approximately -0.07 s host difference. Independent GET passed. Host reported NTP-synchronized; this is not an external accuracy measurement. |
 | Device restart | `verify --restart` passed: RTC advanced 2 s over approximately 1.87 s, OS=0, system restored within one second. A separate serial capture of the same restart path recorded `rst:0xc (RTC_SW_CPU_RST)`, valid RTC startup and wall-clock initialization. Normal repeated port opens with both modem lines asserted did not reset the board. |
 | Device progression (Test A) | RTC `1792314258` → `1792314263`, +5 s over 5.0105 s monotonic elapsed, OS=0, final GET RTT 10.3 ms; RTC/system agreement within one second. |
+| User-performed physical retention (Test C) | **PASSED — approximately 90 minutes, one physical test.** USB disconnected, battery connected, hardware PWR off; after restoration and USB reconnection, `status` without resynchronization reported valid RTC, OS=0 and restored system UTC. [Exact conditions, output and limits](#test-c--physical-retention-passed). |
 | Device rejection/recovery | Seven negative requests returned expected codes: extra GET argument and negative timestamp (`BAD_COMMAND`), below/above range and oversized integer (`RANGE`), overlong line and 2.3-second partial frame (`FRAME`). Following GET remained valid, OS=0 and within one second of system time; no malformed SET wrote RTC. |
 | Device GUI/sensors | Boot identified the installed ELF prefix `27c13741c`, LCD variant 2, CST816S driver OK, RTC and gauge ACK, battery present/3971 mV/estimated SoC 84%. No panic/watchdog error appeared in restart captures. Visual layout/touch and gauge accuracy remain unverified for this change. |
 
@@ -229,30 +230,47 @@ done
 python -m unittest discover -s tests -p 'test_roundie_time.py' -v
 ```
 
-## Test C — physical retention: PENDING
+## Test C — physical retention: PASSED
 
-No cables or buttons were operated autonomously. Software restart retention
-does **not** prove battery-only operation, hardware power-off retention, or
-retention across loss of the RTC's supply. With a charged battery attached,
-a future supervised test should:
+**User-performed physical hardware test, 2026-10-18:** RTC battery-backed
+retention **PASSED — approximately 90 minutes, one physical test**. This
+closes the previously pending hardware PWR-off retention check for these
+conditions, independently of the earlier software restart test.
 
-1. Run `sync`, then `verify`; record host UTC, RTC UTC, OS and wall validity.
-2. Disconnect USB while leaving the battery connected. Wait at least 60 s.
-   Observe whether the diagnostic display continues on battery; record that
-   behavior separately from RTC retention. Reconnect USB, run `verify` before
-   any `sync`, and record continued UTC progression and OS.
-3. Disconnect USB again. Hold PWR approximately two seconds to request the
-   board's hardware power-off; observe actual shutdown. Wait at least 60 s,
-   restore power with PWR, reconnect USB, and run `status`/`verify` **without
-   resynchronizing first**. Record timestamps, elapsed host interval, OS,
-   startup validity and restored system time. USB may keep some rails powered,
-   so a USB-connected PWR test is not a substitute for this sequence.
-4. Pass only if OS remains clear, RTC advances by elapsed host time within
-   the documented three-second short-test tolerance, and boot restores wall
-   time within one second of RTC. Record exact power state, durations and
-   observations. If invalid or unavailable, preserve that evidence before
-   issuing another explicit `sync`.
+The user confirmed the following sequence:
 
-Battery removal, brownout, current draw, long-term drift, real I²C fault
-injection and endurance remain separate pending experiments. Do not infer
-their results from compilation or the software restart test.
+1. RTC had previously been synchronized with the host computer.
+2. USB was disconnected; the battery remained connected.
+3. The device was switched off using its hardware PWR button.
+4. Approximately 90 minutes elapsed.
+5. The device was powered on and reconnected to USB.
+6. The user ran the RTC `status` command **without another synchronization**.
+
+Actual command output supplied by the user:
+
+```text
+RTC available: yes; state: valid
+RTC UTC: 2026-10-18T11:21:04+00:00; OS: 0
+System UTC: 2026-10-18T11:21:03+00:00
+Response: OK; device error: 0; round trip: 0.017s
+RTC minus host UTC: approximately -1.27s (seconds resolution)
+```
+
+**Device evidence and conclusion:** PCF85063 remained accessible, its stored
+time remained valid, and OS was still clear after the battery-backed hardware
+power-off interval. The observation supports continued RTC timekeeping from
+battery-backed power. REP restored the system wall clock from valid RTC;
+the reported system time was one second behind RTC, within the documented
+tolerance. No post-test SET preceded the observation.
+
+**Evidence limits:** The reported -1.27-second host comparison is the
+approximate offset at observation, not a calibrated measurement of drift
+accumulated over 90 minutes. No oscillator accuracy in ppm can be derived
+from this single result. The interval is approximate, and this was one test,
+not a reliability series. It does not establish long-term oscillator accuracy,
+depleted-battery behavior, or retention with the battery physically
+disconnected. Active GUI operation on battery, brownout, current draw, real
+I²C fault injection and endurance remain separate pending checks. No repeat
+test, reset, synchronization, build or Flash operation was performed to record
+this user-provided evidence. Milestone 1 remains open; see the [remaining
+validation gates](bringup.md#remaining-milestone-1-validation-gates).
