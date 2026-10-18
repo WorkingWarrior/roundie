@@ -66,6 +66,9 @@ esp_err_t roundie_ota_rollback(void);
  * required. Caller must be an explicitly armed development build. No confirmation.
  */
 bool roundie_ota_test_reset_allowed(void);
+/* Armed-test refusal only: record failure and block new OTA without changing
+ * metadata, confirming, rejecting or rebooting. Not exposed through USB. */
+esp_err_t roundie_ota_test_hold_unconfirmed(esp_err_t reason);
 void roundie_ota_tick(int64_t now_us);
 const char *roundie_ota_phase_name(roundie_ota_phase_t phase);
 const char *roundie_ota_image_state_name(int state);

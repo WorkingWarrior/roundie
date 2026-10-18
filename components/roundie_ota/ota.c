@@ -148,6 +148,17 @@ bool roundie_ota_test_reset_allowed(void)
            manager.status.rollback_possible;
 }
 
+esp_err_t roundie_ota_test_hold_unconfirmed(esp_err_t reason)
+{
+    if (!manager.status.initialized || manager.status.boot_checked || reason == ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    manager.status.boot_checked = true;
+    manager.status.boot_passed = false;
+    manager.status.last_error = reason;
+    return ESP_OK;
+}
+
 esp_err_t roundie_ota_rollback(void)
 {
     if (!manager.status.initialized || manager.status.phase != ROUNDIE_OTA_IDLE) {

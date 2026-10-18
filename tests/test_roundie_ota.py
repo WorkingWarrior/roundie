@@ -102,6 +102,25 @@ class FakeSerial:
 
 
 class OTATests(unittest.TestCase):
+    def test_actual_boot_gate_normal_and_armed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for armed in (0, 1):
+                executable = str(Path(directory) / f"boot-gate-{armed}")
+                subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror",
+                                "-fsanitize=address,undefined", "-ffunction-sections", "-fdata-sections",
+                                "-Wl,--gc-sections", "-DCONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=1",
+                                f"-DCONFIG_ROUNDIE_OTA_TEST_UNCONFIRMED_RESET={armed}",
+                                "-I" + str(ROOT / "tests/ota_mocks"), "-I" + str(ROOT / "main"),
+                                "-I" + str(ROOT / "components/roundie_ota/include"),
+                                str(ROOT / "main/ota_diagnostics.c"), str(ROOT / "tests/test_ota_boot_gate.c"),
+                                "-o", executable], check=True)
+                for state in (0, 1, 2, 3, 4, -1, -2):
+                    for fallback in (0, 1):
+                        for health in ("pass", "fail", "timeout", "startup"):
+                            with self.subTest(armed=armed, state=state, fallback=fallback, health=health):
+                                subprocess.run([executable, str(state), str(fallback), health],
+                                               check=True, timeout=5, stdout=subprocess.DEVNULL)
+
     def test_manager_and_parser_with_mock_idf_and_sanitizers(self):
         with tempfile.TemporaryDirectory() as directory:
             executable = str(Path(directory) / "ota-test")

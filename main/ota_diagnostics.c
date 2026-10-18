@@ -51,7 +51,11 @@ void roundie_ota_diagnostics_init(void)
 
 void roundie_ota_startup_failed(void)
 {
+#if CONFIG_ROUNDIE_OTA_TEST_UNCONFIRMED_RESET
+    esp_err_t error = roundie_ota_test_hold_unconfirmed(ESP_FAIL);
+#else
     esp_err_t error = roundie_ota_boot_result(false);
+#endif
     ESP_LOGE(TAG, "Critical startup failure: %s; no automatic confirmation or reboot retry",
              esp_err_to_name(error));
     publish();
@@ -94,14 +98,23 @@ void roundie_ota_poll(int64_t now_us)
             /* Compile-time arm, not a runtime command or persistent flag.
              * Never reset without a validated fallback and PENDING_VERIFY. */
             if (received && passed && roundie_ota_test_reset_allowed()) {
+                ESP_LOGI(TAG, "ARMED core self-test PASS: PENDING_VERIFY with compatible VALID fallback; confirmation suppressed");
                 ESP_LOGW(TAG, "ARMED DEVELOPMENT TEST: reset before confirmation; expect ABORTED + fallback");
+                usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
                 vTaskDelay(pdMS_TO_TICKS(100));
                 esp_restart();
             }
-            passed = false;
-#endif
+            /* Never fall through to boot_result(false): that ordinary policy
+             * can explicitly INVALIDATE/reboot and would be a different test.
+             * Hold even if a mocked/unexpected restart call returns. */
+            esp_err_t reason = received && passed ? ESP_ERR_OTA_ROLLBACK_FAILED : ESP_FAIL;
+            esp_err_t error = roundie_ota_test_hold_unconfirmed(reason);
+            ESP_LOGE(TAG, "ARMED reset refused/returned: reason=%s hold=%s; no confirmation or explicit rollback",
+                     esp_err_to_name(reason), esp_err_to_name(error));
+#else
             esp_err_t error = roundie_ota_boot_result(received && passed);
             ESP_LOGI(TAG, "Core self-test result: %s", esp_err_to_name(error));
+#endif
             log_status();
         }
     }

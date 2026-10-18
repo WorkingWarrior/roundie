@@ -325,6 +325,19 @@ int main(void)
     assert(roundie_ota_boot_result(true) == ESP_OK);
     assert(roundie_ota_begin(9, 1024, digest) == ESP_OK);
     assert(roundie_ota_abort(9) == ESP_OK);
+    reset();
+    states[0] = ESP_OTA_IMG_PENDING_VERIFY;
+    states[1] = ESP_OTA_IMG_VALID;
+    valid[1] = true;
+    assert(roundie_ota_init() == ESP_OK);
+    assert(roundie_ota_test_hold_unconfirmed(ESP_OK) != ESP_OK);
+    assert(roundie_ota_test_hold_unconfirmed(ESP_FAIL) == ESP_OK);
+    assert(status().boot_checked && !status().boot_passed && status().last_error == ESP_FAIL);
+    assert(states[0] == ESP_OTA_IMG_PENDING_VERIFY && states[1] == ESP_OTA_IMG_VALID);
+    assert(confirmations == 0 && rejections == 0 && selections == 0 && !open_handle);
+    assert(roundie_ota_begin(7, 1024, digest) != ESP_OK);
+    assert(roundie_ota_boot_result(true) != ESP_OK);
+    assert(roundie_ota_test_hold_unconfirmed(ESP_FAIL) != ESP_OK);
     puts("OTA manager/parser: lifecycle, digest, metadata, failure cleanup and confirmation scenarios PASS (mock IDF)");
     return 0;
 }
