@@ -4,7 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ROUNDIE_TIME_LINE_CAPACITY 64
+/* Shared development serial framer: RT1 keeps its original 63-byte limit;
+ * optional RO1 uses the same RX owner and bounded printable-line parser. */
+#define ROUNDIE_TIME_LINE_CAPACITY 1100
 
 typedef struct {
     char line[ROUNDIE_TIME_LINE_CAPACITY];
@@ -19,7 +21,7 @@ typedef struct {
     int64_t seconds;
 } roundie_time_command_t;
 
-/* Feed at most 63 bytes before LF. Overflow discards through the next LF. */
+/* Overflow discards through the next LF. */
 bool roundie_time_feed(roundie_time_frame_t *frame, char byte);
 /* Returns OK, BAD_COMMAND, FRAME, or RANGE. Always initializes id. */
 const char *roundie_time_parse(const roundie_time_frame_t *frame,

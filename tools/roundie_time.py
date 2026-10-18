@@ -63,33 +63,48 @@ def request(port, operation, timeout=5.0):
     command = f"!RT1 {request_id} {operation}"
     if operation == "SET":
         command += f" {timestamp}"
-    wire = ("\n" + command + "\n").encode("ascii")
     started = time.monotonic()
     deadline = started + timeout
+    write_command(port, command)
+    line = read_serial_reply(port, f"!RT1 {request_id} ".encode("ascii"), deadline, MAX_REPLY)
+    status = parse_reply(line, request_id)
+    status["round_trip"] = time.monotonic() - started
+    status["sent"] = timestamp
+    return status
+
+
+def write_command(port, command):
+    """One bounded serial write; shared by the two development utilities."""
+    wire = ("\n" + command + "\n").encode("ascii")
     try:
         if port.write(wire) != len(wire):
             raise TransportError("short serial write")
-        # No flush(): pyserial flush can wait indefinitely on a stalled device.
+    except OSError as error:
+        raise TransportError(f"serial disconnected or I/O failed: {error}") from error
+
+
+def read_serial_reply(port, prefix, deadline, limit):
+    """Read one addressed line, ignoring logs, without unbounded flush/read."""
+    try:
         line = bytearray()
         discard = False
         while time.monotonic() < deadline:
             byte = port.read(1)
             if not byte:
                 continue
-            if len(line) >= MAX_REPLY:
-                if line.startswith(f"!RT1 {request_id} ".encode("ascii")):
+            if len(line) >= limit:
+                if line.startswith(prefix):
                     raise TransportError("oversized protocol reply")
                 discard = True
             if not discard:
                 line.extend(byte)
             if byte == b"\n":
-                status = None if discard else parse_reply(bytes(line), request_id)
+                reply = bytes(line)
+                addressed = not discard and reply.startswith(prefix)
                 line.clear()
                 discard = False
-                if status is not None:
-                    status["round_trip"] = time.monotonic() - started
-                    status["sent"] = timestamp
-                    return status
+                if addressed:
+                    return reply
     except OSError as error:
         raise TransportError(f"serial disconnected or I/O failed: {error}") from error
     raise TransportError("response timeout (device disconnected, interface disabled, or lost frame)")

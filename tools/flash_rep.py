@@ -6,6 +6,7 @@ bootloader, partition table, NVS or filesystem writes are implemented here.
 """
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import struct
@@ -13,6 +14,18 @@ import sys
 import zlib
 
 from validate_storage_layout import ROOT, validate_app, validate_build, require
+
+# Proven Milestone 2B rollback-enabled bootloader; rebuilt bootloader descriptors
+# contain new build times, so an app-only bootstrap must not require replacing it.
+# No caller-selected arbitrary hash or bootloader write is supported.
+M2B_BOOTLOADER_SHA256 = "f7c33fe831a564d16b8b00406c20ac2e79b8b7146f75e862263764656f349188"
+
+
+def bootstrap_bootloader(path):
+    image = path.read_bytes()
+    require(len(image) == 21200 and hashlib.sha256(image).hexdigest() == M2B_BOOTLOADER_SHA256,
+            "bootstrap requires the exact verified Milestone 2B rollback bootloader")
+    return image
 
 
 def check_device(prefix, table, bootloader):
@@ -34,6 +47,8 @@ def main():
     parser.add_argument("--build", type=Path, default=ROOT / "build-rep")
     parser.add_argument("--port", required=True)
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--installed-m2b-bootloader", type=Path,
+                        help="exact read-back 2B bootloader for app-only OTA bootstrap; never written")
     args = parser.parse_args()
     sys.path.insert(0, str(Path(os.environ["IDF_PATH"]) / "components/partition_table"))
     import gen_esp32part as generator
@@ -43,6 +58,8 @@ def main():
     app = (build / "roundie_rep.bin").read_bytes()
     validate_app(app)
     bootloader = (build / "bootloader/bootloader.bin").read_bytes()
+    if args.installed_m2b_bootloader is not None:
+        bootloader = bootstrap_bootloader(args.installed_m2b_bootloader)
     table_bytes = (build / "partition_table/partition-table.bin").read_bytes()
     require(table_bytes == table.to_binary(), "partition table changed during preflight")
     slot = next(p for p in table if p.name == "ota_0")

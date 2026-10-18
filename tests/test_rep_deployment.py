@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import tempfile
 from pathlib import Path
 import struct
 import sys
@@ -16,6 +17,13 @@ import flash_bringup
 
 
 class RepDeploymentTest(unittest.TestCase):
+    def test_bootstrap_bootloader_rejects_unknown_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unknown.bin"
+            path.write_bytes(bytes(21200))
+            with self.assertRaisesRegex(ValueError, "exact verified"):
+                flash_rep.bootstrap_bootloader(path)
+
     def setUp(self):
         self.table = (ROOT / "build-rep/partition_table/partition-table.bin").read_bytes()
         self.boot = (ROOT / "build-rep/bootloader/bootloader.bin").read_bytes()

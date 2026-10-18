@@ -27,7 +27,7 @@ else()
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-set(PROJECT_VER "0.1.0")
+set(PROJECT_VER "0.2.1")
 project(${ROUNDIE_PROJECT_NAME})
 
 # LittleFS 1.22.2 otherwise converts a negative lfs_fs_size() result to a
@@ -68,6 +68,9 @@ else()
     endif()
 endif()
 file(WRITE "${CMAKE_BINARY_DIR}/roundie-profile.txt" "${ROUNDIE_PROFILE}\n")
+if(CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK OR CONFIG_SECURE_BOOT OR CONFIG_SECURE_FLASH_ENC_ENABLED)
+    message(FATAL_ERROR "Milestone 2C.1 does not support security/eFuse policy changes")
+endif()
 message(STATUS "Roundie layout: ${ROUNDIE_PROFILE}; image: ${ROUNDIE_PROJECT_NAME}.bin")
 
 # Generated IDF flashing bypasses the live partition/profile guards. Require

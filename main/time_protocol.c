@@ -36,7 +36,7 @@ const char *roundie_time_parse(const roundie_time_frame_t *frame,
         }
     }
     memcpy(command->id, frame->line + 5, 8);
-    if (frame->discard) {
+    if (frame->discard || frame->used >= 64) {
         return "FRAME";
     }
     if (frame->line[13] != ' ') {

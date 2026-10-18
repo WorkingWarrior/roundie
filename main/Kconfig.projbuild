@@ -8,4 +8,22 @@ config ROUNDIE_DEV_TIME_SYNC
         Allows a physically connected host to read RTC status and explicitly
         overwrite RTC UTC time. No authentication. Disable for production.
 
+config ROUNDIE_DEV_OTA
+    bool "Enable development USB Serial/JTAG OTA commands (unauthenticated)"
+    default n
+    depends on ROUNDIE_DEV_TIME_SYNC && BOOTLOADER_APP_ROLLBACK_ENABLE
+    help
+        Physically connected hosts may overwrite the inactive app slot and OTA
+        metadata. Disable for production. Requires the REP partition layout.
+
+config ROUNDIE_OTA_TEST_UNCONFIRMED_RESET
+    bool "ARM one automatic rollback experiment in this development image"
+    default n
+    depends on ROUNDIE_DEV_OTA
+    help
+        DANGEROUS TEST IMAGE: never confirms itself. Only on PENDING_VERIFY
+        with a verified VALID fallback, resets once to exercise automatic
+        ABORTED rollback. Otherwise fails self-test without a reset loop.
+        Requires separate hardware-test authorization. Never use for releases.
+
 endmenu

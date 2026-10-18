@@ -44,7 +44,7 @@ int main(void)
     for (size_t i = 0; start[i] != '\0'; i++) {
         assert(!roundie_time_feed(&frame, start[i]));
     }
-    for (unsigned i = 0; i < 500; i++) {
+    for (unsigned i = 0; i < ROUNDIE_TIME_LINE_CAPACITY + 10; i++) {
         assert(!roundie_time_feed(&frame, '9'));
     }
     assert(frame.used == ROUNDIE_TIME_LINE_CAPACITY - 1);

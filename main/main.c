@@ -26,6 +26,7 @@
 #include "roundie_board.h"
 #include "time_protocol.h"
 #include "storage_diagnostics.h"
+#include "ota_diagnostics.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -48,10 +49,12 @@ typedef struct {
     lv_obj_t *rtc_label;
     lv_obj_t *battery_label;
     lv_obj_t *battery_detail_label;
+    lv_obj_t *ota_label;
     TaskHandle_t gui_task;
     bool transfer_pending;
     bool display_fault;
     unsigned transfer_errors;
+    unsigned completed_transfers;
     bool was_pressed;
     uint16_t last_x;
     uint16_t last_y;
@@ -125,6 +128,9 @@ static void time_command(sensor_state_t *shared,
 {
     roundie_time_command_t command;
     const char *result = roundie_time_parse(frame, &command);
+    if (command.restart && !roundie_ota_restart_allowed()) {
+        result = "OTA_BUSY";
+    }
     roundie_rtc_sample_t rtc;
     esp_err_t error = ESP_OK;
     bool wall_valid = shared->wall_valid;
@@ -231,7 +237,7 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
     if (frame->used > 0 && now - *started_us > 2000000) {
         frame->discard = true; /* Never execute a suffix of an expired frame. */
     }
-    char bytes[64];
+    char bytes[256];
     ssize_t count = read(serial_fd, bytes, sizeof(bytes));
     for (ssize_t i = 0; i < count; i++) {
         if (frame->used == 0) {
@@ -239,7 +245,14 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
         }
         if (roundie_time_feed(frame, bytes[i])) {
             if (frame->used > 0 || frame->discard) {
-                time_command(shared, frame);
+#if CONFIG_ROUNDIE_DEV_OTA
+                if (strncmp(frame->line, "!RO1 ", 5) == 0) {
+                    roundie_ota_command(frame->line, frame->discard);
+                } else
+#endif
+                {
+                    time_command(shared, frame);
+                }
             }
             *frame = (roundie_time_frame_t){0};
         }
@@ -256,9 +269,16 @@ static void sensor_worker(void *argument)
     uint16_t last_voltage = 0;
     uint16_t last_soc = 0;
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC
-    /* Secondary VFS RX in this IDF requires its standard interrupt driver.
-     * Two fixed 256-byte rings, no extra task or per-command allocations. */
+    /* Secondary VFS RX requires its standard interrupt driver. One RX owner,
+     * no extra task or per-command transport allocation. */
     usb_serial_jtag_driver_config_t usb_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+#if CONFIG_ROUNDIE_DEV_OTA
+    /* The pinned ISR drops bytes if its RX ring is full, and TX cannot enqueue
+     * a record larger than its ring. Hold one whole RO1 request/response;
+     * the host uses stop-and-wait, never pipelines while Flash work runs. */
+    usb_config.rx_buffer_size = 2048;
+    usb_config.tx_buffer_size = 2048;
+#endif
     esp_err_t usb_error = usb_serial_jtag_driver_install(&usb_config);
     int serial_fd = -1;
     if (usb_error == ESP_OK) {
@@ -275,7 +295,8 @@ static void sensor_worker(void *argument)
 #endif
     int64_t next_sample_us = esp_timer_get_time() + 5000000;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(10));
+        roundie_ota_poll(esp_timer_get_time());
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC
         if (serial_fd >= 0) {
             poll_time_commands(serial_fd, shared, &frame, &started_us);
@@ -338,6 +359,15 @@ static void sensor_worker(void *argument)
 
 static void update_sensor_labels(gui_state_t *state)
 {
+    roundie_ota_status_t ota;
+    roundie_ota_snapshot(&ota);
+    if (ota.initialized) {
+        lv_label_set_text_fmt(state->ota_label, "%s %s %s (%d)",
+                              ota.running.label, roundie_ota_image_state_name(ota.running.state),
+                              roundie_ota_phase_name(ota.phase), (int)ota.last_error);
+    } else {
+        lv_label_set_text(state->ota_label, "OTA unavailable in this layout");
+    }
     roundie_rtc_sample_t rtc;
     roundie_battery_sample_t battery;
     bool wall_valid;
@@ -410,6 +440,7 @@ static void wait_for_display(lv_display_t *display)
     gui_state_t *state = lv_display_get_user_data(display);
     if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) > 0) {
         state->transfer_pending = false;
+        state->completed_transfers++;
         return;
     }
     state->transfer_errors++;
@@ -570,9 +601,10 @@ static void make_screen(gui_state_t *state,
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x101b2b), 0);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    make_label(screen, "ROUNDIE  /  0.1.0", 24, lv_color_hex(0xffffff));
-    make_label(screen, "ESP32-S3  |  1.85B bring-up", 54,
-               lv_color_hex(0x9eb8d0));
+    lv_obj_t *title = make_label(screen, "ROUNDIE", 24, lv_color_hex(0xffffff));
+    lv_label_set_text_fmt(title, "ROUNDIE / %s", esp_app_get_description()->version);
+    state->ota_label = make_label(screen, "OTA startup", 54, lv_color_hex(0x9eb8d0));
+    lv_obj_set_style_text_font(state->ota_label, &lv_font_montserrat_14, 0);
 
     size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     size_t internal_largest =
@@ -627,6 +659,7 @@ void app_main(void)
     char elf_hash[65] = {0};
     esp_app_get_elf_sha256(elf_hash, sizeof(elf_hash));
     ESP_LOGI(TAG, "Firmware ELF SHA-256 prefix: %s", elf_hash);
+    roundie_ota_diagnostics_init();
     esp_err_t nvs_error = nvs_flash_init();
     ESP_LOGI(TAG, "NVS initialization: %s; no erase fallback", esp_err_to_name(nvs_error));
     roundie_storage_diagnostics();
@@ -650,6 +683,7 @@ void app_main(void)
     error = roundie_board_start(&board, &status);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Bring-up stopped: %s", esp_err_to_name(error));
+        roundie_ota_startup_failed();
         return;
     }
 
@@ -683,6 +717,7 @@ void app_main(void)
         roundie_board_panel_io(board), &callbacks, &state);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "LCD callback registration: %s", esp_err_to_name(error));
+        roundie_ota_startup_failed();
         roundie_board_stop(board);
         return;
     }
@@ -693,6 +728,7 @@ void app_main(void)
     if (draw_buffer == NULL) {
         ESP_LOGE(TAG, "No internal DMA memory for %zu-byte LVGL buffer",
                  buffer_bytes);
+        roundie_ota_startup_failed();
         roundie_board_stop(board);
         return;
     }
@@ -700,6 +736,7 @@ void app_main(void)
     state.display = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
     if (state.display == NULL) {
         ESP_LOGE(TAG, "LVGL display allocation failed");
+        roundie_ota_startup_failed();
         heap_caps_free(draw_buffer);
         roundie_board_stop(board);
         return;
@@ -713,6 +750,7 @@ void app_main(void)
     lv_indev_t *input = lv_indev_create();
     if (input == NULL) {
         ESP_LOGE(TAG, "LVGL input allocation failed");
+        roundie_ota_startup_failed();
         lv_display_delete(state.display);
         heap_caps_free(draw_buffer);
         roundie_board_stop(board);
@@ -732,18 +770,30 @@ void app_main(void)
     error = esp_task_wdt_add(NULL);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "GUI watchdog registration: %s", esp_err_to_name(error));
-        esp_restart();
-        abort();
+        roundie_ota_startup_failed();
+        return;
     }
     TaskHandle_t sensor_task = NULL;
-    if (xTaskCreate(sensor_worker, "sensors", 4096, &sensors, 4,
+    if (xTaskCreate(sensor_worker, "sensors", 8192, &sensors, 4,
                     &sensor_task) != pdPASS) {
         ESP_LOGE(TAG, "Sensor worker creation failed; startup samples remain visible");
+        roundie_ota_startup_failed();
     }
+    bool health_sent = false;
+    int64_t self_test_at_us = esp_timer_get_time() + 1000000;
     int64_t next_health_log_us = esp_timer_get_time() + 300000000;
     int64_t next_ui_update_us = esp_timer_get_time() + 1000000;
     while (true) {
         lv_timer_handler();
+        if (!health_sent && esp_timer_get_time() >= self_test_at_us) {
+            bool memory_ok = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 16384 &&
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 8192 &&
+                heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= 131072;
+            roundie_ota_gui_health(sensor_task != NULL && flash_bytes == 0x1000000 &&
+                psram_bytes == 0x800000 && memory_ok && !state.display_fault &&
+                state.transfer_errors == 0 && state.completed_transfers > 0);
+            health_sent = true;
+        }
         if (esp_timer_get_time() >= next_ui_update_us) {
             update_sensor_labels(&state);
             next_ui_update_us = esp_timer_get_time() + 1000000;
