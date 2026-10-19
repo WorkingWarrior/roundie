@@ -1,0 +1,434 @@
+/* Production POSIX transaction/registry + real ELF validator, ASan/UBSan.
+ * IDF policy/allocator/executor are mocked; Flash durability is not simulated. */
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "roundie_packages.h"
+#include "psa/crypto.h"
+
+static ssize_t injected_write(int file, const void *bytes, size_t size);
+static int injected_sync(int file);
+static int injected_rename(const char *source, const char *destination);
+#define write injected_write
+#define fsync injected_sync
+#define rename injected_rename
+#include "../components/roundie_packages/manager.c"
+#undef write
+#undef fsync
+#undef rename
+
+static unsigned write_failure;
+static unsigned sync_failure;
+static unsigned rename_failure;
+static bool allowed = true;
+static bool runtime_busy;
+static bool allocation_failure;
+static size_t free_space = 8 * 1024 * 1024;
+static unsigned allocations;
+static unsigned submissions;
+static uint8_t *retained;
+static uint16_t executed_abi;
+static int64_t clock_us = 1000;
+static uint8_t package[ROUNDIE_PACKAGE_MAX];
+static size_t package_size;
+static unsigned groups;
+
+static bool fault(unsigned *counter)
+{
+    if (*counter > 0) {
+        (*counter)--;
+        if (*counter == 0) {
+            errno = ENOSPC;
+            return true;
+        }
+    }
+    return false;
+}
+
+static ssize_t injected_write(int file, const void *bytes, size_t size)
+{
+    assert(!runtime_busy && allowed);
+    return fault(&write_failure) ? -1 : write(file, bytes, size);
+}
+
+static int injected_sync(int file)
+{
+    assert(!runtime_busy && allowed);
+    return fault(&sync_failure) ? -1 : fsync(file);
+}
+
+static int injected_rename(const char *source, const char *destination)
+{
+    assert(!runtime_busy && allowed);
+    return fault(&rename_failure) ? -1 : rename(source, destination);
+}
+
+bool roundie_packages_allowed(void) { return allowed; }
+bool roundie_packages_runtime_busy(void) { return runtime_busy; }
+bool roundie_packages_capacity(size_t *out) { *out = free_space; return true; }
+int64_t roundie_packages_clock(void) { return clock_us++; }
+void *roundie_packages_allocate(size_t size)
+{
+    if (allocation_failure) {
+        return NULL;
+    }
+    void *memory = malloc(size);
+    if (memory != NULL) {
+        allocations++;
+    }
+    return memory;
+}
+void roundie_packages_free(void *memory)
+{
+    if (memory != NULL) {
+        assert(allocations > 0);
+        allocations--;
+        free(memory);
+    }
+}
+int roundie_packages_execute(uint8_t *bytes, size_t size, uint16_t abi)
+{
+    assert(allowed && !runtime_busy && !roundie_packages_busy());
+    assert(size == package_size - ROUNDIE_PACKAGE_PREFIX);
+    assert(memcmp(bytes, package + ROUNDIE_PACKAGE_PREFIX, size) == 0);
+    retained = bytes;
+    runtime_busy = true;
+    executed_abi = abi;
+    submissions++;
+    return ESP_OK;
+}
+
+static void unload(void)
+{
+    assert(runtime_busy && retained != NULL);
+    roundie_packages_free(retained);
+    retained = NULL;
+    runtime_busy = false;
+    assert(allocations == 0);
+}
+
+static void hash(const void *bytes, size_t size, uint8_t out[32])
+{
+    size_t length;
+    assert(psa_hash_compute(PSA_ALG_SHA_256, bytes, size, out, 32, &length) == PSA_SUCCESS);
+    assert(length == 32);
+}
+
+static void fixture(const char *path)
+{
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    package_size = fread(package, 1, sizeof(package), file);
+    assert(fclose(file) == 0 && package_size > ROUNDIE_PACKAGE_PREFIX);
+}
+
+static void version(unsigned major)
+{
+    package[192] = (uint8_t)major;
+    package[193] = 0;
+}
+
+static esp_err_t stage(void)
+{
+    uint8_t digest[32];
+    hash(package, package_size, digest);
+    assert(roundie_packages_begin(42, package_size, digest) == ESP_OK);
+    assert(roundie_packages_scan() == ESP_OK);
+    for (size_t offset = 0; offset < package_size; offset += 512) {
+        size_t size = package_size - offset > 512 ? 512 : package_size - offset;
+        esp_err_t result = roundie_packages_write(42, offset, package + offset, size);
+        if (result != ESP_OK) {
+            return result;
+        }
+    }
+    return roundie_packages_finish(42);
+}
+
+static esp_err_t install(void)
+{
+    uint8_t digest[32];
+    hash(package, package_size, digest);
+    return roundie_packages_install(digest);
+}
+
+static void active_version(unsigned expected)
+{
+    assert(roundie_packages_scan() == ESP_OK);
+    roundie_package_record_t record;
+    assert(roundie_packages_find("org.roundie.hello", &record) == ESP_OK);
+    assert(record.health == ROUNDIE_PACKAGE_OK && record.metadata.version[0] == expected);
+}
+
+static void group(const char *name)
+{
+    assert(allocations == (retained != NULL ? 1U : 0U));
+    groups++;
+    printf("package group %u PASS: %s\n", groups, name);
+}
+
+int main(int argc, char **argv)
+{
+    assert(argc == 4);
+    fixture(argv[1]);
+    roundie_package_metadata_t decoded;
+    char error[ROUNDIE_ELF_ERROR_SIZE];
+    assert(roundie_package_decode(package, package_size, package_size, &decoded, error));
+    assert(roundie_package_id_valid("org.roundie.hello"));
+    static const char *const bad_ids[] = {"", "x", "a.", ".a", "a..b", "../x", "a/b", "a\\b", "a.B", "a.1", "a.b\n"};
+    for (unsigned i = 0; i < sizeof(bad_ids) / sizeof(bad_ids[0]); i++) {
+        assert(!roundie_package_id_valid(bad_ids[i]));
+    }
+    group("canonical ID grammar/traversal");
+    uint8_t original[ROUNDIE_PACKAGE_PREFIX];
+    memcpy(original, package, sizeof(original));
+    const unsigned header_bytes[] = {0, 4, 6, 8, 12, 16, 20, 56, 127, 191, 218};
+    for (unsigned i = 0; i < sizeof(header_bytes) / sizeof(header_bytes[0]); i++) {
+        package[header_bytes[i]] ^= 0xff;
+        assert(!roundie_package_decode(package, package_size, package_size, &decoded, error));
+        memcpy(package, original, sizeof(original));
+    }
+    assert(!roundie_package_decode(package, 0, package_size, &decoded, error));
+    assert(!roundie_package_decode(package, 63, package_size, &decoded, error));
+    assert(!roundie_package_decode(package, package_size, SIZE_MAX, &decoded, error));
+    assert(!roundie_package_decode(package, package_size, package_size - 1, &decoded, error));
+    group("header/version/reserved/manifest/overflow/truncation");
+    assert(roundie_packages_scan() == ESP_OK && status.count == 0);
+    assert(submissions == 0);
+    group("empty registry/no autostart");
+    uint8_t digest[32];
+    hash(package, package_size, digest);
+    assert(roundie_packages_begin(0, package_size, digest) != ESP_OK);
+    assert(roundie_packages_begin(42, ROUNDIE_PACKAGE_MAX + 1, digest) != ESP_OK);
+    free_space = ROUNDIE_PACKAGES_RESERVE;
+    assert(roundie_packages_begin(42, package_size, digest) != ESP_OK);
+    free_space = 8 * 1024 * 1024;
+    group("package/storage limits and reserve");
+    assert(roundie_packages_begin(42, package_size, digest) == ESP_OK);
+    assert(roundie_packages_write(41, 0, package, 1) != ESP_OK);
+    assert(roundie_packages_write(42, 1, package, 1) != ESP_OK);
+    assert(roundie_packages_write(42, 0, package, 513) != ESP_OK);
+    assert(roundie_packages_finish(42) != ESP_OK);
+    assert(roundie_packages_scan() == ESP_OK && status.count == 0);
+    assert(roundie_packages_abort(42) == ESP_OK);
+    group("offset/session/incomplete transfer invisible/abort");
+    assert(roundie_packages_begin(42, package_size, digest) == ESP_OK);
+    roundie_packages_poll(clock_us + 10000001);
+    assert(!roundie_packages_busy() && access(TRANSFER, F_OK) != 0);
+    group("transfer timeout");
+    assert(roundie_packages_begin(42, package_size, digest) == ESP_OK);
+    allowed = false;
+    roundie_packages_poll(clock_us);
+    assert(!roundie_packages_busy());
+    assert(roundie_packages_scan() != ESP_OK);
+    assert(roundie_packages_launch("org.roundie.hello") != ESP_OK);
+    allowed = true;
+    group("Safe Mode cancellation and admission");
+    write_failure = 1;
+    assert(stage() != ESP_OK && !roundie_packages_busy());
+    group("ENOSPC/write failure");
+    sync_failure = 1;
+    assert(stage() != ESP_OK && !roundie_packages_busy());
+    group("transfer fsync failure");
+    allocation_failure = true;
+    assert(stage() != ESP_OK && allocations == 0);
+    allocation_failure = false;
+    group("validation allocation failure");
+    package[24] ^= 1;
+    assert(stage() != ESP_OK && submissions == 0);
+    package[24] ^= 1;
+    package[198] = 2;
+    assert(stage() != ESP_OK && submissions == 0);
+    package[198] = 1;
+    package[200] = 'x';
+    assert(stage() != ESP_OK);
+    package[200] = 'e';
+    group("ELF digest/ABI/target rejection before execution");
+    assert(stage() == ESP_OK && status.phase == ROUNDIE_PACKAGES_READY);
+    assert(status.count == 0);
+    assert(install() == ESP_OK && !roundie_packages_busy());
+    active_version(1);
+    group("validated install and activation");
+    assert(roundie_packages_launch("org.roundie.hello") == ESP_OK && executed_abi == 1);
+    assert(allocations == 1);
+    /* All loaded states share the same reservation. Simulate RUNNING,
+     * SUSPENDED and STOPPED ownership, not merely a RUNNING state check. */
+    for (unsigned state = 0; state < 3; state++) {
+        assert(roundie_packages_begin(42, package_size, digest) != ESP_OK);
+        assert(roundie_packages_install(digest) != ESP_OK);
+        assert(roundie_packages_remove("org.roundie.hello") != ESP_OK);
+        assert(roundie_packages_launch("org.roundie.hello") != ESP_OK);
+    }
+    unload();
+    active_version(1);
+    group("launch buffer ownership/single instance/loaded Flash exclusion/persistent unload");
+    version(2);
+    assert(stage() == ESP_OK);
+    rename_failure = 1;
+    assert(install() != ESP_OK);
+    active_version(1);
+    group("artifact rename failure preserves active version");
+    assert(stage() == ESP_OK);
+    rename_failure = 2;
+    assert(install() != ESP_OK);
+    active_version(1);
+    assert(roundie_packages_launch("org.roundie.hello") == ESP_OK);
+    unload();
+    group("selection commit failure preserves launchable version/orphan ignored");
+    assert(stage() == ESP_OK);
+    sync_failure = 1;
+    assert(install() != ESP_OK);
+    active_version(1);
+    group("selection fsync failure preserves previous version");
+    assert(stage() == ESP_OK && install() == ESP_OK);
+    active_version(2);
+    group("transactional replacement");
+    version(1);
+    assert(stage() == ESP_OK && install() != ESP_OK);
+    assert(roundie_packages_abort(42) == ESP_OK);
+    active_version(2);
+    version(2);
+    assert(stage() == ESP_OK && install() != ESP_OK);
+    assert(roundie_packages_abort(42) == ESP_OK);
+    group("downgrade and duplicate version policy");
+    package[ROUNDIE_PACKAGE_PREFIX] = 0;
+    hash(package + ROUNDIE_PACKAGE_PREFIX, package_size - ROUNDIE_PACKAGE_PREFIX, package + 24);
+    assert(stage() != ESP_OK);
+    active_version(2);
+    group("non-executable failed replacement preserves original");
+    fixture(argv[2]);
+    assert(stage() == ESP_OK && install() == ESP_OK);
+    assert(roundie_packages_launch("org.roundie.events") == ESP_OK && executed_abi == 2);
+    unload();
+    fixture(argv[3]);
+    assert(stage() == ESP_OK && install() == ESP_OK);
+    assert(roundie_packages_launch("org.roundie.ui") == ESP_OK && executed_abi == 3);
+    unload();
+    assert(roundie_packages_scan() == ESP_OK && status.count == 3);
+    group("multiple packages/ABI 2 and 3 submission");
+    /* Reconstruct all metadata from disk with no persisted host cache. */
+    memset(registry, 0, sizeof(registry));
+    status.count = 0;
+    assert(roundie_packages_scan() == ESP_OK && status.count == 3);
+    roundie_package_record_t record;
+    assert(roundie_packages_get(3, &record) == ESP_ERR_NOT_FOUND);
+    assert(roundie_packages_find("org.roundie.ui", &record) == ESP_OK);
+    char path[PATH_SIZE];
+    path_for(path, "org.roundie.ui", "0.rpk");
+    int file = open(path, O_WRONLY);
+    assert(file >= 0 && write(file, "X", 1) == 1 && close(file) == 0);
+    assert(roundie_packages_scan() == ESP_OK);
+    assert(roundie_packages_find("org.roundie.ui", &record) == ESP_OK && record.health == ROUNDIE_PACKAGE_CORRUPT);
+    unsigned before = submissions;
+    assert(roundie_packages_launch("org.roundie.ui") != ESP_OK && submissions == before);
+    group("registry reconstruction/stale metadata/corruption launch denial");
+    assert(roundie_packages_remove("org.roundie.ui") == ESP_OK);
+    assert(roundie_packages_find("org.roundie.ui", &record) == ESP_ERR_NOT_FOUND);
+    assert(roundie_packages_launch("org.roundie.ui") != ESP_OK);
+    assert(status.count == 2);
+    assert(roundie_packages_remove("org.roundie.ui") == ESP_OK);
+    active_version(2);
+    group("scoped idempotent removal/other applications preserved");
+    /* No active record: never choose a random orphan package. */
+    path_for(path, "org.roundie.events", "active");
+    assert(unlink(path) == 0);
+    assert(roundie_packages_scan() == ESP_OK && status.count == 1 && status.orphans == 1);
+    assert(roundie_packages_launch("org.roundie.events") != ESP_OK);
+    assert(roundie_packages_remove("org.roundie.events") == ESP_OK);
+    group("missing selection fails closed/explicit orphan cleanup");
+    fixture(argv[1]);
+    assert(roundie_packages_begin(42, package_size, digest) == ESP_OK);
+    /* Simulate a process restart with an unsynced incomplete transfer. */
+    assert(close(transfer) == 0);
+    transfer = -1;
+    status.phase = ROUNDIE_PACKAGES_IDLE;
+    assert(roundie_packages_scan() == ESP_OK && status.count == 1);
+    assert(roundie_packages_begin(42, package_size, digest) == ESP_OK);
+    assert(roundie_packages_abort(42) == ESP_OK);
+    group("interrupted transfer restart/explicit bounded cleanup");
+    /* Pin a future ABI manifest to emulate packages preserved after rollback.
+     * Discovery reports incompatibility without deleting or executing bytes. */
+    path_for(path, "org.roundie.hello", "active");
+    uint8_t selection[SELECTION_SIZE];
+    assert(read_selection("org.roundie.hello", selection));
+    path_for(path, "org.roundie.hello", selection[4] == 0 ? "0.rpk" : "1.rpk");
+    FILE *future = fopen(path, "r+b");
+    assert(future != NULL);
+    package_size = fread(package, 1, sizeof(package), future);
+    package[198] = 4;
+    rewind(future);
+    assert(fwrite(package, 1, package_size, future) == package_size && fclose(future) == 0);
+    hash(package, package_size, selection + 8);
+    path_for(path, "org.roundie.hello", "active");
+    file = open(path, O_WRONLY | O_TRUNC);
+    assert(file >= 0 && write(file, selection, sizeof(selection)) == sizeof(selection) && close(file) == 0);
+    assert(roundie_packages_scan() == ESP_OK);
+    assert(roundie_packages_find("org.roundie.hello", &record) == ESP_OK && record.health == ROUNDIE_PACKAGE_INCOMPATIBLE);
+    assert(roundie_packages_launch("org.roundie.hello") != ESP_OK);
+    group("firmware rollback/incompatible ABI retained and reported");
+    assert(roundie_packages_remove("org.roundie.hello") == ESP_OK);
+    assert(status.count == 0 && allocations == 0 && !roundie_packages_busy());
+    fixture(argv[1]);
+    for (unsigned i = 0; i < ROUNDIE_PACKAGES_MAX; i++) {
+        char id[64];
+        snprintf(id, sizeof(id), "org.roundie.p%c", 'a' + i);
+        memset(package + 64, 0, 64);
+        memcpy(package + 64, id, strlen(id));
+        assert(stage() == ESP_OK && install() == ESP_OK);
+    }
+    memset(package + 64, 0, 64);
+    memcpy(package + 64, "org.roundie.extra", 17);
+    assert(stage() == ESP_OK && install() != ESP_OK);
+    assert(roundie_packages_abort(42) == ESP_OK);
+    assert(status.count == ROUNDIE_PACKAGES_MAX);
+    for (unsigned i = 0; i < ROUNDIE_PACKAGES_MAX; i++) {
+        char id[64];
+        snprintf(id, sizeof(id), "org.roundie.p%c", 'a' + i);
+        assert(roundie_packages_remove(id) == ESP_OK);
+    }
+    group("bounded full registry/ninth application rejected");
+    fixture(argv[1]);
+    /* Import rejection and relocation rejection exercise the same production
+     * preflight through package validation, after resealing payload integrity. */
+    const char *symbol = "rep_abi_v1";
+    uint8_t *import = NULL;
+    for (size_t i = ROUNDIE_PACKAGE_PREFIX; i + strlen(symbol) < package_size; i++) {
+        if (memcmp(package + i, symbol, strlen(symbol) + 1) == 0) {
+            import = package + i;
+            break;
+        }
+    }
+    assert(import != NULL);
+    import[0] = 'x';
+    hash(package + ROUNDIE_PACKAGE_PREFIX, package_size - ROUNDIE_PACKAGE_PREFIX, package + 24);
+    assert(stage() != ESP_OK && strstr(status.error, "import:") != NULL);
+    group("unsupported imports rejected inside package validation");
+    fixture(argv[1]);
+    /* ELF32 LE section table: replace an actual RELA type by unsupported 255. */
+    uint8_t *elf = package + ROUNDIE_PACKAGE_PREFIX;
+    uint32_t sections;
+    memcpy(&sections, elf + 32, 4);
+    uint16_t section_count;
+    memcpy(&section_count, elf + 48, 2);
+    bool changed = false;
+    for (unsigned i = 0; i < section_count; i++) {
+        uint32_t type;
+        uint32_t offset;
+        memcpy(&type, elf + sections + i * 40 + 4, 4);
+        memcpy(&offset, elf + sections + i * 40 + 16, 4);
+        if (type == 4) {
+            elf[offset + 4] = 255;
+            changed = true;
+            break;
+        }
+    }
+    assert(changed);
+    hash(elf, package_size - ROUNDIE_PACKAGE_PREFIX, package + 24);
+    assert(stage() != ESP_OK && strstr(status.error, "relocation") != NULL);
+    group("unsupported relocations rejected inside package validation");
+    printf("Production packages PASS: %u scenario groups; no native instructions executed on host\n", groups);
+}

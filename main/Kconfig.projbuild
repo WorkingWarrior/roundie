@@ -53,6 +53,15 @@ config ROUNDIE_BOOT_GUARD_TEST
         all remaining faults. Must use a version ending in -boot-test.
         Disable in normal firmware; never causes a fault merely by booting.
 
+config ROUNDIE_DEV_PACKAGES
+    bool "Enable trusted development RPK1 package management"
+    default y
+    depends on ROUNDIE_DEV_ELF
+    help
+        RP1 bounded package transport, explicit install, list, launch and remove.
+        No authentication, signing, isolation or application autostart. Disable
+        together with the other development interfaces for production.
+
 config ROUNDIE_BOOT_STABILITY_SECONDS
     int "BootGuard operational stability window (seconds)"
     range 5 30

@@ -1,5 +1,12 @@
 # Milestones 2A–2B: storage foundation and physical provisioning
 
+**Milestone 3D addendum:** [PackageManager](package-manager.md) uses only
+`/storage/packages` within this existing mount, two bounded artifacts per ID,
+one fsynced/renamed activation record and a single unselected transfer. It
+reserves 256 KiB plus metadata allowance and excludes all package writes while
+any ELF is loaded. No new mount, partition, format, boot repair or NVS erasure.
+Capacity diagnostics refresh the existing manager; package failures are explicit.
+
 **Milestone 2C.1 addendum:** the [OTA manager and USB utility](ota.md) now implement
 application updates, self-test confirmation and rollback guards. The explicitly
 approved bootstrap A, genuine A-to-B OTA and later automatic rollback passed.

@@ -1,5 +1,11 @@
 # Milestone 3B: event-driven native application lifecycle
 
+Milestone 3D adds [explicit launch by installed ID](app-registry.md). Packages
+remain persistent after stop/unload; runtime input is separately allocated and
+owned by the existing executor generation. ABI 1 uses RUN, ABI 2/3 use START.
+No boot autostart is added. Loaded states, including SUSPENDED/STOPPED, continue
+to exclude every package write until completed unload and input retirement.
+
 **Milestone 3C extension:** [Application UI](app-ui.md) adds a GUI creation/show
 barrier after start, hide/show on suspend/resume, and acknowledged GUI deletion
 before STOPPED/unload. Callback signatures retain ABI 2 value layouts with

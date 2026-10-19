@@ -1,7 +1,8 @@
 # Milestone 3C acceptance — 2026-10-19
 
 Milestone 3C's autonomous source, host, target and bounded physical-device gates
-are complete. **Finger interaction and human visual correctness are PENDING.**
+are complete. **Finger interaction and human visual correctness are now
+USER-VERIFIED**, as reported by the user at the start of Milestone 3D.
 The deployed device ends normal/STABLE with no active ELF/application UI and
 two VALID firmware slots. No Milestone 3D, launcher, packages, registry or MTP
 work was started.
@@ -240,13 +241,26 @@ confirmed:
 | RTC | GET OK, valid, OS=0; no clock-discipline change or accuracy claim |
 | Diagnostics | RO1, RS1, RT1, RE1 and UI STATUS operational |
 
-The staged UI ELF is retained; no autostart was added. Actual finger hit testing,
-visible counter/layout/readability, full sensor-to-pixel latency, physical
-overload, long endurance, power interruption and battery-dependent recovery
+The staged UI ELF is retained; no autostart was added. Full sensor-to-pixel
+latency, physical overload, long endurance, power interruption and battery-dependent recovery
 remain **PENDING**. Trusted native code remains unisolated. Earlier RTC,
 battery calibration and PSRAM/Flash-concurrency limitations are unchanged.
 
-## Reproduce the pending finger/visual gate
+## USER-VERIFIED physical touch and visual acceptance
+
+The user's Milestone 3D instructions report approximately 30 actual finger
+presses, 30 physical TOUCH events, zero injected events, 30 delivered events,
+and no dropped or rejected input. The user observed a layout resembling the
+intended UI, suspend hiding the application view, resume restoring it, and
+stop/unload restoring the system UI. Application-owned resources and LVGL
+objects returned to zero; SRAM and PSRAM recovered to their previous values.
+
+This is **user observation and user-reported counters**, separate from the
+automated captures above (which used INJECTED origin). No new raw log or
+photographic evidence was collected for this report. The physical touch and
+visual gate is accepted on that basis and was not repeated to update this file.
+
+## Original reproduction procedure (retained for reference)
 
 Run from this checkout with the recorded physical device attached. These
 commands stage the exact UI example and start it; START prints its generation.
@@ -259,7 +273,7 @@ python tools/roundie_elf.py --port "$PORT" start --sha256 340c9146c8d354ea88e367
 python tools/roundie_ui.py --port "$PORT" status
 ```
 
-Follow [the five manual steps](input-bridge.md#manual-acceptance-pending-until-actually-performed)
+Follow [the five manual steps](input-bridge.md#manual-acceptance-procedure)
 using real finger taps and display observation; do not use `roundie_ui.py press`.
 Use the printed generation for `suspend/resume/stop/unload --instance` in
 `roundie_elf.py`. Finish with stop/unload and verify zero resources/widgets.

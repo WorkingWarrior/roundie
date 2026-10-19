@@ -16,6 +16,18 @@
 static const char *TAG = "storage";
 static roundie_storage_t *storage;
 
+bool roundie_storage_usage(size_t *total, size_t *used)
+{
+    roundie_storage_status_t status;
+    if (storage == NULL || roundie_storage_capacity(storage, &status) != ROUNDIE_STORAGE_OK ||
+        !status.mounted || !status.capacity_valid || status.used_bytes > status.total_bytes) {
+        return false;
+    }
+    *total = status.total_bytes;
+    *used = status.used_bytes;
+    return true;
+}
+
 bool roundie_storage_available(void)
 {
     roundie_storage_status_t status;

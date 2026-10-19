@@ -36,10 +36,12 @@ class ElfTests(unittest.TestCase):
             staging = str(Path(temporary) / "staging")
             subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-ffunction-sections", "-Wl,--gc-sections",
+                            "-DCONFIG_ROUNDIE_DEV_PACKAGES=1",
                             '-DDEVELOPMENT_DIRECTORY="' + str(Path(temporary) / "dev") + '"',
                             "-I" + str(ROOT / "tests/elf_mocks"), "-I" + str(ROOT / "tests/ota_mocks"),
                             "-I" + str(ROOT / "include"), "-I" + str(ROOT / "components/roundie_elf/include"),
                             "-I" + str(ROOT / "components/roundie_ota/include"),
+                            "-I" + str(ROOT / "components/roundie_packages/include"),
                             "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),
                             str(ROOT / "tests/test_elf_development.c"), str(ROOT / "components/roundie_elf/validate.c"),

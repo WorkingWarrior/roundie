@@ -34,7 +34,7 @@ objects, create views, send raw coordinates or call ELF directly. A successful
 injection proves the semantic path only. Software-sent LVGL events on a host
 also do not prove CST816S, finger interaction or actual display appearance.
 
-## Manual acceptance (PENDING until actually performed)
+## Manual acceptance procedure
 
 1. Start the exact `examples/ui_elf` binary after upload with `roundie_elf.py`.
 2. Confirm a readable centered title `Roundie ELF`, description, counter, button
@@ -49,7 +49,10 @@ also do not prove CST816S, finger interaction or actual display appearance.
 
 Build and lifecycle details are in [app-ui.md](app-ui.md). The
 [authorized device record](ui-milestone-3c-acceptance.md) distinguishes
-software-injected events, LVGL application, LCD DMA completion and pending
-finger/visual checks. Device cycles recorded four INJECTED and zero TOUCH events
+software-injected events, LVGL application, LCD DMA completion and the subsequent
+**USER-VERIFIED** finger/visual acceptance (approximately 30 presses, 30 TOUCH,
+zero INJECTED, 30 delivered, no drops/rejections; view lifecycle and memory
+recovery observed). That user report has no newly collected raw log or photos.
+The earlier automated device cycles recorded four INJECTED and zero TOUCH events
 each. The measured input enqueue-to-native-callback maxima were 896–2889 us;
 they exclude USB transport, physical acquisition, hit testing and LCD response.

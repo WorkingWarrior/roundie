@@ -19,6 +19,9 @@
 #include "roundie_ota_protocol.h"
 #include "roundie_boot_guard.h"
 #include "storage_diagnostics.h"
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+#include "roundie_packages.h"
+#endif
 
 #ifndef DEVELOPMENT_DIRECTORY
 #define DEVELOPMENT_DIRECTORY "/storage/dev"
@@ -49,6 +52,16 @@ static bool policy(void)
         strcmp(ota.running.label, ota.boot) == 0 && roundie_storage_available();
 }
 
+bool roundie_elf_policy_allowed(void)
+{
+    return policy();
+}
+
+bool roundie_elf_transfer_busy(void)
+{
+    return file >= 0;
+}
+
 static void abort_transfer(void)
 {
     if (file >= 0) {
@@ -63,12 +76,19 @@ static void abort_transfer(void)
 
 bool roundie_elf_development_busy(void)
 {
-    return file >= 0 || roundie_elf_busy();
+    return file >= 0 || roundie_elf_busy()
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        || roundie_packages_busy()
+#endif
+        ;
 }
 
 void roundie_elf_poll(int64_t now_us)
 {
     permitted = policy();
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+    permitted = permitted && !roundie_packages_busy();
+#endif
     roundie_elf_set_allowed(permitted);
     if (file >= 0 && (!permitted || now_us >= deadline)) {
         snprintf(last_error, sizeof(last_error), "transfer-cancelled-or-expired");

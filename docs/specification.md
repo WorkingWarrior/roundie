@@ -1954,10 +1954,15 @@ Następujące zagadnienia wymagają pomiarów lub osobnego rozstrzygnięcia:
 10. Tabela Flash: układ `rep-v1` wybrany w Milestone 2A i zweryfikowany offline
     ([plan migracji](flash-migration.md)); migracja i walidacja sprzętowa pozostają otwarte.
 11. Wielkość partycji coredump: rezerwa 128 KiB w `rep-v1`, finalny zakres i rozmiar wymagają pomiarów.
-12. Format manifestu.
-13. Format pakietu aplikacji.
+12. Format manifestu: profil developerski RPK1 wybrany w Milestone 3D
+    ([format](package-format.md)); profil produkcyjny i podpisy pozostają otwarte.
+13. Format pakietu aplikacji: developerski kontener RPK1 z jednym ELF,
+    bez kompresji ([format](package-format.md)).
 14. Algorytm podpisu pakietów.
-15. Sposób przechowywania metadanych aktywacji.
+15. Sposób przechowywania metadanych aktywacji: Milestone 3D używa rekordu RPA1
+    z numerem slotu artefaktu i SHA-256, fsync i rename pojedynczego pliku
+    ([transakcja i ograniczenia dowodów](package-manager.md)); odporność
+    fizycznego urządzenia na utratę zasilania pozostaje PENDING.
 16. Konkretny mechanizm przechowywania Boot Guard w RTC.
 17. Zachowanie RTC po brownoucie.
 18. Dostępność sygnału LCD_TE.

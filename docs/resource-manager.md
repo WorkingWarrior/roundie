@@ -77,3 +77,12 @@ The original ABI 1 binary also recovered its measured heap exactly.
 Full timings, identities and evidence boundaries are in
 [app-lifecycle.md](app-lifecycle.md#evidence). Forgotten-allocation and partial-init
 reclamation are host-test evidence; no deliberately failing native ELF was run.
+## Milestone 3D ownership integration
+
+Installed packages are persistent system artifacts, not SDK resources owned by
+an application generation. [Launch by ID](app-registry.md) copies validated ELF
+input into the existing executor ownership path; there are no borrowed package
+buffers or pointers into unloaded code in AppRegistry. Existing event, timer,
+UI and allocation cleanup runs before releasing the loaded-instance reservation.
+Unloading never removes an installed artifact. Package mutation remains blocked
+even while native code is suspended or stopped but loaded.

@@ -1,5 +1,12 @@
 # Native ELF proof — Milestone 3A
 
+**Milestone 3D:** [PackageManager](package-manager.md) reuses this exact preflight
+at install and every launch. It reopens committed RPK1, checks full/payload
+digests and ABI/platform, then submits separately owned ELF bytes to the existing
+RUN/START executor. Loader 1.3.5 and executable PSRAM mapping are unchanged.
+RE1 raw ELF development staging remains available. No package file is unloaded
+or deleted when runtime ownership retires.
+
 **Milestone 3C:** loader preflight/resolution additionally allow the exact ABI 3
 pair `rep_abi_v3` / `rep_app_entry_v3`, matching metadata version 3. No broad
 exports, relocation changes or relaxed memory/alignment limits were added.

@@ -9,6 +9,8 @@ static roundie_ota_status_t ota;
 static roundie_boot_status_t boot;
 static bool mounted = true;
 static bool app_busy;
+static bool package_busy;
+bool roundie_packages_busy(void) { return package_busy; }
 static bool allow;
 static int64_t clock_us = 100000;
 static char response[2048];
@@ -177,6 +179,11 @@ int main(int argc, char **argv)
     app_busy = true;
     assert(command("BEGIN 12345678 %zu %s", fixture_size, digest_hex) == ESP_ERR_INVALID_STATE);
     app_busy = false;
+    package_busy = true;
+    assert(roundie_elf_development_busy());
+    assert(command("BEGIN 12345678 %zu %s", fixture_size, digest_hex) == ESP_ERR_INVALID_STATE);
+    assert(command("RUN %s", digest_hex) == ESP_ERR_INVALID_STATE && !allow);
+    package_busy = false;
     assert(command("RUN ../hello.elf") != ESP_OK);
     assert(command("RESTART") != ESP_OK);
     assert(command("STATUS suffix") != ESP_OK);

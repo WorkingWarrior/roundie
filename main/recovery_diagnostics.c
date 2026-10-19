@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "roundie_ota.h"
 #include "elf_diagnostics.h"
+#include "package_diagnostics.h"
 #if CONFIG_ROUNDIE_DEV_ELF
 #include "roundie_elf.h"
 #include "esp_timer.h"
@@ -118,6 +119,7 @@ void roundie_recovery_command(char *line, bool discard)
 #if CONFIG_ROUNDIE_DEV_ELF
                     roundie_elf_set_allowed(false);
                     roundie_elf_poll(esp_timer_get_time());
+                    roundie_package_poll(esp_timer_get_time());
 #endif
                     /* NVS commit is a Flash write too. REQUEST first closes
                      * admission; persistence/restart follow completed teardown. */

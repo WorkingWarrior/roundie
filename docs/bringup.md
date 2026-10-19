@@ -1,5 +1,12 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Milestone 3D:** [packages/registry acceptance](packages-milestone-3d-acceptance.md)
+records the package-enabled 0.3.4 build and bounded deployment gates. Package
+format, persistence and launch contracts are in [PackageManager](package-manager.md).
+Milestone 3C's actual finger/visual gate is now
+[USER-VERIFIED](ui-milestone-3c-acceptance.md#user-verified-physical-touch-and-visual-acceptance),
+separate from earlier automated injection logs; it was not repeated for 3D.
+
 **Milestone 3C:** see [Application UI](app-ui.md) and [Input bridge](input-bridge.md)
 for the scoped native UI extension and its separate host/target/device evidence.
 The existing LCD/DMA driver, GUI task and CST816S input mapping are reused.

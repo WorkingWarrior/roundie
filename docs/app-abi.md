@@ -1,5 +1,10 @@
 # REP application ABI 1 — Milestone 3A
 
+**Milestone 3D:** [RPK1 packages](package-format.md) declare ABI 1/2/3 and must
+match the embedded `.rep.abi` before install and launch. No application ABI or
+allowlist was widened. Package metadata/selection remain private system formats;
+installed artifacts confer no publisher identity, isolation or execution trust.
+
 **Milestone 3C:** explicit [ABI 3 and asynchronous UI](app-ui.md) adds a separate
 service table, descriptor capability declaration, entry and sole import. ABI
 1/2 public headers and binary layouts remain unchanged. START accepts 2/3;
