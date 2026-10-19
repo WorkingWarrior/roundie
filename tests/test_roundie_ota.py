@@ -112,6 +112,7 @@ class OTATests(unittest.TestCase):
                                 f"-DCONFIG_ROUNDIE_OTA_TEST_UNCONFIRMED_RESET={armed}",
                                 "-I" + str(ROOT / "tests/ota_mocks"), "-I" + str(ROOT / "main"),
                                 "-I" + str(ROOT / "components/roundie_ota/include"),
+                                "-I" + str(ROOT / "components/roundie_boot_guard/include"),
                                 str(ROOT / "main/ota_diagnostics.c"), str(ROOT / "tests/test_ota_boot_gate.c"),
                                 "-o", executable], check=True)
                 for state in (0, 1, 2, 3, 4, -1, -2):

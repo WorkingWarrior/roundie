@@ -158,7 +158,7 @@ static bool rep_layout_matches(void)
     return count == sizeof(expected) / sizeof(expected[0]);
 }
 
-void roundie_storage_diagnostics(void)
+bool roundie_storage_diagnostics(void)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
     bool rep = rep_layout_matches();
@@ -180,7 +180,7 @@ void roundie_storage_diagnostics(void)
         (running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
          running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1)) {
         ESP_LOGW(TAG, "Storage not mounted: REP build and exact REP layout required; total/used unavailable");
-        return;
+        return strcmp(profile, "rep") != 0;
     }
     roundie_storage_result_t result = roundie_storage_init(&storage);
     if (result == ROUNDIE_STORAGE_OK) {
@@ -200,4 +200,5 @@ void roundie_storage_diagnostics(void)
     } else if (result == ROUNDIE_STORAGE_OK) {
         migration_filesystem_test();
     }
+    return status.mounted && result == ROUNDIE_STORAGE_OK;
 }

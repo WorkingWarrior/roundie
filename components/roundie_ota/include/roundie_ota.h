@@ -58,6 +58,10 @@ esp_err_t roundie_ota_write(uint32_t session, size_t offset, const void *data, s
 esp_err_t roundie_ota_finish(uint32_t session);
 esp_err_t roundie_ota_abort(uint32_t session);
 esp_err_t roundie_ota_activate(const uint8_t digest[32]);
+/* Recovery owner only: explicitly select the other compatible, verified VALID
+ * image by exact label and ELF identity. IDF changes it to NEW; first-boot
+ * confirmation is required again. Does not invalidate the running image. */
+esp_err_t roundie_ota_select_valid(const char *label, const char *elf);
 /* Internal approved-control path only; NOT exposed on USB. Marks current image
  * invalid and reboots only with a compatible VALID destination and IDF eligibility.
  */

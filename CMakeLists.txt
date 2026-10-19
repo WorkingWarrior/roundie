@@ -32,7 +32,7 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 if(NOT DEFINED PROJECT_VER)
-    set(PROJECT_VER "0.2.1")
+    set(PROJECT_VER "0.2.2")
 endif()
 project(${ROUNDIE_PROJECT_NAME})
 
@@ -68,6 +68,9 @@ if(ROUNDIE_PROFILE STREQUAL "rep")
        NOT CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)
         message(FATAL_ERROR "REP profile/config mismatch; regenerate sdkconfig.rep")
     endif()
+    if(NOT CONFIG_ROUNDIE_RECOVERY_USB)
+        message(FATAL_ERROR "REP requires USB recovery independent of GUI and development RTC/OTA commands")
+    endif()
 else()
     if(NOT CONFIG_PARTITION_TABLE_SINGLE_APP OR CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)
         message(FATAL_ERROR "Legacy profile/config mismatch; regenerate sdkconfig")
@@ -81,6 +84,9 @@ if(CONFIG_ROUNDIE_OTA_TEST_UNCONFIRMED_RESET AND NOT PROJECT_VER MATCHES "-rollb
     message(FATAL_ERROR "Armed OTA images require an explicit PROJECT_VER ending in -rollback-test")
 endif()
 message(STATUS "Roundie layout: ${ROUNDIE_PROFILE}; image: ${ROUNDIE_PROJECT_NAME}.bin")
+if(CONFIG_ROUNDIE_BOOT_GUARD_TEST AND NOT PROJECT_VER MATCHES "-boot-test$")
+    message(FATAL_ERROR "BootGuard diagnostic images require PROJECT_VER ending in -boot-test")
+endif()
 
 # Generated IDF flashing bypasses the live partition/profile guards. Require
 # the project updaters for both profiles, including app-only development work.

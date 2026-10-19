@@ -364,6 +364,28 @@ void roundie_ota_tick(int64_t now_us)
     }
 }
 
+esp_err_t roundie_ota_select_valid(const char *label, const char *elf)
+{
+    if (!manager.status.initialized || manager.status.phase != ROUNDIE_OTA_IDLE ||
+        label == NULL || elf == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    refresh();
+    if (manager.status.running.state != ESP_OTA_IMG_VALID ||
+        esp_ota_get_boot_partition() != manager.running ||
+        manager.status.other.state != ESP_OTA_IMG_VALID ||
+        !manager.status.other.image_valid || !manager.status.other.compatible ||
+        strcmp(label, manager.status.other.label) != 0 ||
+        strcmp(elf, manager.status.other.elf) != 0) {
+        return ESP_ERR_OTA_VALIDATE_FAILED;
+    }
+    esp_err_t error = esp_ota_set_boot_partition(manager.target);
+    manager.status.last_error = error;
+    manager.status.phase = ROUNDIE_OTA_ACTIVATION_PENDING;
+    refresh();
+    return error;
+}
+
 const char *roundie_ota_phase_name(roundie_ota_phase_t phase)
 {
     static const char *names[] = {"IDLE", "RECEIVING", "VERIFYING", "READY", "ACTIVATION_PENDING"};

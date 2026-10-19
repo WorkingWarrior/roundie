@@ -15,6 +15,7 @@
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_psram.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
@@ -27,7 +28,8 @@
 #include "time_protocol.h"
 #include "storage_diagnostics.h"
 #include "ota_diagnostics.h"
-#if CONFIG_ROUNDIE_DEV_TIME_SYNC
+#include "recovery_diagnostics.h"
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #endif
@@ -71,6 +73,7 @@ typedef struct {
     roundie_battery_sample_t battery;
     bool wall_valid;
     bool sync_failed; /* A failed explicit SET requires another successful SET. */
+    bool board_ready;
 } sensor_state_t;
 
 static sensor_state_t sensors = {
@@ -133,7 +136,10 @@ static void time_command(sensor_state_t *shared,
     }
     roundie_rtc_sample_t rtc;
     esp_err_t error = ESP_OK;
+    portENTER_CRITICAL(&shared->lock);
     bool wall_valid = shared->wall_valid;
+    roundie_board_t *board = shared->board_ready ? shared->board : NULL;
+    portEXIT_CRITICAL(&shared->lock);
     if (strcmp(result, "OK") == 0 && command.set) {
         wall_valid = false;
         shared->sync_failed = true;
@@ -142,12 +148,12 @@ static void time_command(sensor_state_t *shared,
         portEXIT_CRITICAL(&shared->lock);
         roundie_rtc_time_t calendar;
         roundie_rtc_from_unix(command.seconds, &calendar);
-        error = roundie_board_rtc_set_trusted(shared->board, &calendar);
+        error = roundie_board_rtc_set_trusted(board, &calendar);
         if (error != ESP_OK) {
             result = "RTC_SET";
         } else {
             roundie_rtc_sample_t first;
-            roundie_board_rtc_read(shared->board, &first);
+            roundie_board_rtc_read(board, &first);
             if (first.state != ROUNDIE_SENSOR_VALID) {
                 result = "RTC_READ";
                 error = first.error;
@@ -157,7 +163,7 @@ static void time_command(sensor_state_t *shared,
                 roundie_rtc_unix_seconds(&first.time, &first_seconds);
                 /* Yield only the sensor worker. GUI and touch continue. */
                 vTaskDelay(pdMS_TO_TICKS(1200));
-                roundie_board_rtc_read(shared->board, &rtc);
+                roundie_board_rtc_read(board, &rtc);
                 if (rtc.state != ROUNDIE_SENSOR_VALID) {
                     result = rtc.oscillator_stopped ? "RTC_INVALID" : "RTC_READ";
                     error = rtc.error;
@@ -179,7 +185,7 @@ static void time_command(sensor_state_t *shared,
         }
     }
     /* Fresh status, also on failure. Never substitute a cached valid sample. */
-    roundie_board_rtc_read(shared->board, &rtc);
+    roundie_board_rtc_read(board, &rtc);
     if (rtc.state != ROUNDIE_SENSOR_VALID) {
         wall_valid = false;
         if (strcmp(result, "OK") == 0) {
@@ -226,10 +232,13 @@ static void time_command(sensor_state_t *shared,
         /* Dedicated retention test, not a general command interpreter. */
         usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
         vTaskDelay(pdMS_TO_TICKS(100));
+        roundie_boot_planned_restart();
         esp_restart();
     }
 }
+#endif
 
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 static void poll_time_commands(int serial_fd, sensor_state_t *shared,
                                 roundie_time_frame_t *frame, int64_t *started_us)
 {
@@ -245,13 +254,22 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
         }
         if (roundie_time_feed(frame, bytes[i])) {
             if (frame->used > 0 || frame->discard) {
+#if CONFIG_ROUNDIE_RECOVERY_USB
+                if (strncmp(frame->line, "!RS1 ", 5) == 0) {
+                    roundie_recovery_command(frame->line, frame->discard);
+                } else
+#endif
 #if CONFIG_ROUNDIE_DEV_OTA
                 if (strncmp(frame->line, "!RO1 ", 5) == 0) {
                     roundie_ota_command(frame->line, frame->discard);
                 } else
 #endif
                 {
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC
                     time_command(shared, frame);
+#else
+                    (void)shared;
+#endif
                 }
             }
             *frame = (roundie_time_frame_t){0};
@@ -268,11 +286,11 @@ static void sensor_worker(void *argument)
     bool first_battery = true;
     uint16_t last_voltage = 0;
     uint16_t last_soc = 0;
-#if CONFIG_ROUNDIE_DEV_TIME_SYNC
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
     /* Secondary VFS RX requires its standard interrupt driver. One RX owner,
      * no extra task or per-command transport allocation. */
     usb_serial_jtag_driver_config_t usb_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-#if CONFIG_ROUNDIE_DEV_OTA
+#if CONFIG_ROUNDIE_DEV_OTA || CONFIG_ROUNDIE_RECOVERY_USB
     /* The pinned ISR drops bytes if its RX ring is full, and TX cannot enqueue
      * a record larger than its ring. Hold one whole RO1 request/response;
      * the host uses stop-and-wait, never pipelines while Flash work runs. */
@@ -292,12 +310,23 @@ static void sensor_worker(void *argument)
     int64_t started_us = 0;
     ESP_LOGI(TAG, "Development RTC protocol RT1 %s",
              serial_fd >= 0 ? "enabled on USB Serial/JTAG" : "unavailable");
+    if (serial_fd < 0) {
+        roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);
+        roundie_ota_gui_health(false);
+        ESP_LOGE(TAG, "USB recovery unavailable; no new-image confirmation, ROM recovery required");
+    }
 #endif
     int64_t next_sample_us = esp_timer_get_time() + 5000000;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(10));
         roundie_ota_poll(esp_timer_get_time());
-#if CONFIG_ROUNDIE_DEV_TIME_SYNC
+        roundie_ota_status_t ota_health;
+        roundie_ota_snapshot(&ota_health);
+        if (ota_health.boot_checked && !ota_health.boot_passed && !roundie_recovery_active()) {
+            roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
+        }
+        roundie_recovery_poll(esp_timer_get_time());
+#if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
         if (serial_fd >= 0) {
             poll_time_commands(serial_fd, shared, &frame, &started_us);
         }
@@ -306,6 +335,12 @@ static void sensor_worker(void *argument)
             continue;
         }
         next_sample_us = esp_timer_get_time() + 5000000;
+        portENTER_CRITICAL(&shared->lock);
+        bool ready = shared->board_ready;
+        portEXIT_CRITICAL(&shared->lock);
+        if (!ready || roundie_recovery_active()) {
+            continue;
+        }
         roundie_rtc_sample_t rtc;
         roundie_battery_sample_t battery;
         roundie_board_rtc_read(shared->board, &rtc);
@@ -601,6 +636,22 @@ static void make_screen(gui_state_t *state,
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x101b2b), 0);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
+    if (roundie_recovery_active()) {
+        roundie_boot_status_t boot;
+        roundie_boot_status(&boot);
+        roundie_ota_status_t ota;
+        roundie_ota_snapshot(&ota);
+        make_label(screen, "ROUNDIE", 48, lv_color_hex(0xffffff));
+        make_label(screen, "SAFE MODE", 86, lv_color_hex(0xffcc66));
+        make_label(screen, "Recovery mode active", 130, lv_color_hex(0xffffff));
+        lv_obj_t *reason = make_label(screen, "", 165, lv_color_hex(0xc3d2e2));
+        lv_label_set_text_fmt(reason, "Reason: %s\nFirmware: %s\nOTA: %s / %s",
+            roundie_boot_reason_name(boot.reason), esp_app_get_description()->version,
+            ota.running.label, roundie_ota_image_state_name(ota.running.state));
+        make_label(screen, "Connect USB for diagnostics", 260, lv_color_hex(0xffffff));
+        return;
+    }
+
     lv_obj_t *title = make_label(screen, "ROUNDIE", 24, lv_color_hex(0xffffff));
     lv_label_set_text_fmt(title, "ROUNDIE / %s", esp_app_get_description()->version);
     state->ota_label = make_label(screen, "OTA startup", 54, lv_color_hex(0x9eb8d0));
@@ -650,9 +701,22 @@ static void make_screen(gui_state_t *state,
     lv_obj_align(spinner, LV_ALIGN_BOTTOM_MID, 0, -12);
 }
 
+static void headless_recovery(void)
+{
+    roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
+    roundie_ota_gui_health(false);
+    ESP_LOGW(TAG, "Headless Safe Mode: existing USB worker remains available");
+    /* Keep app_main's stack alive: registered LCD callbacks may refer to it.
+     * No display buffer is reused or freed while DMA might own it. */
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 void app_main(void)
 {
     const esp_app_desc_t *description = esp_app_get_description();
+    roundie_boot_begin(roundie_boot_reset_class(), description->app_elf_sha256);
     ESP_LOGI(TAG, "Firmware %s %s, built %s %s, IDF %s",
              description->project_name, description->version,
              description->date, description->time, description->idf_ver);
@@ -662,7 +726,39 @@ void app_main(void)
     roundie_ota_diagnostics_init();
     esp_err_t nvs_error = nvs_flash_init();
     ESP_LOGI(TAG, "NVS initialization: %s; no erase fallback", esp_err_to_name(nvs_error));
-    roundie_storage_diagnostics();
+    roundie_boot_persistence_init(nvs_error == ESP_OK);
+    roundie_boot_status_t boot;
+    roundie_boot_status(&boot);
+    ESP_LOGI(TAG, "BootGuard reset=%lu retained=%u failures=%lu safe=%u reason=%s trial=%u fault_remaining=%lu",
+        (unsigned long)boot.reset, boot.retained_valid, (unsigned long)boot.failures, boot.safe,
+        roundie_boot_reason_name(boot.reason), boot.trial, (unsigned long)boot.fault_remaining);
+    roundie_ota_status_t startup_ota;
+    roundie_ota_snapshot(&startup_ota);
+    if (roundie_boot_fault_step(startup_ota.running.state == ESP_OTA_IMG_VALID)) {
+        roundie_boot_status(&boot);
+        ESP_LOGW(TAG, "BOUNDED BOOT TEST: VALID incomplete startup; remaining=%lu; software restart",
+            (unsigned long)boot.fault_remaining);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
+        abort();
+    }
+    if (!roundie_recovery_active() && !roundie_storage_diagnostics()) {
+        roundie_boot_enter_safe(ROUNDIE_SAFE_STORAGE);
+    }
+    roundie_boot_stage(ROUNDIE_BOOT_CORE);
+    /* The sole serial/sensor owner starts independently of board and GUI.
+     * Until board_ready is published it only services USB/OTA/recovery. */
+    TaskHandle_t sensor_task = NULL;
+    if (xTaskCreate(sensor_worker, "system_worker", 8192, &sensors, 4, &sensor_task) != pdPASS) {
+        roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);
+        ESP_LOGE(TAG, "System worker creation failed; USB recovery unavailable, ROM recovery required");
+        roundie_ota_startup_failed();
+        return;
+    }
+    if (roundie_recovery_skip_gui()) {
+        headless_recovery();
+    }
+    roundie_boot_stage(ROUNDIE_BOOT_GUI);
 
     uint32_t flash_bytes = 0;
     esp_err_t error = esp_flash_get_size(NULL, &flash_bytes);
@@ -680,25 +776,27 @@ void app_main(void)
 
     roundie_board_t *board = NULL;
     roundie_board_status_t status;
-    error = roundie_board_start(&board, &status);
+    error = roundie_recovery_active() ? roundie_board_start_recovery(&board, &status) :
+        roundie_board_start(&board, &status);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Bring-up stopped: %s", esp_err_to_name(error));
-        roundie_ota_startup_failed();
-        return;
+        headless_recovery();
     }
 
-    sensors.board = board;
-    roundie_board_rtc_read(board, &sensors.rtc);
-    roundie_board_battery_read(board, &sensors.battery);
+    /* Startup samples remain private until the complete board is published. */
+    roundie_rtc_sample_t initial_rtc;
+    roundie_battery_sample_t initial_battery;
+    roundie_board_rtc_read(board, &initial_rtc);
+    roundie_board_battery_read(board, &initial_battery);
     ESP_LOGI(TAG, "RTC startup: %s, OS=%u, error=%s",
-             sensor_state_name(sensors.rtc.state), sensors.rtc.oscillator_stopped,
-             esp_err_to_name(sensors.rtc.error));
+             sensor_state_name(initial_rtc.state), initial_rtc.oscillator_stopped,
+             esp_err_to_name(initial_rtc.error));
     ESP_LOGI(TAG, "Gauge startup: %s, present=%u, %u mV, SoC valid=%u (%u%%), error=%s",
-             sensor_state_name(sensors.battery.state), sensors.battery.battery_present,
-             sensors.battery.voltage_mv, sensors.battery.soc_valid,
-             sensors.battery.soc_percent, esp_err_to_name(sensors.battery.error));
-    sensors.wall_valid = sync_wall_clock(&sensors.rtc);
-    if (!sensors.wall_valid) {
+             sensor_state_name(initial_battery.state), initial_battery.battery_present,
+             initial_battery.voltage_mv, initial_battery.soc_valid,
+             initial_battery.soc_percent, esp_err_to_name(initial_battery.error));
+    bool initial_wall_valid = sync_wall_clock(&initial_rtc);
+    if (!initial_wall_valid) {
         ESP_LOGW(TAG, "System wall clock unsynchronized; RTC time not trusted");
     }
 
@@ -717,9 +815,7 @@ void app_main(void)
         roundie_board_panel_io(board), &callbacks, &state);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "LCD callback registration: %s", esp_err_to_name(error));
-        roundie_ota_startup_failed();
-        roundie_board_stop(board);
-        return;
+        headless_recovery();
     }
 
     const size_t buffer_bytes = DISPLAY_WIDTH * DISPLAY_STRIP_LINES * 2;
@@ -728,18 +824,13 @@ void app_main(void)
     if (draw_buffer == NULL) {
         ESP_LOGE(TAG, "No internal DMA memory for %zu-byte LVGL buffer",
                  buffer_bytes);
-        roundie_ota_startup_failed();
-        roundie_board_stop(board);
-        return;
+        headless_recovery();
     }
 
     state.display = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
     if (state.display == NULL) {
         ESP_LOGE(TAG, "LVGL display allocation failed");
-        roundie_ota_startup_failed();
-        heap_caps_free(draw_buffer);
-        roundie_board_stop(board);
-        return;
+        headless_recovery();
     }
     lv_display_set_color_format(state.display, LV_COLOR_FORMAT_RGB565);
     lv_display_set_user_data(state.display, &state);
@@ -747,21 +838,25 @@ void app_main(void)
     lv_display_set_flush_wait_cb(state.display, wait_for_display);
     lv_display_set_buffers(state.display, draw_buffer, NULL, buffer_bytes,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
-    lv_indev_t *input = lv_indev_create();
-    if (input == NULL) {
-        ESP_LOGE(TAG, "LVGL input allocation failed");
-        roundie_ota_startup_failed();
-        lv_display_delete(state.display);
-        heap_caps_free(draw_buffer);
-        roundie_board_stop(board);
-        return;
+    lv_indev_t *input = NULL;
+    if (!roundie_recovery_active()) {
+        input = lv_indev_create();
     }
-    lv_indev_set_type(input, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_display(input, state.display);
-    lv_indev_set_user_data(input, &state);
-    lv_indev_set_read_cb(input, read_touch);
+    if (input == NULL && !roundie_recovery_active()) {
+        ESP_LOGE(TAG, "LVGL input allocation failed");
+        headless_recovery();
+    }
+    if (input != NULL) {
+        lv_indev_set_type(input, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_display(input, state.display);
+        lv_indev_set_user_data(input, &state);
+        lv_indev_set_read_cb(input, read_touch);
+    }
     make_screen(&state, &status, flash_bytes, psram_bytes);
-    update_sensor_labels(&state);
+    bool recovery_screen = roundie_recovery_active();
+    if (!recovery_screen) {
+        update_sensor_labels(&state);
+    }
 
     error = roundie_board_backlight_set(board, 60);
     if (error != ESP_OK) {
@@ -770,31 +865,43 @@ void app_main(void)
     error = esp_task_wdt_add(NULL);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "GUI watchdog registration: %s", esp_err_to_name(error));
-        roundie_ota_startup_failed();
-        return;
+        headless_recovery();
     }
-    TaskHandle_t sensor_task = NULL;
-    if (xTaskCreate(sensor_worker, "sensors", 8192, &sensors, 4,
-                    &sensor_task) != pdPASS) {
-        ESP_LOGE(TAG, "Sensor worker creation failed; startup samples remain visible");
-        roundie_ota_startup_failed();
-    }
+    portENTER_CRITICAL(&sensors.lock);
+    sensors.board = board;
+    sensors.rtc = initial_rtc;
+    sensors.battery = initial_battery;
+    sensors.wall_valid = initial_wall_valid;
+    sensors.board_ready = true;
+    portEXIT_CRITICAL(&sensors.lock);
     bool health_sent = false;
     int64_t self_test_at_us = esp_timer_get_time() + 1000000;
     int64_t next_health_log_us = esp_timer_get_time() + 300000000;
     int64_t next_ui_update_us = esp_timer_get_time() + 1000000;
     while (true) {
+        if (state.display_fault) {
+            roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
+        }
+        if (roundie_recovery_active() && !recovery_screen) {
+            if (input != NULL) {
+                lv_indev_enable(input, false);
+            }
+            lv_obj_clean(lv_screen_active());
+            make_screen(&state, &status, flash_bytes, psram_bytes);
+            recovery_screen = true;
+        }
         lv_timer_handler();
         if (!health_sent && esp_timer_get_time() >= self_test_at_us) {
             bool memory_ok = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 16384 &&
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 8192 &&
                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= 131072;
-            roundie_ota_gui_health(sensor_task != NULL && flash_bytes == 0x1000000 &&
+            bool mode_allows_confirmation = roundie_recovery_confirmation_allowed(startup_ota.running.state);
+            roundie_ota_gui_health(mode_allows_confirmation && sensor_task != NULL && flash_bytes == 0x1000000 &&
                 psram_bytes == 0x800000 && memory_ok && !state.display_fault &&
                 state.transfer_errors == 0 && state.completed_transfers > 0);
             health_sent = true;
         }
-        if (esp_timer_get_time() >= next_ui_update_us) {
+        if (!recovery_screen && esp_timer_get_time() >= next_ui_update_us) {
             update_sensor_labels(&state);
             next_ui_update_us = esp_timer_get_time() + 1000000;
         }

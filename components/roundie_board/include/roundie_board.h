@@ -63,6 +63,10 @@ typedef struct {
  * releases resources. Optional I2C device failures remain in status. */
 esp_err_t roundie_board_start(roundie_board_t **out_board,
                               roundie_board_status_t *status);
+/* Recovery display only: same LCD ownership/cleanup, no I2C, touch, RTC or
+ * gauge initialization. USB does not depend on success. */
+esp_err_t roundie_board_start_recovery(roundie_board_t **out_board,
+                                      roundie_board_status_t *status);
 void roundie_board_stop(roundie_board_t *board);
 
 /* Borrowed handles remain valid until roundie_board_stop(). */

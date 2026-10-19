@@ -1,5 +1,14 @@
 # Milestone 2C.1 — local A/B firmware updates
 
+**Milestone 2C.2 extension:** [BootGuard](boot-guard.md) and
+[Safe Mode](safe-mode.md) add recovery for confirmed firmware without
+automatic invalidation or slot switching. RS1 explicitly selects only an
+immediately verified compatible VALID alternate by label and full ELF.
+Pinned IDF's validating selection API changes that target to NEW, so its
+next boot must pass confirmation again. Existing PENDING_VERIFY policy and
+the historical 2C.1 results below are preserved; 2C.2 hardware evidence is
+recorded separately in safe-mode.md.
+
 **Implementation decision:** REP §§18, 20, 23; one internal OTAManager and
 the standard ESP-IDF OTA/bootloader APIs. Local development USB delivery only.
 No network transport, TinyUSB, MTP, Safe Mode, Boot Guard, ELF runtime, security

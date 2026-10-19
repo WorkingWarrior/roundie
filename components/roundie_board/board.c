@@ -304,8 +304,8 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
     return ESP_OK;
 }
 
-esp_err_t roundie_board_start(roundie_board_t **out_board,
-                              roundie_board_status_t *status)
+static esp_err_t start_board(roundie_board_t **out_board,
+                              roundie_board_status_t *status, bool recovery)
 {
     if (out_board == NULL || status == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -320,15 +320,16 @@ esp_err_t roundie_board_start(roundie_board_t **out_board,
     if (board == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t i2c_error = start_i2c(board, status);
-    if (i2c_error != ESP_OK) {
-        roundie_board_stop(board);
-        return i2c_error;
+    if (!recovery) {
+        esp_err_t i2c_error = start_i2c(board, status);
+        if (i2c_error != ESP_OK) {
+            roundie_board_stop(board);
+            return i2c_error;
+        }
+        /* CST816S can remain in reset until the driver toggles GPIO1. */
+        status->touch = start_touch(board);
+        ESP_LOGI(TAG, "CST816S driver: %s", esp_err_to_name(status->touch));
     }
-    /* CST816S can remain in reset until the driver toggles GPIO1.
-     * An early probe is diagnostic only, not a reason to skip init. */
-    status->touch = start_touch(board);
-    ESP_LOGI(TAG, "CST816S driver: %s", esp_err_to_name(status->touch));
 
     esp_err_t error = start_lcd(board, status);
     if (error != ESP_OK) {
@@ -338,6 +339,18 @@ esp_err_t roundie_board_start(roundie_board_t **out_board,
     }
     *out_board = board;
     return ESP_OK;
+}
+
+esp_err_t roundie_board_start(roundie_board_t **out_board,
+                              roundie_board_status_t *status)
+{
+    return start_board(out_board, status, false);
+}
+
+esp_err_t roundie_board_start_recovery(roundie_board_t **out_board,
+                                      roundie_board_status_t *status)
+{
+    return start_board(out_board, status, true);
 }
 
 void roundie_board_stop(roundie_board_t *board)

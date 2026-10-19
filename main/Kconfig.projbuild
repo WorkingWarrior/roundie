@@ -1,5 +1,13 @@
 menu "Roundie development diagnostics"
 
+config ROUNDIE_RECOVERY_USB
+    bool "Enable bounded USB Serial/JTAG recovery commands"
+    default y
+    depends on ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+    help
+        RS1 status and explicit guarded recovery operations. Shares the sole
+        diagnostic reader. Does not enable RTC writes or firmware uploads.
+
 config ROUNDIE_DEV_TIME_SYNC
     bool "Enable development USB Serial/JTAG RTC commands"
     default n
@@ -25,5 +33,20 @@ config ROUNDIE_OTA_TEST_UNCONFIRMED_RESET
         with a verified VALID fallback, resets once to exercise automatic
         ABORTED rollback. Otherwise fails self-test without a reset loop.
         Requires separate hardware-test authorization. Never use for releases.
+
+config ROUNDIE_BOOT_GUARD_TEST
+    bool "Enable bounded BootGuard development fault injection"
+    default n
+    depends on ROUNDIE_DEV_OTA
+    help
+        Adds RS1 FAULT with exact running ELF identity. Only a stable VALID
+        image can arm three incomplete-boot software resets. Safe Mode cancels
+        all remaining faults. Must use a version ending in -boot-test.
+        Disable in normal firmware; never causes a fault merely by booting.
+
+config ROUNDIE_BOOT_STABILITY_SECONDS
+    int "BootGuard operational stability window (seconds)"
+    range 5 30
+    default 10
 
 endmenu

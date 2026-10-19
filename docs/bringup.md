@@ -1,5 +1,15 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+## Milestone 2C.2 BootGuard and Safe Mode — 2026-10-19
+
+BootGuard failure tracking, sparse NVS latch, one-shot normal trial, early
+shared USB diagnostics and optional LCD-only Safe Mode are implemented.
+See [BootGuard ownership/persistence](boot-guard.md) and
+[Safe Mode commands and validation](safe-mode.md). Host tests and target
+builds are distinct from the bounded physical acceptance sequence recorded
+there. Historical 2C.1 evidence and the long-uptime clock discrepancy below
+remain unchanged. No ELF runtime or later milestone was started.
+
 ## Milestone 2C.1 OTA foundation — 2026-10-18
 
 Local streamed USB OTA, explicit activation, core self-test confirmation and

@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "roundie_ota_protocol.h"
+#include "recovery_diagnostics.h"
 
 static const char *TAG = "ota";
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -144,7 +145,8 @@ void roundie_ota_command(char *line, bool discard)
     bool restart = false;
     if (error == ESP_OK) {
         if (command.operation == ROUNDIE_OTA_RESTART) {
-            restart = roundie_ota_restart_allowed();
+            restart = roundie_ota_restart_allowed() ||
+                (roundie_recovery_active() && roundie_recovery_restart_allowed());
             error = restart ? ESP_OK : ESP_ERR_INVALID_STATE;
         } else {
             error = roundie_ota_execute(&command);
@@ -184,6 +186,7 @@ void roundie_ota_command(char *line, bool discard)
         written = usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
     }
     if (restart && written == length) {
+        roundie_boot_planned_restart();
         usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();

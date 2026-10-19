@@ -193,6 +193,36 @@ static void parser_tests(void)
 int main(void)
 {
     parser_tests();
+    /* Manual recovery selection must re-read state and verify exact identity;
+     * it never invalidates the currently VALID image. */
+    reset();
+    const char *elf = "0000000000000000000000000000000000000000000000000000000000000000";
+    const esp_ota_img_states_t bad_states[] = {ESP_OTA_IMG_NEW, ESP_OTA_IMG_PENDING_VERIFY,
+        ESP_OTA_IMG_INVALID, ESP_OTA_IMG_ABORTED, ESP_OTA_IMG_UNDEFINED};
+    for (size_t i = 0; i < sizeof(bad_states) / sizeof(bad_states[0]); i++) {
+        states[1] = bad_states[i];
+        valid[1] = true;
+        assert(roundie_ota_select_valid("ota_1", elf) != ESP_OK && selections == 0);
+    }
+    states[1] = ESP_OTA_IMG_VALID;
+    valid[1] = false;
+    assert(roundie_ota_select_valid("ota_1", elf) != ESP_OK && selections == 0);
+    valid[1] = true;
+    assert(roundie_ota_select_valid("ota_0", elf) != ESP_OK && selections == 0);
+    assert(roundie_ota_select_valid("ota_1", "bad") != ESP_OK && selections == 0);
+    firmware[80] = 'x';
+    assert(roundie_ota_select_valid("ota_1", elf) != ESP_OK && selections == 0);
+    firmware[80] = 'r';
+    states[0] = ESP_OTA_IMG_PENDING_VERIFY;
+    assert(roundie_ota_select_valid("ota_1", elf) != ESP_OK && selections == 0);
+    states[0] = ESP_OTA_IMG_VALID;
+    assert(roundie_ota_select_valid("ota_1", elf) == ESP_OK && selections == 1);
+    assert(states[0] == ESP_OTA_IMG_VALID && states[1] == ESP_OTA_IMG_NEW && rejections == 0 && confirmations == 0);
+    assert(roundie_ota_select_valid("ota_1", elf) != ESP_OK && selections == 1);
+    reset();
+    assert(roundie_ota_init() == ESP_OK);
+    assert(roundie_ota_boot_result(false) != ESP_OK && rejections == 0 && confirmations == 0);
+    assert(status().running.state == ESP_OTA_IMG_VALID);
     reset();
     assert(roundie_ota_activate(digest) != ESP_OK);
     assert(roundie_ota_begin(7, 0, digest) != ESP_OK);
