@@ -14,16 +14,18 @@
 #include "esp_lcd_touch.h"
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_log.h"
+#include "esp_clk_tree.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lcd_init_tables.h"
+#include "lcd_config.h"
 #include "sensor_codec.h"
+#include "soc/spi_struct.h"
 
-#define LCD_WIDTH 360
-#define LCD_HEIGHT 360
-#define LCD_STRIP_LINES 20
-#define LCD_TRANSFER_BYTES (LCD_WIDTH * LCD_STRIP_LINES * 2)
+#define LCD_WIDTH ROUNDIE_LCD_WIDTH
+#define LCD_HEIGHT ROUNDIE_LCD_HEIGHT
+#define LCD_TRANSFER_BYTES ROUNDIE_LCD_TRANSFER_BYTES
 #define I2C_TIMEOUT_MS 100
 
 static const char *TAG = "roundie_board";
@@ -203,11 +205,11 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
     }
     board->spi_started = true;
 
-    const esp_lcd_panel_io_spi_config_t io_config = {
+    esp_lcd_panel_io_spi_config_t io_config = {
         .cs_gpio_num = GPIO_NUM_21,
         .dc_gpio_num = -1,
         .spi_mode = 0,
-        .pclk_hz = 3 * 1000 * 1000,
+        .pclk_hz = ROUNDIE_LCD_READ_HZ,
         .trans_queue_depth = 2,
         .lcd_cmd_bits = 32,
         .lcd_param_bits = 8,
@@ -236,6 +238,26 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
     } else {
         ESP_LOGE(TAG, "Unsupported LCD ID; no initialization table selected");
         return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    /* The synchronous ID read has completed. No panel, GUI, callbacks, draw
+     * buffers or queued color transfers exist yet. Delete the sole slow IO
+     * before creating the write-only IO; never reconfigure a running display.
+     * Unlike the vendor example, retain no leaked 3 MHz SPI device. */
+    error = esp_lcd_panel_io_del(board->lcd_io);
+    if (error != ESP_OK) {
+        return error;
+    }
+    board->lcd_io = NULL;
+    io_config.pclk_hz = ROUNDIE_LCD_WRITE_HZ;
+    /* At 40 MHz one cycle is 25 ns, above the 15 ns write CS setup/hold
+     * minima. The read IO keeps its proven original timing. */
+    io_config.cs_ena_pretrans = 1;
+    io_config.cs_ena_posttrans = 1;
+    error = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
+                                     &io_config, &board->lcd_io);
+    if (error != ESP_OK) {
+        return error;
     }
 
     size_t command_count = 0;
@@ -274,8 +296,25 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
     if (error != ESP_OK) {
         return error;
     }
-    ESP_LOGI(TAG, "ST77916 variant %u initialized at 3 MHz QSPI",
-             status->lcd_variant);
+    /* Pinned S3 SPI2 uses APB; sample its actual programmed divider after a
+     * completed polling command. No private panel-IO cast or register write.
+     * This verifies configuration, not an oscilloscope measurement. */
+    uint32_t source_hz = 0;
+    error = esp_clk_tree_src_get_freq_hz(SPI_CLK_SRC_DEFAULT,
+        ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &source_hz);
+    if (error != ESP_OK) {
+        return error;
+    }
+    const typeof(GPSPI2.clock) clock = {.val = GPSPI2.clock.val};
+    uint32_t pre = clock.clkdiv_pre + 1;
+    uint32_t n = clock.clkcnt_n + 1;
+    uint32_t actual_hz = clock.clk_equ_sysclk ? source_hz : source_hz / pre / n;
+    ESP_LOGI(TAG, "ST77916 variant %u QSPI read=%u requested=%u actual=%lu Hz "
+             "source=%lu pre=%lu n=%lu h=%u direct=%u",
+             status->lcd_variant, ROUNDIE_LCD_READ_HZ, ROUNDIE_LCD_WRITE_HZ,
+             (unsigned long)actual_hz, (unsigned long)source_hz,
+             (unsigned long)pre, (unsigned long)n,
+             clock.clkcnt_h + 1, clock.clk_equ_sysclk);
 
     const ledc_timer_config_t timer_config = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
