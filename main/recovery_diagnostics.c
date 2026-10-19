@@ -10,6 +10,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "roundie_ota.h"
+#include "elf_diagnostics.h"
+#if CONFIG_ROUNDIE_DEV_ELF
+#include "roundie_elf.h"
+#include "esp_timer.h"
+static bool deferred_safe_restart;
+#endif
 
 bool roundie_recovery_active(void)
 {
@@ -27,6 +33,11 @@ bool roundie_recovery_skip_gui(void)
 
 bool roundie_recovery_restart_allowed(void)
 {
+#if CONFIG_ROUNDIE_DEV_ELF
+    if (roundie_elf_development_busy()) {
+        return false;
+    }
+#endif
     roundie_ota_status_t ota;
     roundie_ota_status(&ota);
     return ota.initialized && ota.running.state == ESP_OTA_IMG_VALID &&
@@ -46,6 +57,14 @@ bool roundie_recovery_confirmation_allowed(int ota_state)
 
 void roundie_recovery_poll(int64_t now_us)
 {
+#if CONFIG_ROUNDIE_DEV_ELF
+    if (deferred_safe_restart && !roundie_elf_development_busy()) {
+        deferred_safe_restart = false;
+        roundie_boot_planned_restart();
+        esp_restart();
+        return;
+    }
+#endif
     roundie_ota_status_t ota;
     roundie_ota_status(&ota);
     /* Recovery's operational marker means transport + core are serviceable;
@@ -82,10 +101,20 @@ void roundie_recovery_command(char *line, bool discard)
                     error = ESP_OK;
                 } else if (strcmp(operation, "REQUEST") == 0 && idle_valid) {
                     roundie_boot_enter_safe(ROUNDIE_SAFE_REQUEST);
+#if CONFIG_ROUNDIE_DEV_ELF
+                    roundie_elf_set_allowed(false);
+                    roundie_elf_poll(esp_timer_get_time());
+#endif
                     error = roundie_boot_persistence_sync() ? ESP_OK : ESP_FAIL;
                     /* Enter recovery through the early boot path. No GUI work
                      * or storage teardown is performed by the USB owner. */
                     restart = error == ESP_OK;
+#if CONFIG_ROUNDIE_DEV_ELF
+                    if (restart && roundie_elf_development_busy()) {
+                        deferred_safe_restart = true;
+                        restart = false;
+                    }
+#endif
                 } else if (strcmp(operation, "CLEAR") == 0 && idle_valid && roundie_boot_clear()) {
                     error = roundie_boot_persistence_sync() ? ESP_OK : ESP_FAIL;
                 } else if (strcmp(operation, "REBOOT") == 0 && roundie_recovery_active() &&

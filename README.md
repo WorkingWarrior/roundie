@@ -29,6 +29,8 @@ See [deployment limits and recovery](docs/flash-migration.md#rep-development-upd
 The historical bring-up updater rejects the physical REP table.
 
 - [Storage/build profiles and validation](docs/storage.md)
+- [Native ELF proof, workflow and evidence](docs/elf-loader.md)
+- [REP C application ABI 1](docs/app-abi.md)
 - [Local USB OTA, confirmation, rollback and pending physical gates](docs/ota.md)
 - [Physical Flash migration and provisioning](docs/flash-migration.md)
 - [Hardware audit](docs/hardware-audit.md)

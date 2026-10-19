@@ -34,6 +34,15 @@ config ROUNDIE_OTA_TEST_UNCONFIRMED_RESET
         ABORTED rollback. Otherwise fails self-test without a reset loop.
         Requires separate hardware-test authorization. Never use for releases.
 
+config ROUNDIE_DEV_ELF
+    bool "Enable trusted development ELF staging and explicit execution"
+    default n
+    depends on ROUNDIE_DEV_OTA
+    help
+        RE1 bounded transfer to /storage/dev/hello.elf and explicit RUN by
+        SHA-256. Trusted development code only; native code is unisolated.
+        No discovery, autostart, packages, MTP or arbitrary path access.
+
 config ROUNDIE_BOOT_GUARD_TEST
     bool "Enable bounded BootGuard development fault injection"
     default n

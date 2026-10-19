@@ -32,7 +32,7 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 if(NOT DEFINED PROJECT_VER)
-    set(PROJECT_VER "0.2.5")
+    set(PROJECT_VER "0.3.0")
 endif()
 project(${ROUNDIE_PROJECT_NAME})
 
@@ -84,6 +84,12 @@ if(CONFIG_ROUNDIE_OTA_TEST_UNCONFIRMED_RESET AND NOT PROJECT_VER MATCHES "-rollb
     message(FATAL_ERROR "Armed OTA images require an explicit PROJECT_VER ending in -rollback-test")
 endif()
 message(STATUS "Roundie layout: ${ROUNDIE_PROFILE}; image: ${ROUNDIE_PROJECT_NAME}.bin")
+if(CONFIG_ROUNDIE_DEV_ELF AND (NOT ROUNDIE_PROFILE STREQUAL "rep" OR
+   NOT CONFIG_ELF_LOADER OR NOT CONFIG_ELF_LOADER_LOAD_PSRAM OR
+   CONFIG_ELF_LOADER_LIBC_SYMBOLS OR CONFIG_ELF_LOADER_ESPIDF_SYMBOLS OR
+   CONFIG_ELF_LOADER_CUSTOMER_SYMBOLS OR CONFIG_ELF_DYNAMIC_LOAD_SHARED_OBJECT))
+    message(FATAL_ERROR "REP 3A requires loader PSRAM mapping and disabled upstream export/shared-library tables")
+endif()
 if(CONFIG_ROUNDIE_BOOT_GUARD_TEST AND NOT PROJECT_VER MATCHES "-boot-test$")
     message(FATAL_ERROR "BootGuard diagnostic images require PROJECT_VER ending in -boot-test")
 endif()

@@ -65,6 +65,17 @@ bool esp_ota_check_rollback_is_possible(void);
 typedef struct {EVP_MD_CTX *ctx;} psa_hash_operation_t;
 #define PSA_ALG_SHA_256 1
 #define PSA_SUCCESS 0
+static inline int psa_hash_compute(int algorithm, const void *input, size_t size,
+                                   uint8_t *output, size_t capacity, size_t *out_size)
+{
+    (void)algorithm;
+    unsigned length = 0;
+    if (capacity < 32 || EVP_Digest(input, size, output, &length, EVP_sha256(), NULL) != 1) {
+        return -1;
+    }
+    *out_size = length;
+    return 0;
+}
 static inline psa_hash_operation_t psa_hash_operation_init(void) {return (psa_hash_operation_t){0};}
 static inline int psa_hash_setup(psa_hash_operation_t *op, int algorithm)
 {

@@ -30,6 +30,7 @@
 #include "storage_diagnostics.h"
 #include "ota_diagnostics.h"
 #include "recovery_diagnostics.h"
+#include "elf_diagnostics.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -322,6 +323,11 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
                     roundie_ota_command(frame->line, frame->discard);
                 } else
 #endif
+#if CONFIG_ROUNDIE_DEV_ELF
+                if (strncmp(frame->line, "!RE1 ", 5) == 0) {
+                    roundie_elf_command(frame->line, frame->discard);
+                } else
+#endif
                 {
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC
                     time_command(shared, frame);
@@ -385,6 +391,9 @@ static void sensor_worker(void *argument)
             roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
         }
         roundie_recovery_poll(esp_timer_get_time());
+#if CONFIG_ROUNDIE_DEV_ELF
+        roundie_elf_poll(esp_timer_get_time());
+#endif
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
         if (serial_fd >= 0) {
             poll_time_commands(serial_fd, shared, &frame, &started_us);

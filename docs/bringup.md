@@ -1,5 +1,11 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Milestone 3A implementation, 2026-10-19:** native loader 1.3.5, ABI 1,
+standalone example and bounded development staging/executor are implemented.
+See [ELF integration and evidence](elf-loader.md); physical acceptance is
+tracked there separately from compilation and host tests. Historical hardware,
+storage, OTA and RTC records below remain unchanged.
+
 **RTC investigation checkpoint, 2026-10-19:** firmware 0.2.4/0.2.5 adds requested,
 read-only RTC/system interval diagnostics; see the
 [measurement contract and physical evidence](rtc-time-sync.md#clock-investigation--2026-10-19).

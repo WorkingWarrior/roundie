@@ -55,11 +55,12 @@ static bool number(const char *text, size_t *out)
     return *out <= 0x380000;
 }
 
-esp_err_t roundie_ota_parse(char *line, bool discard, roundie_ota_command_t *out)
+esp_err_t roundie_transfer_parse(char *line, bool discard, const char *prefix,
+                                 const char *activation, roundie_ota_command_t *out)
 {
     *out = (roundie_ota_command_t){.id = "00000000"};
     size_t length = strlen(line);
-    if (length < 14 || memcmp(line, "!RO1 ", 5) != 0 || line[13] != ' ') {
+    if (length < 14 || memcmp(line, prefix, 5) != 0 || line[13] != ' ') {
         return ESP_ERR_INVALID_ARG;
     }
     for (size_t i = 5; i < 13; i++) {
@@ -95,7 +96,7 @@ esp_err_t roundie_ota_parse(char *line, bool discard, roundie_ota_command_t *out
             return ESP_OK;
         }
     }
-    if (count == 2 && strcmp(fields[0], "ACTIVATE") == 0 && hex(fields[1], out->digest, 32)) {
+    if (count == 2 && strcmp(fields[0], activation) == 0 && hex(fields[1], out->digest, 32)) {
         out->operation = ROUNDIE_OTA_ACTIVATE;
         return ESP_OK;
     }
@@ -122,6 +123,11 @@ esp_err_t roundie_ota_parse(char *line, bool discard, roundie_ota_command_t *out
         return ESP_OK;
     }
     return ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t roundie_ota_parse(char *line, bool discard, roundie_ota_command_t *out)
+{
+    return roundie_transfer_parse(line, discard, "!RO1 ", "ACTIVATE", out);
 }
 
 esp_err_t roundie_ota_execute(const roundie_ota_command_t *command)

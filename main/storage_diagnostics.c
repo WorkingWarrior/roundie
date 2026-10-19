@@ -16,6 +16,12 @@
 static const char *TAG = "storage";
 static roundie_storage_t *storage;
 
+bool roundie_storage_available(void)
+{
+    roundie_storage_status_t status;
+    return storage != NULL && roundie_storage_status(storage, &status) == ROUNDIE_STORAGE_OK && status.mounted;
+}
+
 /* Only a deliberately provisioned request enables this bounded boot diagnostic.
  * Claim it before writing: an interrupted/failed test is never retried on boot.
  * This runs before GUI startup, with exclusive storage lifecycle ownership.

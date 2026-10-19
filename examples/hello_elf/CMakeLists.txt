@@ -1,0 +1,24 @@
+cmake_minimum_required(VERSION 3.16)
+project(rep_hello NONE)
+find_program(REP_CC xtensa-esp32s3-elf-gcc REQUIRED)
+find_program(REP_STRIP xtensa-esp-elf-strip REQUIRED)
+execute_process(COMMAND ${REP_CC} -dumpfullversion OUTPUT_VARIABLE REP_GCC
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT REP_GCC STREQUAL "15.2.0")
+    message(FATAL_ERROR "Use Roundie's pinned IDF v6.1 GCC 15.2.0 toolchain")
+endif()
+set(REP_TEST_VARIANT "0" CACHE STRING "0 hello, 1 forbidden import, 2 invalid ABI")
+add_custom_command(OUTPUT hello.app.elf
+    COMMAND ${REP_CC} -std=c11 -Os -Wall -Wextra -Werror -mlongcalls
+        -fPIC -fvisibility=hidden -ffunction-sections -fdata-sections
+        -fno-builtin -fno-stack-protector -nostdlib -nostartfiles -shared
+        -Wl,--gc-sections -Wl,-e,rep_app_entry -Wl,--undefined=rep_abi_metadata
+        -DREP_TEST_VARIANT=${REP_TEST_VARIANT}
+        -I${CMAKE_CURRENT_SOURCE_DIR}/../../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/hello.c -o hello.app.elf
+    COMMAND ${REP_STRIP} --strip-unneeded --remove-section=.comment
+        --remove-section=.got.loc --remove-section=.dynamic
+        --remove-section=.xt.lit --remove-section=.xt.prop
+        --remove-section=.xtensa.info hello.app.elf
+    DEPENDS hello.c ../../include/rep/rep_app.h VERBATIM)
+add_custom_target(elf ALL DEPENDS hello.app.elf)
