@@ -69,6 +69,9 @@ unload-completion-to-GUI us), and `paint` (state, request, generation,
 publication-to-GUI-ready us, monotonic applied timestamp). These indicate LVGL
 mutation, not visible pixels. `PERF [cursor]` and idle-only volatile `BATCH 4|12`
 provide the bounded [comparison procedure](launcher-3e1-performance.md).
+Final 3E.1 device tests verified persistent 42, request-checked Back, zero
+resources, ABI 3 native buttons/timers/suspend/resume/Exit and retired-input
+rejection, using INJECTED input. Actual finger/visual acceptance remains PENDING.
 
 ```sh
 python tools/roundie_launcher.py --port "$PORT" status

@@ -7,6 +7,11 @@ Development-only idle `BATCH 4|12` permits the same-image hardware comparison.
 The existing `latency_max_us` remains enqueue-to-dequeue/start-of-apply, excluding
 LVGL mutation and LCD transfer. Create/update maxima measure the render function;
 see the [pipeline and instrument boundaries](launcher-3e1-performance.md).
+The LCD completion callback explicitly requests the deferred ISR-exit switch:
+the pinned SPI panel adapter ignores its bool return. Measured full-frame
+handler work fell from approximately 356 ms to 241–248 ms at unchanged 3 MHz
+QSPI. This is instrumented device evidence; human visible/touch acceptance
+and remaining full-transition delays are recorded separately in that report.
 
 Milestone 3E adds a separate [system launcher](app-launcher.md) and
 [Exit chrome](system-navigation.md), owned by the same GUI task. Neither is

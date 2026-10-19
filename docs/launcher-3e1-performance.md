@@ -119,8 +119,8 @@ Production performance diagnostics are tested for ring eviction, invalid framing
 idle-only tuning and timestamps beyond uint32 range. Target REP build, layout,
 identity and static stack gates are recorded with the frozen candidate.
 
-Device deployment, corrected baseline/comparison, measured stack/memory margins
-and final OTA state are PENDING below until actual execution.
+The following sections record actual deployment, comparison, stack/memory
+measurements and the final device state separately from the host gates.
 
 ## First instrumented candidate and measured scheduling defect
 
@@ -177,4 +177,180 @@ second bounded candidate/OTA within 3E.1: use existing Safe Mode selection to
 boot preserved B, confirm B normally, then genuine OTA to inactive A again.
 No active image, B application bytes, bootloader or partition table are written.
 The first frozen artifact and all measurements remain preserved. Final-candidate
-hardware effect is PENDING until the comparison below.
+hardware effect is recorded in the comparison below.
+
+## Final candidate: verified device effect
+
+Final source commit `de61b73`; pinned REP build and **78 host tests passed**,
+including the production ISR callback under ASan/UBSan. The final frozen image
+is **729680 bytes**, SHA-256
+`3395c0c58d4bbb7bd8328d8e74c332484c5de60f425c85b919fd4281d1a3e46c`,
+ELF `4cdce8594162012c2038e76e5d5b89554a49ba4f1306e4b3f649be3ca12f5802`,
+version 0.3.6. Its SDK configuration and partition table are byte-identical to
+the first candidate. Only the explicit ISR scheduling request changes firmware
+behavior between these two candidates.
+
+Read-only preflight proved ESP32-S3/expected USB identity, 16 MiB Flash / 8 MiB
+PSRAM, exact installed rollback bootloader and REP table, B 0.3.5 VALID/STABLE,
+A 0.3.4 VALID/compatible, OTA IDLE, no ELF, healthy NVS/LittleFS, unchanged
+package digests and available recovery backup/instructions. One bounded ROM
+read comprised 64 KiB plus two 288-byte headers (**66112 bytes**). There was no
+full-Flash read. The measured defect then justified the second candidate;
+preflight evidence was reused with fresh live identity/health checks, without
+another ROM read. Existing RS1 REQUEST/CLEAR/SELECT/REBOOT booted preserved B;
+selection marked B NEW, and B confirmed normally through PENDING_VERIFY to
+VALID/STABLE. This exercised Safe Mode from an active launcher without apps.
+It did not rewrite B's application bytes. The final genuine RO1 upload wrote
+only inactive A, took **75.564 host seconds** through activation, and recorded
+A NEW→PENDING_VERIFY→VALID/STABLE. Both frozen candidates/logs remain available.
+No partition/bootloader write, format, NVS erase, eFuse/security change, clock
+adjustment, malformed native execution, power interruption or endurance test
+was performed.
+
+Two cold/warm Hello and two cold/warm UI cycles ran on the final image, all
+INJECTED. Hello used the actual installed package, executed Xtensa code,
+returned 42, fully unloaded and showed verified system title/value/Back widgets
+in the foreground. The result survived an explicit 650 ms hold; source has no
+dismissal timer and the host test also advances ten seconds. Wrong Back and
+double launch were refused; correct Back left the same completed generation,
+so dismissal did not execute again. UI realized seven system-owned LVGL objects,
+delivered three button events per instance, advanced ordinary timer updates,
+and exited cooperatively. The second UI cycle also suspended/resumed before
+Exit. Retired input and Exit identities were refused after teardown. No native
+ABI 2 package was installed for this milestone; ABI 2 regression is host evidence.
+
+All values below are **on-device microseconds** unless stated. Each slash pair
+is two samples (first cold native instance / second warm); it is not P95/P99.
+The first candidate's launcher had already been built before the batch-4/12
+comparison; the final candidate's initial construction took 51765 us and was
+not repeated on normal returns.
+
+| Operation / exact boundary | Previous observed | Corrected batch-4 baseline | Final batch-12 + ISR yield |
+|---|---|---|---|
+| Initial launcher LVGL construction, excludes transfer | 46676 in 3E | 50851 | 51765 (four additional result objects) |
+| GUI command enqueue→dequeue maximum | Historical 517828 | 286600 / 306784 | **151684 / 151749** |
+| Hello request→worker-observed clean unload | 139431 / 139490 in new 0.3.5 baseline | 139157 / 139317 | 139213 / 139262 |
+| Result object mutation | Not previously measured; no result page | 1607 / 1592 | 1608 / 1599 |
+| Executable unload→result LVGL ready | Not previously measured | 177616 / 176850 | **118484 / 117504** |
+| Back publication→launcher LVGL ready | Not previously measured | 4219 / 4219 | 4316 / 4318 |
+| UI request→worker-observed RUNNING/SHOW | Historical 499262 / 649253; new 0.3.5 baseline 309251 / 389265 | 419411 / 439382 | **289394 / 289436** |
+| UI initial full-frame handler | Not previously measured | 353492 / 345021 | **241186 / 247834** |
+| Label LVGL mutation maximum within instance | Historical 1433; new baseline 1385 / 1372 | 1554 / 1524 | 1524 / 1532 |
+| Small label refresh handler (six applied button-update samples) | Not previously measured | Approximately 17429–22176 | 17456–17967; 2 strips / 8208 pixels |
+| UI Exit→worker-observed clean unload | Historical 39387 / 319300 (second suspended) | 49453 / 39426 | 49482 / 209502 (second after resume) |
+| UI Exit list-publication→LVGL ready | Not previously measured | 333591 / 4391 | 224568 / 233419 |
+
+Readiness improved by **31.0% / 34.1%**, and instance queue maxima by
+**47.1% / 50.5%**, relative to the corrected batch-four samples. Isolating the
+ISR correction at batch twelve, UI readiness fell from 349410/349409 to
+289394/289436 us; full-frame handlers from 355853/355863 to 241186/247834 us
+(approximately **30–32%**). Full-frame wait sums fell from 279476/279450 to
+162329/164533 us while flush-entry→ISR sums remained 179087/180736 us.
+This confirms a scheduling benefit without a faster bus or early completion.
+Two-second final steady idle produced **zero flushes**. The original 518 ms
+sample remains valid historical evidence; final sampled maxima are not a new
+upper-bound guarantee, nor proof that such an exceptional delay is impossible.
+
+Result drawing required seven strips / 36384 pixels and an 82279/82396 us
+handler after loading. Back drawing remained two partial refreshes: 12 strips /
+76840 pixels at 181319/181318 us, then eight / 53292 at 118431/118368 us. These
+separate handlers do not equal physical button-to-visible latency. UI initial
+frames required 18 strips / 129600 pixels. Ordinary timer-label refreshes used
+one strip / 6016 pixels and approximately 4.4 ms handler work. Some updates were
+applied in one iteration and rendered in the next refresh; an applied command
+is not dropped merely because that iteration has zero flushes. Per-command
+steady update queue latency is not separately exported; the instance maximum
+above includes initial construction, and host polling is not substituted for
+that missing boundary. Small refreshes are much cheaper than screen transitions.
+
+## Remaining bottlenecks and evidence limits
+
+**Verified limitation:** at unchanged 3 MHz QSPI and one serialized internal
+strip buffer, full render/transfer still occupies the single GUI task for
+approximately 0.24–0.25 s. Initial command submission can wait behind the loading
+screen's approximately 234 ms refresh. Exit/suspend/resume can encounter a
+previous refresh, system-root redraw and subsequent list redraw; final ordinary
+Exit had a 224568 us publication→GUI wait, while the post-resume clean-unload
+sample took 209502 us. Therefore the broad goal of avoiding every material
+transition delay is **PENDING**, not an instantaneous-navigation claim.
+Persistent launcher reuse is verified; unrelated system resources are not
+recreated. This maintenance stops after two measured improvements rather than
+changing bus timing or introducing another renderer.
+
+In 32 retained nonzero active-iteration traces from the final bounded cycles,
+the maximum requested-loop-wake lateness was 762 us, handler 247834 us and pump
+27154 us. The **boot-inclusive, never-reset** counters also retain larger
+outliers: handler 293388, pump 56437, wake 304803, flush-entry→ISR 98164,
+submission 90139 and wait 93258 us. Their early startup/confirmation trace
+records were evicted before sampling, so exact attribution remains PENDING;
+they are not erased or advertised as ordinary small-widget timing. Final
+snapshot had 633 submissions and 633 actual completion interrupts, 2619629
+flushed pixels and zero DMA errors. The captured boot/acceptance traffic had
+no panic, watchdog, brownout, completion timeout or enqueue-failure marker.
+These counters/logs are bounded observations, not fault/endurance guarantees.
+
+Human LCD pixels, tearing, panel scanout and finger acquisition/response remain
+**PENDING**. No camera/robot observation was available. Widget existence/text,
+foreground state and completed DMA are software/device evidence only. No 60 FPS
+or visually verified responsiveness claim is made. The initial boot launcher
+construction is timed, but its exact first-presentation flush count/time was
+not isolated before the early ring entries were evicted; that boundary remains
+PENDING rather than being inferred from the subsequent UI full-frame samples.
+
+## Memory, stack and final state
+
+The worker retains 12288 bytes, GUI 8192 bytes, executor 12288 bytes. Final
+observed minimum remaining stacks were **5040 worker / 2776 GUI bytes**.
+Target `-fstack-usage` recorded worker 1680, package command 1456, navigation
+command 448, launcher poll 752, GUI diagnostics command 304, GUI record 224,
+app_main 960, LCD ISR callback 48 and display-wait callback 32 bytes. These are
+individual compiler frames, not a complete worst-case call-chain proof. Worker
+stack was not increased. The historical 3D LittleFS panic's precise cause stays
+unresolved; these measurements do not retroactively prove a stack cause.
+
+Each final Hello/UI instance restored its loader-before/after heap snapshots
+exactly: internal free/largest **218419 / 139264 bytes**; PSRAM free was
+**8382780** for Hello or **8380764** for UI. These runtime snapshots still include
+the executor-owned input buffer, whose separate retirement is proven by busy=0;
+they are not a later direct idle-heap sample. Native UI LVGL peak was 1828/1816
+bytes. System launcher/chrome remained **37 objects**, final LVGL pool free
+**42880 bytes**, with no monotonic instance heap growth in this bounded sample.
+Generation four completed with resource counters **[28,27,1,0]**, UI generation/
+outstanding/pending zero, no ELF owned, launcher foreground and batch twelve.
+
+Final device: **A 0.3.6 VALID/STABLE**, exact final ELF above; **B 0.3.5 VALID**,
+ELF `62e7cd192e75192da2a879d0f369438c0f7fcd0ef68b447b55f29469cbdac390`,
+OTA IDLE, rollback enabled, healthy mounted LittleFS/NVS. Package identities
+and full-package digests remain unchanged:
+
+- `org.roundie.hello` 1.1.0 / ABI 1, **Roundie Hello Update**,
+  `9a36506f21136344e557235aaa8caa532a52551dd9eb28936ffa3a8a6d054cd1`.
+- `org.roundie.ui` 1.0.0 / ABI 3, **Roundie UI**,
+  `76ab4c5be328397900de02784f0d5f3f8660a56ba82e974bf5b4c8e17d5bfcd7`.
+
+RTC remained readable/valid with OS=0, unchanged by SET; final RTC/system
+samples differed by one second. This does not establish host clock accuracy or
+continuous discipline. No extra recovery or power experiment was added.
+
+## Evidence and manual acceptance
+
+Raw traffic, immutable candidate images, hashes, layout/image validation,
+compiler stack records and exact bounded scripts remain outside Git:
+`/mnt/Dane/Development/roundie-backups/launcher-3e1-2026-10-19/`, final candidate
+and acceptance in `yield-corrected/`. Key records: `candidate.json`,
+`preflight-passed.json`, `ota-new.json`, `a-first-boot.log`, `a-confirmed.json`,
+`optimized-hello-0/1.json`, `optimized-ui-0/1.json`, `idle.json`,
+`final-device-state.json`, plus the preserved first-candidate batch comparison.
+The initial idle-sampling interruption is retained. No binary, raw device log,
+private USB identity or backup is committed. Nothing was pushed.
+
+Human manual gate (all six steps PENDING):
+
+1. Tap **Roundie Hello Update** in the launcher.
+2. Verify **Application finished / 42** remains visible until dismissed.
+3. Press **Back** and verify usable launcher without another launch.
+4. Launch **Roundie UI**.
+5. Check visible drawing/transition responsiveness and TAP ME with a real finger.
+6. Exit through system navigation and verify the launcher.
+
+The automated maintenance work stops at 3E.1. No 3F work or long campaign follows.

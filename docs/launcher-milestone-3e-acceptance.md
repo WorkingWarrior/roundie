@@ -4,6 +4,10 @@
 adds persistent ABI 1 completion UX and investigates the delays below. It does
 not replace the original 517828 us observation or resolve the historical 3D
 LittleFS panic's exact cause.
+Its final 0.3.6 image is now A VALID/STABLE, with B 0.3.5 VALID preserved;
+78 host tests and bounded native device cycles passed. Human visual/finger
+acceptance remains PENDING. See that report for the two measured performance
+changes and remaining transition delays; this original 3E record stays historical.
 
 The system launcher and navigation are implemented and the automated host,
 target and bounded device execution gates passed. B / ota_1 runs 0.3.5
