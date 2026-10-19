@@ -35,6 +35,15 @@ its reason/latch and does not restart to test whether a fault disappeared.
 | USB/JTAG/external/SDIO | No increment |
 | Unknown / eFuse reset | Ambiguous, no increment |
 
+**Runtime recovery decision:** an unplanned panic/watchdog/software reset
+after STABLE enters Safe Mode on the next boot with reason=core. It does not
+increment the incomplete-startup counter or invalidate the image. Recovering
+on the first clear runtime software fault prevents recurring late failures
+from evading the short startup counter. Planned resets and ambiguous/power
+resets retain the classification above. A core recovery reason identifies a
+lost operational session, not proof of defective firmware or a future ELF
+application; application-specific attribution is deferred to its milestone.
+
 Failure after a completed stable normal boot is not itself a startup loop.
 Failure during an explicit normal trial returns directly to Safe Mode on the
 next boot without granting another automatic trial. A fault while already in
@@ -113,8 +122,23 @@ guards and disabled production faults. Existing actual OTAManager tests
 separately check pending confirmation/rejection, VALID preservation and
 alternate-slot verification/state rejection. They are not board tests.
 
-Physical results: **PENDING** until the bounded sequence in
-[safe-mode.md](safe-mode.md) is recorded. Real panic/watchdog, brownout,
+**Verified host/target facts, 2026-10-19:** 50 Python unittest cases passed
+in the exported pinned IDF environment; the C engine/backend/controller,
+OTAManager, boot-gate and storage tests use ASan/UBSan where applicable.
+The existing boot-gate matrix covers 112 normal/armed combinations.
+Normal REP 0.2.2 and separate unarmed-by-default 0.2.2-boot-test both built
+with the pinned v6.1 toolchain. Normal image size is 680,384 bytes; diagnostic
+size is 680,704 bytes, both within 3,670,016-byte slots. Image checksum and
+validation hash passed `esptool image-info`; the layout validator passed.
+No compiler warning suppression or managed source change was added.
+
+**Verified physical:** genuine normal OTA/confirmation, explicit safe entry,
+retained software-reset state, normal trial, guarded alternate selection and
+one three-reset incomplete-startup experiment in an already VALID diagnostic
+image passed. The count reached 3 and stable Safe Mode; both images remained
+VALID and recovery returned to normal with cleared history. Exact logs,
+image identities and restoration status are in [safe-mode.md](safe-mode.md).
+These are controlled software resets. Real panic/watchdog, brownout,
 power interruption, deep-sleep retention and visual/touch checks remain
 PENDING; controlled software resets do not prove those reset classes.
 BootGuard cannot recover code that fails before its own early check, an

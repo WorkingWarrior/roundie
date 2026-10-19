@@ -96,6 +96,12 @@ void roundie_boot_begin(roundie_reset_class_t reset, const uint8_t image[32])
         if (abnormal && current.safe) {
             /* Even a late fault in recovery must not retry optional GUI. */
             current.skip_gui = true;
+        } else if (abnormal && retained.stage == ROUNDIE_BOOT_STABLE) {
+            /* This is a core runtime failure, not an incomplete startup.
+             * Recover conservatively on the next boot instead of allowing
+             * recurring late failures to evade the startup counter forever.
+             * This never asserts that the firmware image is defective. */
+            enter_safe(ROUNDIE_SAFE_CORE);
         } else if (abnormal && retained.stage != ROUNDIE_BOOT_STABLE) {
             if (current.failures < ROUNDIE_BOOT_FAILURE_LIMIT) {
                 current.failures++;

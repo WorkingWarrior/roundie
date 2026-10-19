@@ -123,6 +123,20 @@ int main(void)
     assert(roundie_boot_persistence_sync() && writes == 0);
     start(ROUNDIE_RESET_WATCHDOG);
     assert(status().failures == 0); /* Stable runtime fault is not a startup loop. */
+    assert(status().safe && status().reason == ROUNDIE_SAFE_CORE);
+    const roundie_reset_class_t runtime_faults[] = {ROUNDIE_RESET_PANIC, ROUNDIE_RESET_SOFTWARE};
+    for (size_t i = 0; i < sizeof(runtime_faults) / sizeof(runtime_faults[0]); i++) {
+        fresh();
+        stable();
+        start(runtime_faults[i]);
+        assert(status().safe && status().reason == ROUNDIE_SAFE_CORE && status().failures == 0);
+    }
+    fresh();
+    stable();
+    roundie_boot_planned_restart();
+    start(ROUNDIE_RESET_SOFTWARE);
+    assert(!status().safe && status().failures == 0);
+    fresh();
     for (unsigned i = 0; i < 4; i++) {
         roundie_boot_planned_restart(); /* Ordinary and OTA activation restart. */
         start(ROUNDIE_RESET_SOFTWARE);
