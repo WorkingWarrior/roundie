@@ -1,5 +1,13 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Milestone 3B physical runtime checkpoint, 2026-10-19:** firmware 0.3.2 reached
+VALID/STABLE in A by genuine inactive-slot RO1 OTA; preserved B 0.3.1 remains
+VALID/fallback. The event-driven ABI 2 example passed three complete native
+load/start/event/suspend/resume/stop/destroy cycles with exact measured SRAM/
+PSRAM recovery and zero outstanding resources. The original ABI 1 hello still
+returns 42. See [lifecycle and physical measurements](app-lifecycle.md) and
+[resource ownership](resource-manager.md). No Milestone 3C work was started.
+
 **Milestone 3A bounded gate passed, 2026-10-19:** native loader 1.3.5, ABI 1,
 standalone ELF, development staging and executor passed physical execution,
 cleanup, negative-candidate and Safe Mode checks. B 0.3.1 is VALID/STABLE;

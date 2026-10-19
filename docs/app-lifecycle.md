@@ -171,6 +171,170 @@ partial-init and forgotten allocation reclamation. They execute host mock
 callbacks, not native Xtensa instructions. The original rounded-text overlap
 regression and forbidden helper/TLS probes remain.
 
-**Target and physical acceptance:** PENDING final frozen build, genuine RO1 OTA,
-native repeated event callbacks, measured memory recovery and final slot/service
-checks. Historical 3A evidence remains in [elf-loader.md](elf-loader.md).
+**Host acceptance, 2026-10-19:** 68 unittest cases passed, including the original
+112-case OTA boot matrix, actual RO1 controller exclusion, ASan/UBSan manager
+tests, and C11/C23 Xtensa layouts for both public headers. After final review,
+a focused BootGuard/RS1 test also passed for teardown finishing during REQUEST:
+restart cannot overtake deferred NVS persistence. Its production correction was
+rebuilt and verified before freezing. No warnings were disabled.
+
+**Target verified:** clean REP build with pinned ESP-IDF v6.1 commit
+`fff9895c82d744c7237be8847347bdd1b07c6643`, plus the final focused recovery
+rebuild, passed. Production partition/layout validation passed with unchanged
+`rep-v1`, 16 MiB, two 3.5 MiB slots and 2,968,816 bytes of image headroom.
+Loader 1.3.5, memory protection and rollback remain enabled; broad exports,
+XIP, security changes and both fault-injection configurations remain disabled.
+
+| Frozen artifact | Bytes | SHA-256 |
+|---|---:|---|
+| Firmware 0.3.2 | 701200 | `38819c10d1d218bd00f8477fcb7fe627449c82a2099e4b6c44094c33949f8649` |
+| Firmware embedded ELF identity | — | `32e888585278c7590ffc47f50a9bdf0d153de531df5244ddf9ec74441174dbde` |
+| Independent event ELF, ABI 2 | 2116 | `8aaee0a856ad590a34ca5931404c8c62cd7b6fc499135b9a1bd397f9cbc9aa6b` |
+| Original 3A hello ELF, ABI 1 | 1692 | `5edbfbf49c72890dd80f33263d2e52ffeeba9bfb0c5ef577047428a7360f0c88` |
+
+The event ELF has 472 code bytes, a 191-byte worst-case data allocation,
+21 relocations and exactly one import. The original hello binary was copied
+unchanged from the preserved 3A acceptance archive, rather than substituting a
+new build as compatibility evidence.
+
+**Physical OTA verified:** current read-only preflight checked unique Espressif
+USB identity `303a:1001`, serial/MAC `28:84:85:87:98:7C`, ESP32-S3, 16 MiB Flash,
+security state, exact installed bootloader/table, CRC-valid A/B metadata and
+the expected A 0.2.5 / B 0.3.1 image headers. Reads were bounded to a 64 KiB
+prefix and two 288-byte headers. The original 16 MiB factory backup and tested
+ROM Download recovery instructions were present; no whole-Flash dump was made.
+After return to normal/STABLE B, the immediately repeated runtime checks passed.
+
+Genuine RO1 streamed the frozen image into inactive **A**, while **B 0.3.1**
+remained running/VALID. END verified the exact SHA-256 and embedded identity;
+ACTIVATE reported A NEW; acknowledged RESTART produced A PENDING_VERIFY at
+1158 ms and VALID at 3298 ms after the real core self-test. Host upload through
+activation/restart acknowledgement took **72.462 s**. BootGuard became STABLE.
+No B application bytes, bootloader, partition table, security configuration or
+Flash partition layout were written. Existing NVS/user storage were preserved;
+only the development staging files and normal BootGuard persistence were used.
+
+**Physical runtime verified:** one load per generation, with executable entry
+`0x420a1a40` in the PSRAM instruction alias, write allocation `0x3c0a18a8` and
+data `0x3c0a1a84`. Three complete generations each delivered **5 timer callbacks
+and 1 explicit user callback with value 42**, across separate system dispatches.
+The same relocated image remained loaded between them. Each completed
+suspend stayed quiet for 600 ms (more than two timer periods), rejected a new
+event and resumed later timer delivery. One cycle stopped directly from
+SUSPENDED. Invalid resume, stale-generation event, event after stop and
+idempotent stop/unload were checked. No event callback followed unload.
+
+| Measured on-device metric, microseconds | Cycle 1 | Cycle 2 | Cycle 3 |
+|---|---:|---:|---:|
+| Load/relocation | 9225 | 9182 | 9273 |
+| Init | 4220 | 4198 | 4126 |
+| Maximum callback/entry duration | 4200 | 4182 | 4328 |
+| Suspend (last in cycle) | 1202 | 1162 | 1183 |
+| Resume | 1143 | 1227 | 1147 |
+| Stop | 1246 | 1291 | 1145 |
+| Destroy/unload | 1452 | 1385 | 1409 |
+| Maximum enqueue-to-event-callback latency | 729 | 934 | 737 |
+
+The nine sampled completed timer/user callback durations were **841–1048 us**.
+The overall callback maximum includes init and lifecycle work, not just events.
+These are bounded observations with logging enabled, not worst-case guarantees.
+Enqueue latency excludes timer deadline/poll jitter and host USB transport.
+Host START completion took 58.450–59.569 ms; whole acceptance cycles, including
+intentional suspend waits and polling, took 2.129–2.151 s. These host timings
+must not be described as on-device callback latency.
+
+All three cycles had identical heap snapshots (bytes):
+
+| Snapshot | Internal free | Largest internal | PSRAM free | Code-heap largest |
+|---|---:|---:|---:|---:|
+| Before load | 246631 | 172032 | 8382300 | 8257536 |
+| After relocation | 246631 | 172032 | 8381628 | 8257536 |
+| Running with 16-byte SDK state | 246611 | 172032 | 8381628 | 8257536 |
+| After destroy/unload | 246631 | 172032 | 8382300 | 8257536 |
+
+Every cycle ended with `resources=[12,11,1,0]`: 12 acquired, 11 normally
+released, one timer reclaimed at stop and zero outstanding. SDK state was
+explicitly released; 20 measured internal heap bytes and 672 PSRAM bytes
+recovered exactly. Events, subscription, timer, allocation and busy counts
+were zero. Dropped/coalesced were **0/0**; three rejected event probes per cycle
+were counted. Overflow/coalescing behavior is covered by host tests, not a
+physical overload experiment. The persistent executor is excluded from the
+per-instance heap comparison, as is the same retained input before/after.
+
+**Physical compatibility and exclusion verified:** the unchanged ABI 1 hello
+executed with ten relocations, six REP calls and result 42. Its SRAM/PSRAM also
+recovered exactly. In a separate bounded instance, real RO1 BEGIN and RE1 BEGIN
+were rejected with ESP_ERR_INVALID_STATE in RUNNING, SUSPENDED and STOPPED;
+OTA stayed IDLE and no development transfer session opened. This checks the
+guards before mutation, not simultaneous Flash/native execution.
+
+**Safe Mode and final service acceptance:** see the final state record below.
+Raw device logs, frozen artifacts and JSON measurements are intentionally
+outside Git in `/mnt/Dane/Development/roundie-backups/runtime-3b-2026-10-19/`.
+Production implementation and tests: commit `8a000ce`.
+Historical 3A evidence remains in [elf-loader.md](elf-loader.md).
+
+## Final Safe Mode and device state — 2026-10-19
+
+An additional bounded native generation received two real timer events before
+`RS1 REQUEST`. Its reply reported reason=request and `restart=0`, acknowledging
+the deferred path rather than restarting inside the command. The subsequent
+boot retained the request latch and entered Safe Mode, without a LittleFS
+mount or application executor initialization. START, RUN and EVENT were refused;
+resources, queue and busy were zero. The exact stop/destroy log lines between
+the REQUEST acknowledgement and reopening USB were not captured: physical
+evidence establishes successful deferred recovery, while callback/NVS ordering
+is established by the production-source host tests. A callback interrupted
+mid-instruction was not deliberately exercised on hardware.
+
+An explicit normal trial then returned the same A image to normal/STABLE.
+Final independent RO1/RS1/RT1/RE1 queries and startup logs established:
+
+| Final item | Observed result |
+|---|---|
+| Running and selected firmware | A / ota_0, 0.3.2, VALID; exact candidate embedded ELF |
+| Eligible fallback | B / ota_1, 0.3.1, VALID and compatible; rollback=1 |
+| Fallback embedded ELF | `64e17722a3d8665399ca049eb1277e423e6bd6c3775b3057c008b0f6510a4298` |
+| BootGuard | normal/STABLE, latch=0, failures=0, trial=0, persistence=1 |
+| Fault injection | test_build=0, fault_remaining=0 |
+| OTA | IDLE, checked=1, passed=1, last_error=0 |
+| Runtime | UNLOADED, busy=0, allocations/resources/events/timers/subscriptions=0 |
+| Normal startup | NVS initialization ESP_OK; no erase fallback |
+| LittleFS | mounted, valid capacity; total 9240576 / used 20480 bytes |
+| RTC | valid, OS=0, error=0; no clock-setting operation performed |
+| USB | actual RO1, RS1, RT1 and RE1 replies received |
+| Fault logs | no unexpected panic, task watchdog trigger or brownout in captured acceptance logs |
+
+The post-recovery runtime has generation zero because it is a fresh boot with
+no automatic application execution. The measured three-cycle cleanup remains
+recorded separately in `app-results.json`, not inferred from that reset.
+The staging file remains a development artifact; no installed-app registry or
+automatic launch was introduced. ROM recovery was preserved and checked
+against its existing physical procedure, not physically repeated unnecessarily.
+
+## Repeatable bounded acceptance and remaining limits
+
+The following performs at most three cycles and the original ABI 1 execution;
+it checks the selected firmware/fallback identities before staging. It does
+not perform OTA, recovery restart, malformed native execution or endurance work.
+
+```sh
+python tools/roundie_runtime_acceptance.py --port "$PORT" \
+  --event examples/event_elf/build/event.app.elf \
+  --legacy /mnt/Dane/Development/roundie-backups/elf-3a-2026-10-19/fix-0.3.1/hello.app.elf \
+  --expected-elf 32e888585278c7590ffc47f50a9bdf0d153de531df5244ddf9ec74441174dbde \
+  --fallback-elf 64e17722a3d8665399ca049eb1277e423e6bd6c3775b3057c008b0f6510a4298 \
+  --cycles 3
+```
+
+No deliberate invalid-memory, infinite-loop or watchdog-triggering native
+application was executed. Fault-injection lifecycle failures, forgotten SDK
+allocations, queue saturation/coalescing and Safe Mode during an active callback
+are host-test results, not physical failure-injection evidence. Native code is
+trusted and unisolated. A non-returning callback still requires system recovery.
+
+**PENDING / outside 3B:** GUI responsiveness and display timing, concurrent
+Flash/cache/PSRAM execution, physical overload/latency worst cases, long endurance,
+power interruption and battery-dependent recovery. RTC clock discipline and
+battery calibration remain separate earlier limitations. No Milestone 3C,
+package installation, network, MTP, peripheral leasing or GUI SDK work was begun.

@@ -59,4 +59,14 @@ aggregate limits, zero/UINT32_MAX sizes, foreign owner/pointer, double release,
 timer stale generation/token, cleanup after failed init/start/event, stop while
 running/suspended and 12 lifecycle modes. Every completed teardown recovers
 mock heap bytes and leaves zero resources/events/timers/subscriptions.
-**Physical memory and resource measurements:** PENDING acceptance.
+**Physical verified, 2026-10-19:** three complete native event-app generations
+each ended with `resources=[12,11,1,0]`, no allocation/timer/subscription/event,
+and busy zero. Each reclaimed one still-registered timer at stop and explicitly
+released its 16-byte SDK state at destroy. Internal free bytes recovered from
+246611 to 246631; PSRAM recovered from 8381628 to 8382300. Largest internal/code
+blocks remained 172032/8257536 bytes. These identical before/after results
+exclude the persistent executor and retain the same input in both snapshots.
+The original ABI 1 binary also recovered its measured heap exactly.
+Full timings, identities and evidence boundaries are in
+[app-lifecycle.md](app-lifecycle.md#evidence). Forgotten-allocation and partial-init
+reclamation are host-test evidence; no deliberately failing native ELF was run.
