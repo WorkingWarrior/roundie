@@ -1,5 +1,28 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**RTC investigation checkpoint, 2026-10-19:** firmware 0.2.4/0.2.5 adds requested,
+read-only RTC/system interval diagnostics; see the
+[measurement contract and physical evidence](rtc-time-sync.md#clock-investigation--2026-10-19).
+The historical two-second long-uptime failure and earlier retention results
+are preserved. No periodic synchronization, RTC SET, oscillator calibration
+or time-source change was introduced. The 61-test host suite, pinned v6.1 REP
+build and layout validation passed. Genuine OTA confirmed final **A 0.2.5
+VALID/running**, preserving **B 0.2.3 VALID/fallback**. One additional A-only
+OTA corrected an early diagnostic counter-publication race found in final
+review; the existing recovery path temporarily selected/reconfirmed B without
+rewriting it. Early replies physically rejected unavailable state with zero
+counters, then valid startup diagnostics passed. Final 30-second normal
+observations enclosed RTC−system in approximately −0.064…+0.958 s, with OS=0
+and one startup initialization. The conclusion remains
+**Case D / insufficient evidence**: four valid OS=0 samples on 0.2.4
+over 300 s enclosed RTC−system around +0.645…+1.647 s; approximately 2 ms reads
+and 8.57–9.99 ms USB RTT did not resolve drift (feasible rate interval includes
+zero). No corrective discipline is justified by these data. The unchanged
+one-second integer agreement and progression checks passed, while longer
+agreement and absolute host-UTC accuracy remain PENDING. This is an RTC
+investigation within the current platform; it does not start another milestone
+or close older visual, battery, fault-injection or endurance gates.
+
 ## Milestone 2C.2 BootGuard and Safe Mode — 2026-10-19
 
 BootGuard failure tracking, sparse NVS latch, one-shot normal trial, early
