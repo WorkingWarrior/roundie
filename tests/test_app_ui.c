@@ -34,6 +34,7 @@ esp_err_t roundie_packages_launch(const char *id)
 
 static bool stall_gui;
 static unsigned fault;
+static bool exit_inside_callback;
 static const rep_api_v3_t *ui_api;
 static rep_descriptor_v3_t ui_descriptor;
 static unsigned ui_destroy_calls;
@@ -87,7 +88,14 @@ static int32_t test_event(const rep_context_v3_t *context, const rep_event_v3_t 
     if (fault == 4) {
         return 0;
     }
-    return rep_app_entry_v3(ui_api)->on_event(context, event);
+    int32_t result = rep_app_entry_v3(ui_api)->on_event(context, event);
+    if (exit_inside_callback) {
+        assert(callback_active && loader_initialized);
+        assert(roundie_launcher_exit(context->instance) == ESP_OK);
+        assert(roundie_launcher_exit(context->instance) == ESP_ERR_INVALID_STATE);
+        assert(callback_active && status.state == ROUNDIE_ELF_RUNNING && loader_initialized);
+    }
+    return result;
 }
 
 static int32_t test_destroy(const rep_context_v3_t *context)
@@ -344,6 +352,12 @@ int main(int argc, char **argv)
     current_task = (void *)2;
     roundie_launcher_gui_pump(false);
     assert(lv_screen_active() != home && lv_obj_is_valid(home));
+    /* Leave an accepted GUI update pending when system Exit is clicked. */
+    lv_obj_send_event(lv_obj_get_child(lv_screen_active(), 3), LV_EVENT_CLICKED, NULL);
+    current_task = (void *)1;
+    roundie_elf_step(esp_timer_get_time());
+    assert(ui_status().pending != 0);
+    current_task = (void *)2;
     lv_obj_t *exit = lv_obj_get_child(lv_layer_top(), 0);
     assert(!lv_obj_has_flag(exit, LV_OBJ_FLAG_HIDDEN));
     unsigned delivered = status.ui_delivered;
@@ -363,6 +377,32 @@ int main(int argc, char **argv)
     roundie_elf_status_t final_runtime;
     roundie_elf_status(&final_runtime);
     assert(final_runtime.resources_outstanding == 0);
+    /* System request admission while native code is executing cannot unload
+     * it recursively. Cooperative processing happens after callback return. */
+    assert(roundie_launcher_select("org.roundie.ui", navigation.revision, 1) == ESP_OK);
+    current_task = (void *)1;
+    roundie_launcher_poll(true, false);
+    assert(roundie_elf_execute(fixture, fixture_size));
+    roundie_launcher_poll(true, false);
+    roundie_launcher_status(&navigation);
+    assert(navigation.state == ROUNDIE_NAV_ACTIVE);
+    current_task = (void *)2;
+    roundie_launcher_gui_pump(false);
+    lv_obj_send_event(lv_obj_get_child(lv_screen_active(), 3), LV_EVENT_CLICKED, NULL);
+    current_task = (void *)1;
+    exit_inside_callback = true;
+    roundie_elf_step(esp_timer_get_time());
+    exit_inside_callback = false;
+    assert(status.state == ROUNDIE_ELF_RUNNING && !callback_active);
+    roundie_launcher_poll(true, false);
+    roundie_elf_step(esp_timer_get_time());
+    roundie_launcher_poll(true, false);
+    current_task = (void *)2;
+    roundie_launcher_gui_pump(false);
+    roundie_launcher_status(&navigation);
+    assert(navigation.state == ROUNDIE_NAV_LIST && navigation.foreground);
+    roundie_elf_status(&final_runtime);
+    assert(final_runtime.resources_outstanding == 0 && lv_screen_active() == home);
     lv_deinit();
     puts("ABI3 production runtime + bridge + LVGL: lifecycle, input, no recursion, full FIFO, recovery, delayed barrier PASS (host C callbacks, mocked loader)");
     return 0;
