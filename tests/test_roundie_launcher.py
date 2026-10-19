@@ -21,10 +21,23 @@ class LauncherDiagnosticsTests(unittest.TestCase):
              patch.object(launcher, "write_command"), patch.object(launcher, "read_serial_reply") as read:
             read.return_value = self.response()
             self.assertEqual(launcher.request(None)["state"], "LIST")
-            for changes in (dict(nav=8), dict(count=9), dict(pending=[2, 0]), dict(us=[0]),
+            for changes in (dict(nav=9), dict(count=9), dict(pending=[2, 0]), dict(us=[0]),
                             dict(selected="../invalid"), dict(gui=[-1, 0]), dict(revision=True)):
                 read.return_value = self.response(**changes)
                 with self.assertRaises((launcher.DeviceError, launcher.TransportError)):
+                    launcher.request(None)
+
+    def test_copied_completion_and_back(self):
+        with patch.object(launcher.secrets, "token_hex", return_value="12345678"), \
+             patch.object(launcher, "write_command") as write, patch.object(launcher, "read_serial_reply") as read:
+            read.return_value = self.response(nav=8, name="Roundie Hello Update", completion=[3, 7, 0, 1, 1, 1, 100, 500])
+            result = launcher.request(None, "BACK 3")
+            self.assertEqual(result["state"], "RESULT")
+            self.assertEqual(result["completion"], [3, 7, 0, 1, 1, 1, 100, 500])
+            self.assertIn("BACK 3", write.call_args.args[1])
+            for completion in ([3], [3, 7, 0, 1, 2, 1, 100, 500], [3, 7, 0, 1, 1, True, 100, 500]):
+                read.return_value = self.response(nav=8, name="Hello", completion=completion)
+                with self.assertRaises(launcher.TransportError):
                     launcher.request(None)
 
     def test_injection_bounds(self):

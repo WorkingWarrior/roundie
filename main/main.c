@@ -32,6 +32,7 @@
 #include "recovery_diagnostics.h"
 #include "elf_diagnostics.h"
 #include "package_diagnostics.h"
+#include "gui_diagnostics.h"
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
@@ -62,6 +63,12 @@ typedef struct {
     bool display_fault;
     unsigned transfer_errors;
     unsigned completed_transfers;
+    int64_t transfer_started_us;
+    portMUX_TYPE dma_lock;
+    int64_t dma_done_us;
+    uint32_t dma_completions;
+    roundie_gui_work_t work;
+    int64_t render_started_us;
     bool was_pressed;
     uint16_t last_x;
     uint16_t last_y;
@@ -544,6 +551,11 @@ static bool lcd_transfer_done(esp_lcd_panel_io_handle_t io,
     (void)io;
     (void)event;
     gui_state_t *state = user_context;
+    int64_t done_us = esp_timer_get_time();
+    portENTER_CRITICAL_ISR(&state->dma_lock);
+    state->dma_done_us = done_us;
+    state->dma_completions++;
+    portEXIT_CRITICAL_ISR(&state->dma_lock);
     BaseType_t higher_priority_woken = pdFALSE;
     vTaskNotifyGiveFromISR(state->gui_task, &higher_priority_woken);
     return higher_priority_woken == pdTRUE;
@@ -552,7 +564,22 @@ static bool lcd_transfer_done(esp_lcd_panel_io_handle_t io,
 static void wait_for_display(lv_display_t *display)
 {
     gui_state_t *state = lv_display_get_user_data(display);
+    int64_t started = esp_timer_get_time();
     if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) > 0) {
+        portENTER_CRITICAL(&state->dma_lock);
+        int64_t done_us = state->dma_done_us;
+        portEXIT_CRITICAL(&state->dma_lock);
+        uint32_t dma_us = (uint32_t)(done_us - state->transfer_started_us);
+        uint32_t wait_us = (uint32_t)(esp_timer_get_time() - started);
+        state->work.done++;
+        state->work.dma_us += dma_us;
+        state->work.wait_us += wait_us;
+        if (dma_us > state->work.dma_max_us) {
+            state->work.dma_max_us = dma_us;
+        }
+        if (wait_us > state->work.wait_max_us) {
+            state->work.wait_max_us = wait_us;
+        }
         state->transfer_pending = false;
         state->completed_transfers++;
         return;
@@ -580,12 +607,20 @@ static void flush_display(lv_display_t *display, const lv_area_t *area,
         abort();
     }
     state->transfer_pending = true;
+    state->transfer_started_us = esp_timer_get_time();
+    state->work.flushes++;
+    state->work.pixels += (uint32_t)lv_area_get_size(area);
     /* LVGL stores RGB565 in CPU byte order; ST77916 expects MSB first. */
     lv_draw_sw_rgb565_swap(pixels, lv_area_get_size(area));
     esp_err_t error = esp_lcd_panel_draw_bitmap(roundie_board_panel(state->board),
                                                 area->x1, area->y1,
                                                 area->x2 + 1, area->y2 + 1,
                                                 pixels);
+    uint32_t submit_us = (uint32_t)(esp_timer_get_time() - state->transfer_started_us);
+    state->work.submit_us += submit_us;
+    if (submit_us > state->work.submit_max_us) {
+        state->work.submit_max_us = submit_us;
+    }
     if (error != ESP_OK) {
         state->transfer_pending = false;
         state->display_fault = true;
@@ -593,6 +628,23 @@ static void flush_display(lv_display_t *display, const lv_area_t *area,
         ESP_LOGE(TAG, "LCD transfer enqueue failed (%u): %s",
                  state->transfer_errors, esp_err_to_name(error));
         lv_display_flush_ready(display);
+    }
+}
+
+static void display_event(lv_event_t *event)
+{
+    gui_state_t *state = lv_event_get_user_data(event);
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_INVALIDATE_AREA) {
+        const lv_area_t *area = lv_event_get_param(event);
+        uint32_t pixels = (uint32_t)lv_area_get_size(area);
+        state->work.invalidations++;
+        state->work.invalid_pixels += pixels;
+        state->work.full_invalidations += pixels == DISPLAY_WIDTH * DISPLAY_HEIGHT;
+    } else if (code == LV_EVENT_RENDER_START) {
+        state->render_started_us = esp_timer_get_time();
+    } else if (code == LV_EVENT_RENDER_READY) {
+        state->work.render_us += (uint64_t)(esp_timer_get_time() - state->render_started_us);
     }
 }
 
@@ -887,6 +939,7 @@ void app_main(void)
     gui_state_t state = {
         .board = board,
         .gui_task = xTaskGetCurrentTaskHandle(),
+        .dma_lock = portMUX_INITIALIZER_UNLOCKED,
         .brightness_percent = 60,
         .touch_available = status.touch == ESP_OK,
     };
@@ -916,6 +969,7 @@ void app_main(void)
     }
     lv_display_set_color_format(state.display, LV_COLOR_FORMAT_RGB565);
     lv_display_set_user_data(state.display, &state);
+    lv_display_add_event_cb(state.display, display_event, LV_EVENT_ALL, &state);
     lv_display_set_flush_cb(state.display, flush_display);
     lv_display_set_flush_wait_cb(state.display, wait_for_display);
     lv_display_set_buffers(state.display, draw_buffer, NULL, buffer_bytes,
@@ -966,17 +1020,28 @@ void app_main(void)
     int64_t self_test_at_us = esp_timer_get_time() + 1000000;
     int64_t next_health_log_us = esp_timer_get_time() + 300000000;
     int64_t next_ui_update_us = esp_timer_get_time() + 1000000;
+    int64_t expected_wake_us = 0;
     while (true) {
+        int64_t iteration_at = esp_timer_get_time();
+        uint32_t wake_us = expected_wake_us > 0 && iteration_at > expected_wake_us ?
+            (uint32_t)(iteration_at - expected_wake_us) : 0;
+        memset(&state.work, 0, sizeof(state.work));
         if (state.display_fault) {
             roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
         }
+        static roundie_ui_status_t ui_before;
+        roundie_ui_status(&ui_before);
+        roundie_ui_gui_batch(roundie_gui_batch());
         roundie_ui_gui_pump();
 #if CONFIG_ROUNDIE_DEV_PACKAGES
         roundie_launcher_gui_pump(roundie_recovery_active());
 #endif
         roundie_ui_display_progress(state.completed_transfers, state.transfer_errors);
-        roundie_ui_status_t app_ui;
+        static roundie_ui_status_t app_ui;
         roundie_ui_status(&app_ui);
+        uint32_t pump_us = (uint32_t)(esp_timer_get_time() - iteration_at);
+        uint32_t applied = app_ui.generation == ui_before.generation && app_ui.applied >= ui_before.applied ?
+            app_ui.applied - ui_before.applied : app_ui.applied;
         if (roundie_recovery_active() && !recovery_screen && app_ui.generation == 0) {
             if (input != NULL) {
                 lv_indev_enable(input, false);
@@ -985,7 +1050,9 @@ void app_main(void)
             make_screen(&state, &status, flash_bytes, psram_bytes);
             recovery_screen = true;
         }
+        int64_t handler_at = esp_timer_get_time();
         lv_timer_handler();
+        uint32_t handler_us = (uint32_t)(esp_timer_get_time() - handler_at);
         if (!health_sent && esp_timer_get_time() >= self_test_at_us) {
             bool memory_ok = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 16384 &&
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 8192 &&
@@ -1016,6 +1083,12 @@ void app_main(void)
             esp_restart();
             abort();
         }
+        portENTER_CRITICAL(&state.dma_lock);
+        uint32_t dma_completions = state.dma_completions;
+        portEXIT_CRITICAL(&state.dma_lock);
+        roundie_gui_record(iteration_at, pump_us, handler_us, wake_us, ui_before.pending,
+            app_ui.pending, applied, &state.work, state.transfer_errors, dma_completions);
+        expected_wake_us = esp_timer_get_time() + 10000;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

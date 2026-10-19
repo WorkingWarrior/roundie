@@ -32,7 +32,7 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 if(NOT DEFINED PROJECT_VER)
-    set(PROJECT_VER "0.3.5")
+    set(PROJECT_VER "0.3.6")
 endif()
 project(${ROUNDIE_PROJECT_NAME})
 

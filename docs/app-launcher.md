@@ -26,7 +26,14 @@ are refused. Runtime unload and input-buffer retirement, UI generation zero
 and zero application resources are required before list admission reopens.
 Failed teardown keeps Exit/diagnostics available and prevents another launch.
 
-ABI 1 returns automatically with its actual result. ABI 2 uses a system status
+ABI 1 unloads automatically and enters the persistent system RESULT presentation.
+The copied installed display name and actual application return value remain
+until Back. Return value 42 is valid data, not a loader failure. Admission errors,
+loader errors and execution/cleanup errors use the same system-owned page with
+distinct failure text. Matching request, instance and advanced completion serial,
+input-buffer retirement and zero resources gate successful completion; historical
+global result data is insufficient. Registry publication cannot dismiss RESULT.
+Back checks the request serial and submits no ELF work. ABI 2 uses a system status
 screen; ABI 3 uses its existing UI bridge. The system chrome provides Exit
 independently of app widgets. Trusted development USB launches are also
 observed so that system navigation remains usable. No application autostarts.
@@ -41,3 +48,6 @@ Implementation, host/target and physical evidence are recorded separately
 in the [milestone acceptance record](launcher-milestone-3e-acceptance.md).
 Finger/visual acceptance requires a human
 or physical observation; semantic injection and flush counters cannot supply it.
+
+The [3E.1 correction and display measurements](launcher-3e1-performance.md)
+preserve the original 3E observations, including the 517828 us queue delay.

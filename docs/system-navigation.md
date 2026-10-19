@@ -33,8 +33,12 @@ resources/UI generation. A teardown failure retains ownership and blocks new
 execution. No task is forcibly deleted, no code is freed during a callback,
 and an unreturning native callback remains subject to the existing watchdog.
 
-ABI 1 uses the loading presentation and returns automatically with its actual
-result retained in diagnostics. ABI 2 uses the system running/status screen.
+ABI 1 uses the loading presentation, unloads, then shows a persistent system
+result with the installed display name, actual return value and a central
+160 × 52 Back control at x=100, y=268. Back dismisses the matching request;
+it does not submit execution or lifecycle work. Loader failure is distinct
+from an intentional nonzero return. The four additional LVGL objects belong
+to the persistent launcher, not to the unloaded instance. ABI 2 uses the system running/status screen.
 ABI 3 retains the existing touch/event bridge and view show/hide barriers.
 Input devices reset and wait for release on navigation transitions, matching
 the existing bridge policy. Rows carry copied ID plus snapshot revision; stale
@@ -49,7 +53,7 @@ RO1/RE1/RP1 writes remain excluded while ELF/input ownership persists; RS1 keeps
 its existing deferred teardown/restart policy. Refresh performs no mutation,
 automatic repair, formatting or package selection change.
 
-RP1 adds bounded `NAV`, `REFRESH`, `SELECT <revision> <id>` and `EXIT <generation>`
+RP1 adds bounded `NAV`, `REFRESH`, `SELECT <revision> <id>`, `BACK <request>` and `EXIT <generation>`
 operations under the existing development package configuration. SELECT is
 explicitly INJECTED and traverses the same coordinator as the LVGL row callback.
 EXIT injects system navigation, not application input. NAV exposes state,
@@ -58,6 +62,14 @@ persistent GUI resources/pool and worker stack margin. Existing UI STATUS
 continues to report application resources, command depth/latency and LCD DMA.
 These diagnostics are neither a general remote control nor finger evidence.
 
+3E.1 appends RESULT=8 without renumbering old states. NAV retains its existing
+`us` fields and adds `name`, `completion` (request, completed serial, loader
+result, executed, success, verified-widget/foreground flag, apply us,
+unload-completion-to-GUI us), and `paint` (state, request, generation,
+publication-to-GUI-ready us, monotonic applied timestamp). These indicate LVGL
+mutation, not visible pixels. `PERF [cursor]` and idle-only volatile `BATCH 4|12`
+provide the bounded [comparison procedure](launcher-3e1-performance.md).
+
 ```sh
 python tools/roundie_launcher.py --port "$PORT" status
 python tools/roundie_launcher.py --port "$PORT" select REVISION org.roundie.ui
@@ -65,7 +77,7 @@ python tools/roundie_launcher.py --port "$PORT" exit GENERATION
 ```
 
 Manual finger/visual acceptance: confirm both rows and versions are readable;
-tap Hello and observe return; tap UI and its TAP ME button; double tap while
+tap Hello and verify persistent 42, dismiss with Back; tap UI and its TAP ME button; double tap while
 loading; tap the separate top Exit; confirm application disappearance and a
 readable usable launcher. Record real TOUCH counters separately from injected
 ones. No camera or actuator observation is implied by software test results.

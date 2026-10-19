@@ -229,12 +229,21 @@ static void bridge_tests(void)
         assert(roundie_ui_update(generation, &update) == 0);
     }
     assert(roundie_ui_update(generation, &update) == -1);
+    current_task = (void *)2;
+    roundie_ui_gui_batch(ROUNDIE_UI_BATCH);
+    current_task = (void *)1;
     pump();
     assert(strcmp(lv_label_get_text(lv_obj_get_child(object, 0)), "D") == 0); /* FIFO, batch=4 */
+    assert(ui_status().pending == 8);
     assert(roundie_ui_transition(generation, ROUNDIE_UI_HIDE)); /* full queue cannot block control */
     assert(!roundie_ui_input(generation, button, REP3_ORIGIN_TOUCH));
     assert(lv_screen_active() == home);
+    current_task = (void *)2;
+    roundie_ui_gui_batch(ROUNDIE_UI_QUEUE_CAPACITY);
+    current_task = (void *)1;
     assert(roundie_ui_transition(generation, ROUNDIE_UI_SHOW));
+    assert(ui_status().pending == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(object, 0)), "L") == 0);
     assert(roundie_ui_destroy(generation, view) == 0);
     assert(roundie_ui_update(generation, &update) == -1);
     assert(roundie_ui_destroy(generation, view) == -1);

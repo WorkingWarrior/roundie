@@ -4,7 +4,7 @@
 typedef enum {
     ROUNDIE_NAV_WAITING, ROUNDIE_NAV_REFRESHING, ROUNDIE_NAV_LIST,
     ROUNDIE_NAV_REQUESTED, ROUNDIE_NAV_LOADING, ROUNDIE_NAV_ACTIVE,
-    ROUNDIE_NAV_EXITING, ROUNDIE_NAV_ERROR,
+    ROUNDIE_NAV_EXITING, ROUNDIE_NAV_ERROR, ROUNDIE_NAV_RESULT,
 } roundie_navigation_t;
 
 typedef struct {
@@ -41,6 +41,22 @@ typedef struct {
     int32_t launch_result;
     int32_t unload_result;
     int32_t app_result;
+    uint32_t result_request;
+    uint32_t completed;
+    int32_t loader_result;
+    bool executed;
+    bool result_success;
+    bool result_visible;
+    uint32_t result_apply_us;
+    uint32_t completion_to_gui_us;
+    uint32_t painted_state;
+    uint32_t painted_request;
+    uint32_t painted_generation;
+    uint32_t gui_ready_us;
+    int64_t gui_applied_us;
+    int64_t completed_us;
+    char selected_name[ROUNDIE_PACKAGE_NAME];
+    char error[ROUNDIE_ELF_ERROR_SIZE];
     bool launch_pending;
     bool exit_pending;
     bool foreground;
@@ -52,6 +68,8 @@ typedef struct {
  * Neither entry point calls filesystem, LVGL or native code. */
 esp_err_t roundie_launcher_select(const char *id, uint32_t revision, uint32_t origin);
 esp_err_t roundie_launcher_exit(uint32_t generation);
+/* Dismiss a copied, fully unloaded result; never submits native work. */
+esp_err_t roundie_launcher_back(uint32_t request);
 esp_err_t roundie_launcher_refresh(void);
 void roundie_launcher_status(roundie_launcher_status_t *out);
 /* Sole existing system worker; allowed means confirmed normal/STABLE policy. */

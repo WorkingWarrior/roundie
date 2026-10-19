@@ -1,5 +1,10 @@
 # Milestone 3E acceptance — 2026-10-19
 
+**Historical record:** the subsequent [3E.1 correction](launcher-3e1-performance.md)
+adds persistent ABI 1 completion UX and investigates the delays below. It does
+not replace the original 517828 us observation or resolve the historical 3D
+LittleFS panic's exact cause.
+
 The system launcher and navigation are implemented and the automated host,
 target and bounded device execution gates passed. B / ota_1 runs 0.3.5
 VALID/normal/STABLE; unchanged A / ota_0 0.3.4 remains VALID/fallback. Both

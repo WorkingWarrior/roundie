@@ -30,6 +30,7 @@ typedef struct {
     roundie_elf_state_t state;
     uint32_t instance;
     uint32_t completed;
+    int64_t completed_us; /* Monotonic unload completion; input retirement follows. */
     uint32_t code_bytes;
     uint32_t data_bytes;
     uint32_t alloc_bytes;

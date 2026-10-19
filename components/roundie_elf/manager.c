@@ -552,6 +552,7 @@ static void unload(void)
     status.after = memory();
     status.unload_us = (uint32_t)(esp_timer_get_time() - started);
     status.completed++;
+    status.completed_us = esp_timer_get_time();
     state(ROUNDIE_ELF_UNLOADED);
 }
 

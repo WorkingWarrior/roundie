@@ -8,14 +8,14 @@ import time
 from roundie_time import DeviceError, TransportError, open_serial, read_serial_reply, write_command
 from roundie_package import valid_id
 
-STATES = ("WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR")
+STATES = ("WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT")
 TIMINGS = ("refresh", "copy", "enqueue_max", "admission", "started", "exit_admission",
            "return", "gui_create", "gui_latency_max")
 
 
 def request(port, operation="NAV", timeout=4, allow_error=False):
     if operation not in ("NAV", "REFRESH"):
-        match = re.fullmatch(r"SELECT ([0-9]{1,10}) (.+)|EXIT ([0-9]{1,10})", operation)
+        match = re.fullmatch(r"SELECT ([0-9]{1,10}) (.+)|(?:EXIT|BACK) ([0-9]{1,10})", operation)
         if match is None:
             raise DeviceError("invalid launcher diagnostic")
         if match[1] is not None:
@@ -25,7 +25,7 @@ def request(port, operation="NAV", timeout=4, allow_error=False):
     identity = secrets.token_hex(4)
     prefix = f"!RP1 {identity} ".encode()
     write_command(port, f"!RP1 {identity} {operation}")
-    line = read_serial_reply(port, prefix, time.monotonic() + timeout, 1400)
+    line = read_serial_reply(port, prefix, time.monotonic() + timeout, 1800)
     try:
         code, payload = line[len(prefix):].split(b" ", 1)
         if re.fullmatch(rb"-?[0-9]{1,10}", code) is None:
@@ -44,6 +44,21 @@ def request(port, operation="NAV", timeout=4, allow_error=False):
                 raise ValueError(field)
         if any(v not in (0, 1) for v in result["pending"]):
             raise ValueError("pending")
+        if "completion" in result:
+            completion = result["completion"]
+            if (not isinstance(completion, list) or len(completion) != 8 or
+                    any(type(v) is not int for v in completion) or
+                    any(completion[i] not in (0, 1) for i in (3, 4, 5)) or
+                    any(not 0 <= completion[i] <= 0xffffffff for i in (0, 1, 6, 7)) or
+                    not -(2 ** 31) <= completion[2] < 2 ** 31 or
+                    not isinstance(result["name"], str) or len(result["name"].encode()) > 63):
+                raise ValueError("completion")
+        if "paint" in result:
+            paint = result["paint"]
+            if (not isinstance(paint, list) or len(paint) != 5 or
+                    any(type(v) is not int or v < 0 for v in paint) or
+                    any(v > 0xffffffff for v in paint[:4]) or paint[4] >= 2 ** 63):
+                raise ValueError("paint")
         if result["selected"]:
             valid_id(result["selected"])
         elif not isinstance(result["selected"], str):
@@ -69,12 +84,16 @@ def main():
     select.add_argument("app_id")
     exit_command = sub.add_parser("exit", help="INJECTED system Exit request")
     exit_command.add_argument("generation", type=int)
+    back = sub.add_parser("back", help="INJECTED dismissal of a copied completion")
+    back.add_argument("request", type=int)
     args = parser.parse_args()
     operation = {"status": "NAV", "refresh": "REFRESH"}.get(args.command)
     if args.command == "select":
         operation = f"SELECT {args.revision} {args.app_id}"
     elif args.command == "exit":
         operation = f"EXIT {args.generation}"
+    elif args.command == "back":
+        operation = f"BACK {args.request}"
     with open_serial(args.port) as port:
         print(json.dumps(request(port, operation), indent=2))
 

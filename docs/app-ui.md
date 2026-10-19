@@ -1,5 +1,13 @@
 # Milestone 3C — system-owned application UI
 
+**3E.1 maintenance:** the GUI pump drains at most the fixed 12-command mailbox
+before rendering (previously four). Lifecycle priority, FIFO ordering, admission
+and teardown barriers remain unchanged; no accepted update is coalesced away.
+Development-only idle `BATCH 4|12` permits the same-image hardware comparison.
+The existing `latency_max_us` remains enqueue-to-dequeue/start-of-apply, excluding
+LVGL mutation and LCD transfer. Create/update maxima measure the render function;
+see the [pipeline and instrument boundaries](launcher-3e1-performance.md).
+
 Milestone 3E adds a separate [system launcher](app-launcher.md) and
 [Exit chrome](system-navigation.md), owned by the same GUI task. Neither is
 an app widget or ResourceManager resource. The bridge's captured system screen

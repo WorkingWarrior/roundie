@@ -17,6 +17,8 @@ static bool exit_submitted;
 static uint32_t package_revision;
 static int64_t requested_at;
 static int64_t exit_at;
+static uint32_t completion_before;
+static uint32_t observed_request;
 /* Sole worker scratch, deliberately outside its 12 KiB stack. */
 static roundie_launcher_entry_t discovered[ROUNDIE_PACKAGES_MAX];
 static roundie_package_record_t record;
@@ -52,12 +54,29 @@ esp_err_t roundie_launcher_select(const char *id, uint32_t revision, uint32_t or
     valid = valid && found;
     if (valid) {
         strcpy(status.selected, id);
+        for (unsigned i = 0; i < status.count; i++) {
+            if (strcmp(id, status.entries[i].id) == 0) {
+                strcpy(status.selected_name, status.entries[i].name[0] != '\0' ?
+                    status.entries[i].name : id);
+                break;
+            }
+        }
         status.request++;
         status.generation = 0;
         status.launch_pending = true;
         status.launch_result = 0;
         status.unload_result = 0;
         status.app_result = 0;
+        status.result_request = 0;
+        status.completed = 0;
+        status.completed_us = 0;
+        status.executed = false;
+        status.result_success = false;
+        status.result_visible = false;
+        status.loader_result = 0;
+        status.error[0] = '\0';
+        status.result_apply_us = 0;
+        status.completion_to_gui_us = 0;
         status.admission_us = 0;
         status.started_us = 0;
         status.exit_admission_us = 0;
@@ -106,6 +125,33 @@ esp_err_t roundie_launcher_refresh(void)
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
+esp_err_t roundie_launcher_back(uint32_t request)
+{
+    portENTER_CRITICAL(&lock);
+    bool valid = gui_ready && status.state == ROUNDIE_NAV_RESULT &&
+        request != 0 && request == status.request && request == status.result_request && !observing;
+    if (valid) {
+        status.result_visible = false;
+        set_state(snapshot_valid ? ROUNDIE_NAV_LIST : ROUNDIE_NAV_ERROR);
+    } else {
+        status.rejected++;
+    }
+    portEXIT_CRITICAL(&lock);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+void roundie_launcher_result_report(uint32_t request, bool visible, uint32_t apply_us,
+    uint32_t completion_us)
+{
+    portENTER_CRITICAL(&lock);
+    if (request == status.request && request == status.result_request && status.state == ROUNDIE_NAV_RESULT) {
+        status.result_visible = visible;
+        status.result_apply_us = apply_us;
+        status.completion_to_gui_us = completion_us;
+    }
+    portEXIT_CRITICAL(&lock);
+}
+
 void roundie_launcher_gui_report(bool ready, bool foreground, uint32_t objects,
     uint32_t pool, uint32_t create_us, uint32_t latency_us)
 {
@@ -119,6 +165,20 @@ void roundie_launcher_gui_report(bool ready, bool foreground, uint32_t objects,
     }
     if (latency_us > status.gui_latency_max_us) {
         status.gui_latency_max_us = latency_us;
+    }
+    portEXIT_CRITICAL(&lock);
+}
+
+void roundie_launcher_painted(roundie_navigation_t state, uint32_t request,
+    uint32_t generation, int64_t at_us, uint32_t ready_us)
+{
+    portENTER_CRITICAL(&lock);
+    if (state == status.state && request == status.request && generation == status.generation) {
+        status.painted_state = state;
+        status.painted_request = request;
+        status.painted_generation = generation;
+        status.gui_ready_us = ready_us;
+        status.gui_applied_us = at_us;
     }
     portEXIT_CRITICAL(&lock);
 }
@@ -199,6 +259,7 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     bool refresh = refresh_pending || status.state == ROUNDIE_NAV_WAITING;
     bool launch = status.launch_pending;
     bool exiting = status.exit_pending;
+    bool result_pending = status.state == ROUNDIE_NAV_RESULT;
     uint32_t generation = status.generation;
     char id[ROUNDIE_PACKAGE_ID];
     memcpy(id, status.selected, sizeof(id));
@@ -211,8 +272,11 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     if (busy && !observing && !launch) {
         portENTER_CRITICAL(&lock);
         observing = true;
+        observed_request = 0;
+        completion_before = runtime.completed;
         status.generation = runtime.instance;
         status.selected[0] = '\0';
+        status.result_visible = false;
         requested_at = now;
         set_state(ROUNDIE_NAV_LOADING);
         portEXIT_CRITICAL(&lock);
@@ -243,7 +307,8 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
             set_state(ROUNDIE_NAV_ACTIVE);
         }
         if (!busy && runtime.state == ROUNDIE_ELF_UNLOADED && runtime.resources_outstanding == 0 &&
-            ui.generation == 0 && ui.outstanding == 0 && ui.pending == 0) {
+            ui.generation == 0 && ui.outstanding == 0 && ui.pending == 0 &&
+            (observed_request == 0 || runtime.completed > completion_before || runtime.error[0] != '\0')) {
             observing = false;
             exit_submitted = false;
             status.launch_pending = false;
@@ -251,7 +316,20 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
             status.app_result = runtime.app_result;
             status.unload_result = runtime.error[0] == '\0' ? ESP_OK : ESP_FAIL;
             status.return_us = exiting ? (uint32_t)(now - exit_at) : (uint32_t)(now - requested_at);
-            set_state(snapshot_valid ? ROUNDIE_NAV_LIST : ROUNDIE_NAV_ERROR);
+            if (observed_request != 0 && observed_request == status.request &&
+                (runtime.abi_version == 1 || status.unload_result != ESP_OK || runtime.loader_result != 0)) {
+                status.result_request = observed_request;
+                status.completed = runtime.completed;
+                status.completed_us = runtime.completed_us;
+                status.loader_result = runtime.loader_result;
+                status.executed = runtime.executed;
+                status.result_success = runtime.executed && runtime.loader_result == 0 &&
+                    status.unload_result == ESP_OK;
+                memcpy(status.error, runtime.error, sizeof(runtime.error));
+                set_state(ROUNDIE_NAV_RESULT);
+            } else {
+                set_state(snapshot_valid ? ROUNDIE_NAV_LIST : ROUNDIE_NAV_ERROR);
+            }
         }
         portEXIT_CRITICAL(&lock);
         return;
@@ -261,7 +339,8 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
             portENTER_CRITICAL(&lock);
             status.launch_pending = false;
             status.launch_result = ESP_ERR_INVALID_STATE;
-            set_state(snapshot_valid ? ROUNDIE_NAV_LIST : ROUNDIE_NAV_ERROR);
+            status.result_request = status.request;
+            set_state(ROUNDIE_NAV_RESULT);
             portEXIT_CRITICAL(&lock);
         }
         return;
@@ -269,6 +348,8 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     roundie_packages_status_t packages;
     roundie_packages_status(&packages);
     if (launch) {
+        uint32_t previous_instance = runtime.instance;
+        uint32_t previous_completion = runtime.completed;
         esp_err_t result = packages.revision == package_revision ? ESP_OK : ESP_ERR_INVALID_STATE;
         portENTER_CRITICAL(&lock);
         status.admission_us = (uint32_t)(now - requested_at);
@@ -281,15 +362,22 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
         portENTER_CRITICAL(&lock);
         status.launch_pending = false;
         status.launch_result = result;
-        if (result == ESP_OK) {
+        if (result == ESP_OK && runtime.instance > previous_instance) {
             status.generation = runtime.instance;
+            completion_before = previous_completion;
+            observed_request = status.request;
             observing = true;
             set_state(ROUNDIE_NAV_LOADING);
         } else {
-            set_state(ROUNDIE_NAV_LIST);
+            status.launch_result = result == ESP_OK ? ESP_ERR_INVALID_STATE : result;
+            status.result_request = status.request;
+            set_state(ROUNDIE_NAV_RESULT);
         }
         portEXIT_CRITICAL(&lock);
         return;
+    }
+    if (result_pending) {
+        return; /* A registry publication must not dismiss a result. */
     }
     if (refresh) {
         portENTER_CRITICAL(&lock);

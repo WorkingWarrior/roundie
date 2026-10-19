@@ -14,6 +14,7 @@
 #include "elf_diagnostics.h"
 #include "storage_diagnostics.h"
 #include "roundie_launcher.h"
+#include "gui_diagnostics.h"
 
 bool roundie_packages_allowed(void)
 {
@@ -119,7 +120,8 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
                                esp_err_t parsed)
 {
     if (strcmp(operation, "NAV") != 0 && strcmp(operation, "REFRESH") != 0 &&
-        strncmp(operation, "SELECT ", 7) != 0 && strncmp(operation, "EXIT ", 5) != 0) {
+        strncmp(operation, "SELECT ", 7) != 0 && strncmp(operation, "EXIT ", 5) != 0 &&
+        strncmp(operation, "BACK ", 5) != 0) {
         return false;
     }
     esp_err_t result = parsed;
@@ -140,17 +142,26 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
         const char *end = operation + 5;
         result = navigation_number(&end, &generation) && *end == '\0' ?
             roundie_launcher_exit(generation) : ESP_ERR_INVALID_ARG;
+    } else if (result == ESP_OK && strncmp(operation, "BACK ", 5) == 0) {
+        uint32_t request;
+        const char *end = operation + 5;
+        result = navigation_number(&end, &request) && *end == '\0' ?
+            roundie_launcher_back(request) : ESP_ERR_INVALID_ARG;
     }
     static roundie_launcher_status_t navigation;
     roundie_launcher_status(&navigation);
-    static char reply[1400];
+    static char reply[1800];
+    char name[ROUNDIE_PACKAGE_NAME * 2 + 1];
+    json_text(name, navigation.selected_name);
     int length = snprintf(reply, sizeof(reply),
         "\n!RP1 %s %d {\"nav\":%u,\"revision\":%" PRIu32 ",\"request\":%" PRIu32
         ",\"generation\":%" PRIu32 ",\"count\":%" PRIu32 ",\"selected\":\"%s\","
         "\"pending\":[%u,%u],\"foreground\":%u,\"input\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],"
         "\"result\":[%" PRId32 ",%" PRId32 ",%" PRId32 "],"
         "\"us\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
-        ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"gui\":[%" PRIu32 ",%" PRIu32 "],\"discovery_flushes\":%" PRIu32 ",\"stack_min\":%u}\n",
+        ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"gui\":[%" PRIu32 ",%" PRIu32 "],\"discovery_flushes\":%" PRIu32
+        ",\"stack_min\":%u,\"name\":\"%s\",\"completion\":[%" PRIu32 ",%" PRIu32 ",%d,%u,%u,%u,%" PRIu32 ",%" PRIu32 "]"
+        ",\"paint\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRId64 "]}\n",
         command->id, (int)result, (unsigned)navigation.state, navigation.revision, navigation.request,
         navigation.generation, navigation.count, navigation.selected, navigation.launch_pending,
         navigation.exit_pending, navigation.foreground, navigation.physical, navigation.injected,
@@ -158,7 +169,10 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
         navigation.refresh_us, navigation.copy_us, navigation.enqueue_max_us, navigation.admission_us,
         navigation.started_us, navigation.exit_admission_us, navigation.return_us, navigation.gui_create_us,
         navigation.gui_latency_max_us, navigation.gui_objects, navigation.pool_free, navigation.discovery_flushes,
-        (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        (unsigned)uxTaskGetStackHighWaterMark(NULL), name, navigation.result_request, navigation.completed,
+        (int)navigation.loader_result, navigation.executed, navigation.result_success, navigation.result_visible,
+        navigation.result_apply_us, navigation.completion_to_gui_us, navigation.painted_state,
+        navigation.painted_request, navigation.painted_generation, navigation.gui_ready_us, navigation.gui_applied_us);
     if (length > 0 && (size_t)length < sizeof(reply)) {
         usb_serial_jtag_write_bytes(reply, (size_t)length, pdMS_TO_TICKS(100));
     }
@@ -180,6 +194,9 @@ void roundie_package_command(char *line, bool discard)
         memcpy(navigation_frame + 14, "STATUS", 7);
         esp_err_t parsed = roundie_transfer_parse(navigation_frame, discard, "!RP1 ", "INSTALL", &command);
         if (navigation_command(operation, &command, parsed)) {
+            return;
+        }
+        if (roundie_gui_command(operation, command.id, parsed)) {
             return;
         }
     }

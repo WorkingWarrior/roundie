@@ -346,12 +346,21 @@ void roundie_ui_gui_bind(void)
     portEXIT_CRITICAL(&lock);
 }
 
+static unsigned batch_limit = ROUNDIE_UI_QUEUE_CAPACITY;
+
+void roundie_ui_gui_batch(unsigned limit)
+{
+    if (gui == xTaskGetCurrentTaskHandle() && (limit == ROUNDIE_UI_BATCH || limit == ROUNDIE_UI_QUEUE_CAPACITY)) {
+        batch_limit = limit;
+    }
+}
+
 void roundie_ui_gui_pump(void)
 {
     if (gui == NULL || gui != xTaskGetCurrentTaskHandle()) {
         return;
     }
-    for (unsigned n = 0; n < ROUNDIE_UI_BATCH; n++) {
+    for (unsigned n = 0; n < batch_limit; n++) {
         portENTER_CRITICAL(&lock);
         roundie_ui_transition_t control = requested != completed ? transition : 0;
         bool destroy = control == ROUNDIE_UI_DESTROY;

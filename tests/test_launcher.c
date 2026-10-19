@@ -8,6 +8,7 @@
 #include "roundie_app_ui.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "gui_diagnostics.h"
 
 static TaskHandle_t task = (void *)1;
 static int64_t clock_us = 1000;
@@ -22,6 +23,52 @@ static unsigned scans;
 static unsigned launches;
 static unsigned controls;
 static roundie_launcher_status_t nav;
+static char diagnostic[1400];
+
+static bool diagnostic_error(esp_err_t error)
+{
+    char prefix[32];
+    snprintf(prefix, sizeof(prefix), "12345678 %d ", error);
+    return strstr(diagnostic, prefix) != NULL;
+}
+
+int usb_serial_jtag_write_bytes(const void *bytes, size_t length, TickType_t ticks)
+{
+    (void)ticks;
+    assert(length < sizeof(diagnostic));
+    memcpy(diagnostic, bytes, length);
+    diagnostic[length] = '\0';
+    return (int)length;
+}
+
+static void performance_tests(void)
+{
+    assert(roundie_gui_batch() == 12);
+    assert(roundie_gui_command("BATCH 4", "12345678", ESP_OK));
+    assert(roundie_gui_batch() == 4);
+    input_busy = true;
+    assert(roundie_gui_command("BATCH 12", "12345678", ESP_OK));
+    assert(roundie_gui_batch() == 4 && diagnostic_error(ESP_ERR_INVALID_STATE));
+    input_busy = false;
+    assert(roundie_gui_command("BATCH 12", "12345678", ESP_FAIL));
+    assert(roundie_gui_batch() == 4); /* Invalid framing cannot mutate tuning. */
+    assert(roundie_gui_command("BATCH 12", "12345678", ESP_OK));
+    assert(roundie_gui_batch() == 12);
+    roundie_gui_work_t work = {.flushes = 18, .pixels = 129600, .dma_us = 200000,
+        .dma_max_us = 11000, .submit_us = 5000, .wait_us = 190000, .render_us = 250000};
+    for (unsigned i = 0; i < 40; i++) {
+        roundie_gui_record(INT64_C(5000000000) + i, 500, 300000, 0, 6, 0, 6, &work, 0, 18 * (i + 1));
+    }
+    assert(roundie_gui_command("PERF 0", "12345678", ESP_OK));
+    assert(strstr(diagnostic, "\"oldest\":9,\"latest\":40") != NULL);
+    assert(strstr(diagnostic, "\"trace\":[9,5000000008,") != NULL);
+    assert(strstr(diagnostic, "[12,40,720,5184000,0,300000,500,0,11000") != NULL);
+    assert(roundie_gui_command("PERF 4294967295", "12345678", ESP_OK));
+    assert(strstr(diagnostic, "\"trace\":[0,0,") != NULL);
+    assert(roundie_gui_command("PERF 4294967296", "12345678", ESP_OK));
+    assert(diagnostic_error(ESP_ERR_INVALID_ARG));
+    assert(!roundie_gui_command("OTHER", "12345678", ESP_OK));
+}
 
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return task; }
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t t) { (void)t; return 4096; }
@@ -48,6 +95,9 @@ esp_err_t roundie_packages_launch(const char *id)
         runtime.instance++;
         runtime.abi_version = strcmp(id, "org.roundie.hello") == 0 ? 1 : 3;
         runtime.state = ROUNDIE_ELF_LOADING;
+        runtime.executed = false;
+        runtime.error[0] = '\0';
+        runtime.loader_result = 0;
         input_busy = true;
     }
     return launch_result;
@@ -88,8 +138,20 @@ static void finish(void)
     runtime.resources_outstanding = 0;
     input_busy = false;
     memset(&ui, 0, sizeof(ui));
+    runtime.completed++;
+    runtime.completed_us = clock_us;
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && !nav.exit_pending && !nav.launch_pending);
+    assert(nav.state == (runtime.abi_version == 1 || runtime.error[0] != '\0' ?
+        ROUNDIE_NAV_RESULT : ROUNDIE_NAV_LIST) && !nav.exit_pending && !nav.launch_pending);
+}
+
+static void back(void)
+{
+    unsigned before = launches;
+    assert(roundie_launcher_back(nav.result_request - 1) != ESP_OK);
+    lv_obj_send_event(lv_obj_get_child(lv_screen_active(), 7), LV_EVENT_CLICKED, NULL);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && launches == before && !nav.result_visible);
 }
 
 static void select_id(const char *id)
@@ -114,6 +176,7 @@ int main(int argc, char **argv)
     static uint8_t buffer[360 * 10 * 2];
     lv_display_set_buffers(display, buffer, NULL, sizeof(buffer), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(display, flush);
+    performance_tests();
     roundie_launcher_gui_bind();
     if (argc > 1) {
         lv_mem_monitor_t memory;
@@ -126,7 +189,7 @@ int main(int argc, char **argv)
         lv_free(pressure);
         assert(roundie_launcher_refresh() == ESP_OK);
         poll(true, false);
-        assert(nav.foreground && nav.gui_objects == 33);
+        assert(nav.foreground && nav.gui_objects == 37);
         lv_deinit();
         puts("launcher low-memory: safe refusal, boot independent");
         return 0;
@@ -136,7 +199,7 @@ int main(int argc, char **argv)
     poll(true, true);
     assert(scans == 0);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 33);
+    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 37);
     assert(roundie_launcher_select("org.roundie.hello", nav.revision, 2) != ESP_OK);
     packages.count = 1;
     entry(0, "org.roundie.hello", 1, ROUNDIE_PACKAGE_OK);
@@ -156,11 +219,46 @@ int main(int argc, char **argv)
     poll(true, false);
     assert(launches == 1 && nav.state == ROUNDIE_NAV_LOADING);
     runtime.app_result = 42;
+    runtime.executed = true;
     runtime.state = ROUNDIE_ELF_UNLOADED;
     poll(true, false); /* Input buffer still owned: do not report completion. */
     assert(nav.state == ROUNDIE_NAV_LOADING);
+    input_busy = false;
+    poll(true, false); /* Unchanged completion serial is historical evidence. */
+    assert(nav.state == ROUNDIE_NAV_LOADING && !nav.result_visible);
     finish();
-    assert(nav.app_result == 42);
+    assert(nav.app_result == 42 && nav.result_success && nav.executed && nav.result_visible);
+    assert(nav.result_request == nav.request && nav.completed == runtime.completed);
+    assert(strcmp(nav.selected_name, "org.roundie.hello") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 5)), "42") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 1)), "Application finished") == 0);
+    uint32_t result_request = nav.request;
+    clock_us += 10000000;
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_RESULT && nav.result_visible && lv_screen_active() == root);
+    assert(roundie_launcher_select("org.roundie.hello", nav.revision, 2) != ESP_OK);
+    packages.revision++;
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_RESULT && nav.result_request == result_request);
+    back();
+    assert(roundie_launcher_back(result_request) != ESP_OK);
+    /* Same application, new request: neither old result nor stale Back applies. */
+    select_id("org.roundie.hello");
+    assert(!nav.result_visible && nav.result_request == 0 && !nav.executed);
+    assert(roundie_launcher_back(result_request) != ESP_OK);
+    runtime.loader_result = -7;
+    strcpy(runtime.error, "loader-relocation");
+    finish();
+    assert(!nav.result_success && !nav.executed && nav.loader_result == -7);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 5)), "No application result") == 0);
+    back();
+    select_id("org.roundie.hello");
+    runtime.executed = true;
+    runtime.app_result = 42;
+    strcpy(runtime.error, "cleanup-failed");
+    finish();
+    assert(!nav.result_success && nav.executed && nav.app_result == 42 && nav.unload_result != ESP_OK);
+    back();
     packages.count = 3;
     entry(1, "org.roundie.ui", 3, ROUNDIE_PACKAGE_OK);
     entry(2, "org.roundie.bad", 9, ROUNDIE_PACKAGE_INCOMPATIBLE);
@@ -186,7 +284,8 @@ int main(int argc, char **argv)
     assert(roundie_launcher_select("org.roundie.ui", nav.revision, 2) == ESP_OK);
     roundie_launcher_status(&nav);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && nav.launch_result == ESP_ERR_NO_MEM);
+    assert(nav.state == ROUNDIE_NAV_RESULT && nav.launch_result == ESP_ERR_NO_MEM && !nav.result_success);
+    back();
     launch_result = ESP_OK;
     /* Removed/stale cache revision cannot reach package launch. */
     assert(roundie_launcher_select("org.roundie.ui", nav.revision, 2) == ESP_OK);
@@ -194,7 +293,8 @@ int main(int argc, char **argv)
     unsigned before = launches;
     packages.revision++;
     poll(true, false);
-    assert(launches == before && nav.state == ROUNDIE_NAV_LIST);
+    assert(launches == before && nav.state == ROUNDIE_NAV_RESULT);
+    back();
     poll(true, false);
     select_id("org.roundie.ui");
     runtime.state = ROUNDIE_ELF_RUNNING;

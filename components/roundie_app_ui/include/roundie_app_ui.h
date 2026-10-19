@@ -70,4 +70,7 @@ void roundie_ui_delivered(uint32_t generation, uint32_t latency_us);
  * pointer or LVGL pointer crosses the executor/GUI mailbox. */
 void roundie_ui_gui_bind(void);
 void roundie_ui_gui_pump(void);
+/* GUI task only. Development comparison uses the historical four-command
+ * batch or the bounded full mailbox; no command is coalesced/discarded. */
+void roundie_ui_gui_batch(unsigned limit);
 void roundie_ui_display_progress(uint32_t completed, uint32_t errors);
