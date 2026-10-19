@@ -138,6 +138,10 @@ static void clock_diagnostic(sensor_state_t *shared, const char *id)
     portENTER_CRITICAL(&shared->lock);
     roundie_board_t *board = shared->board_ready ? shared->board : NULL;
     bool wall_valid = shared->wall_valid;
+    /* Startup may still be writing these before board publication. Never
+     * read its 64-bit state until the publication lock transfers ownership. */
+    uint32_t sync_count = shared->board_ready ? wall_sync_count : 0;
+    int64_t sync_at_us = shared->board_ready ? wall_sync_at_us : 0;
     portEXIT_CRITICAL(&shared->lock);
     struct timeval before = {0};
     struct timeval after = {0};
@@ -166,7 +170,7 @@ static void clock_diagnostic(sensor_state_t *shared, const char *id)
         id, (int)rtc.state, os, sample.rtc_seconds, (int)rtc.error, wall_valid,
         sample.wall_before_us, sample.wall_after_us, sample.mono_before_us,
         sample.mono_after_us, offset.usable, offset.lower_us, offset.upper_us,
-        wall_sync_count, wall_sync_at_us);
+        sync_count, sync_at_us);
     if (length > 0 && (size_t)length < sizeof(response)) {
         if (usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100)) != length) {
             ESP_LOGW(TAG, "Clock diagnostic transport write failed");
