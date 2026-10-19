@@ -22,6 +22,11 @@ static void parse(const char *line, const char *expected, bool set, int64_t seco
 int main(void)
 {
     parse("!RT1 1234abcd GET\n", "OK", false, 0);
+    parse("!RT1 1234abcd DIAG\n", "OK", false, 0);
+    roundie_time_frame_t diagnostic = {.line = "!RT1 1234abcd DIAG", .used = 18};
+    roundie_time_command_t parsed;
+    assert(strcmp(roundie_time_parse(&diagnostic, &parsed), "OK") == 0);
+    assert(parsed.diagnostic && !parsed.set && !parsed.restart);
     parse("!RT1 1234abcd RESTART\n", "OK", false, 0);
     parse("!RT1 1234abcd SET 946684800\n", "OK", true, 946684800);
     parse("!RT1 1234abcd SET 4102444799\n", "OK", true, 4102444799);

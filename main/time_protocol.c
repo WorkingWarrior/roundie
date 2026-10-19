@@ -45,6 +45,10 @@ const char *roundie_time_parse(const roundie_time_frame_t *frame,
     if (strcmp(frame->line + 14, "GET") == 0) {
         return "OK";
     }
+    if (strcmp(frame->line + 14, "DIAG") == 0) {
+        command->diagnostic = true;
+        return "OK";
+    }
     if (strcmp(frame->line + 14, "RESTART") == 0) {
         command->restart = true;
         return "OK";

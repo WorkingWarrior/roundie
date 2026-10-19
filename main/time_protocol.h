@@ -18,6 +18,7 @@ typedef struct {
     char id[9];
     bool set;
     bool restart;
+    bool diagnostic;
     int64_t seconds;
 } roundie_time_command_t;
 

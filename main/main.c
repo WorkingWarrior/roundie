@@ -26,6 +26,7 @@
 #include "lvgl.h"
 #include "roundie_board.h"
 #include "time_protocol.h"
+#include "clock_diagnostic.h"
 #include "storage_diagnostics.h"
 #include "ota_diagnostics.h"
 #include "recovery_diagnostics.h"
@@ -80,6 +81,10 @@ static sensor_state_t sensors = {
     .lock = portMUX_INITIALIZER_UNLOCKED,
 };
 
+/* Startup owns this until board publication, then only system_worker writes. */
+static uint32_t wall_sync_count;
+static int64_t wall_sync_at_us;
+
 static const char *sensor_state_name(roundie_sensor_state_t state)
 {
     switch (state) {
@@ -108,7 +113,7 @@ static const char *bus_state_name(roundie_sensor_state_t state)
 static bool sync_wall_clock(const roundie_rtc_sample_t *sample)
 {
     int64_t seconds;
-    if (sample->state != ROUNDIE_SENSOR_VALID ||
+    if (sample->state != ROUNDIE_SENSOR_VALID || sample->oscillator_stopped ||
         !roundie_rtc_unix_seconds(&sample->time, &seconds)) {
         return false;
     }
@@ -122,15 +127,64 @@ static bool sync_wall_clock(const roundie_rtc_sample_t *sample)
         return false;
     }
     ESP_LOGI(TAG, "System wall clock synchronized from valid RTC (UTC)");
+    wall_sync_count++;
+    wall_sync_at_us = esp_timer_get_time();
     return true;
 }
 
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC
+static void clock_diagnostic(sensor_state_t *shared, const char *id)
+{
+    portENTER_CRITICAL(&shared->lock);
+    roundie_board_t *board = shared->board_ready ? shared->board : NULL;
+    bool wall_valid = shared->wall_valid;
+    portEXIT_CRITICAL(&shared->lock);
+    struct timeval before = {0};
+    struct timeval after = {0};
+    roundie_clock_sample_t sample = {.wall_valid = wall_valid};
+    roundie_rtc_sample_t rtc;
+    sample.mono_before_us = esp_timer_get_time();
+    int before_status = gettimeofday(&before, NULL);
+    roundie_board_rtc_read(board, &rtc);
+    int after_status = gettimeofday(&after, NULL);
+    sample.mono_after_us = esp_timer_get_time();
+    sample.wall_before_us = (int64_t)before.tv_sec * 1000000 + before.tv_usec;
+    sample.wall_after_us = (int64_t)after.tv_sec * 1000000 + after.tv_usec;
+    sample.rtc_seconds = -1;
+    bool decoded = roundie_rtc_unix_seconds(&rtc.time, &sample.rtc_seconds);
+    sample.rtc_valid = decoded && rtc.state == ROUNDIE_SENSOR_VALID;
+    sample.oscillator_stopped = rtc.oscillator_stopped;
+    sample.read_ok = rtc.error == ESP_OK && before_status == 0 && after_status == 0;
+    roundie_clock_offset_t offset = roundie_clock_offset(&sample);
+    int os = (rtc.state == ROUNDIE_SENSOR_VALID || rtc.state == ROUNDIE_SENSOR_INVALID) ?
+             rtc.oscillator_stopped : -1;
+    char response[512];
+    int length = snprintf(response, sizeof(response),
+        "\n!RT1 %s DIAG state=%d os=%d rtc=%" PRId64 " err=%d valid=%d"
+        " wb=%" PRId64 " wa=%" PRId64 " mb=%" PRId64 " ma=%" PRId64
+        " usable=%d lo=%" PRId64 " hi=%" PRId64 " sync=%" PRIu32 " at=%" PRId64 "\n",
+        id, (int)rtc.state, os, sample.rtc_seconds, (int)rtc.error, wall_valid,
+        sample.wall_before_us, sample.wall_after_us, sample.mono_before_us,
+        sample.mono_after_us, offset.usable, offset.lower_us, offset.upper_us,
+        wall_sync_count, wall_sync_at_us);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        if (usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100)) != length) {
+            ESP_LOGW(TAG, "Clock diagnostic transport write failed");
+        }
+    }
+}
+
 static void time_command(sensor_state_t *shared,
                           const roundie_time_frame_t *frame)
 {
     roundie_time_command_t command;
     const char *result = roundie_time_parse(frame, &command);
+    if (strcmp(result, "OK") == 0 && command.diagnostic) {
+        /* Strictly read-only: bypass GET's legacy recovery synchronization,
+         * cached status publication, SET, NVS and restart paths. */
+        clock_diagnostic(shared, command.id);
+        return;
+    }
     if (command.restart && !roundie_ota_restart_allowed()) {
         result = "OTA_BUSY";
     }
@@ -290,6 +344,7 @@ static void sensor_worker(void *argument)
     /* Secondary VFS RX requires its standard interrupt driver. One RX owner,
      * no extra task or per-command transport allocation. */
     usb_serial_jtag_driver_config_t usb_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    usb_config.tx_buffer_size = 512; /* One complete uncertainty diagnostic. */
 #if CONFIG_ROUNDIE_DEV_OTA || CONFIG_ROUNDIE_RECOVERY_USB
     /* The pinned ISR drops bytes if its RX ring is full, and TX cannot enqueue
      * a record larger than its ring. Hold one whole RO1 request/response;
