@@ -33,15 +33,22 @@ PENDING_VERIFY, passed core checks and deliberate unconfirmed restart were
 captured. The bootloader automatically loaded normal B; fresh RO1 observed
 A ABORTED, B VALID/running with original normal ELF identity and passed core
 self-test. LittleFS/NVS/RTC recovery checks passed without SET/format/erase.
-No second experiment or A repair occurred. Manual rollback remains unverified.
+No second experiment or A repair occurred within that experiment. Manual
+rollback remains unverified.
 See [actual rollback evidence and timing limits](ota.md#physical-automatic-rollback--authorized-execution-2026-10-18).
 
-**Current deployment (Milestone 2C.1, 2026-10-18):** the connected device
+**Current deployment (Milestone 2C.1, 2026-10-19):** the connected device
 uses REP v1 with OTA A at `0x10000`, OTA B at `0x390000`, and provisioned
-LittleFS at `0x710000`; active B is normal 0.2.1 VALID, while A contains the
-armed 0.2.1-rollback-test image in ABORTED state and is **not** a fallback.
-There is only one eligible normal image. Restoring two confirmed copies needs
-separate approval to upload, select, boot and confirm normal A; it was not done.
+LittleFS at `0x710000`. The separately authorized single restoration passed:
+A is VALID/running, B VALID/fallback, both original normal 0.2.1 with identical
+ELF identities and the armed test disabled. READY/digest verification preceded
+activation; the captured normal A self-test confirmed PENDING_VERIFY to VALID.
+Fresh independent RO1 status reported `rollback=1`, passed core checks and
+an idle manager. NVS/LittleFS/RTC service checks passed without SET/format/erase.
+An initial long-running B RTC/system comparison failed by two seconds; the
+unchanged one-second check passed after the planned ROM preflight return and
+after A startup. Continuous clock agreement was not fixed or established.
+See [restoration evidence and limits](ota.md#confirmed-ab-redundancy-restoration--2026-10-19).
 The manufacturer-layout installation commands below are historical. Use the
 [local OTA workflow](ota.md) for separately authorized future updates. The
 bootstrap-only REP updater intentionally rejects the changed A/B metadata;

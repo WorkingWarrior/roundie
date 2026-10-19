@@ -1,11 +1,12 @@
 # Manufacturer layout to REP v1 — migration and provisioning
 
-**Current status (Milestone 2C.1, 2026-10-18):** the separately approved
-app-only A bootstrap and genuine USB OTA into B passed. The device now runs
-normal 0.2.1 in VALID B. The separately approved automatic rollback passed and
-left armed test A ABORTED, unavailable as fallback; restoring two confirmed
-copies requires separate approval. The installed 2B bootloader and table were
-preserved. See [OTA/rollback evidence and restoration plan](ota.md).
+**Current status (Milestone 2C.1, 2026-10-19):** the separately approved
+app-only A bootstrap, genuine USB OTA into B and automatic rollback passed.
+The later, separately authorized restoration replaced ABORTED test A with the
+original normal 0.2.1 image and confirmed it through the ordinary self-test.
+A is now VALID/running and B VALID/fallback, both with the same normal ELF
+identity and the armed option disabled. The installed 2B bootloader and table
+were preserved. See [OTA/rollback and restoration evidence](ota.md).
 The initial-A bootstrap updater now
 rejects the changed metadata, as intended; use the OTA workflow thereafter.
 
