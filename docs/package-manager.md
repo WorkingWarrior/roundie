@@ -29,6 +29,12 @@ one at-most-64 KiB ELF input in PSRAM, then frees it or transfers it to the
 existing executor. Discovery hashes in 512-byte blocks and reads 224 metadata
 bytes; its fixed registry holds at most eight records.
 
+The package-enabled system worker has a 12 KiB internal stack (4 KiB above the
+3C budget), and the sole-worker reply scratch is 1900 static bytes. RP1 reports
+`stack_min` in bytes. Compiler stack-usage analysis and physical high-water
+measurements are recorded in acceptance; host process stacks are not evidence
+of sufficient Xtensa stack margin.
+
 `BEGIN → RECEIVING → STAGED → VALIDATING → READY → COMMITTING → IDLE` is the
 production state machine. STAGED/VALIDATING/COMMITTING are synchronous bounded
 phases on the worker, not independently queued callbacks. DATA uses exact

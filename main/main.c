@@ -823,7 +823,10 @@ void app_main(void)
     /* The sole serial/sensor owner starts independently of board and GUI.
      * Until board_ready is published it only services USB/OTA/recovery. */
     TaskHandle_t sensor_task = NULL;
-    if (xTaskCreate(sensor_worker, "system_worker", 8192, &sensors, 4, &sensor_task) != pdPASS) {
+    /* RP1 adds nested validation/hash/VFS calls. Budget 12 KiB, then observe
+     * the worker high-water mark through RP1 instead of assuming host stacks
+     * establish the Xtensa call-chain margin. */
+    if (xTaskCreate(sensor_worker, "system_worker", 12288, &sensors, 4, &sensor_task) != pdPASS) {
         roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);
         ESP_LOGE(TAG, "System worker creation failed; USB recovery unavailable, ROM recovery required");
         roundie_ota_startup_failed();

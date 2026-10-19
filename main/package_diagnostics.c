@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "roundie_packages.h"
 #include "roundie_elf.h"
 #include "roundie_ota_protocol.h"
@@ -144,14 +145,17 @@ void roundie_package_command(char *line, bool discard)
     size_t total = 0;
     size_t used = 0;
     bool capacity = roundie_packages_allowed() && roundie_storage_usage(&total, &used);
-    char response[1900];
+    /* Sole system-worker scratch: do not keep a 1900-byte reply frame on the
+     * stack across nested LittleFS/PSA validation and commit calls. */
+    static char response[1900];
     int count = snprintf(response, sizeof(response),
         "\n!RP1 %s %d {\"format\":1,\"allowed\":%u,\"busy\":%u,\"phase\":%u,"
         "\"session\":\"%08" PRIx32 "\",\"received\":%zu,\"total\":%zu,\"count\":%u,\"orphans\":%u,"
-        "\"capacity\":[%u,%zu,%zu],\"us\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+        "\"capacity\":[%u,%zu,%zu],\"stack_min\":%u,\"us\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
         ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"error\":\"%s\",\"apps\":[",
         command.id, (int)error, roundie_packages_allowed(), roundie_packages_busy(), (unsigned)status.phase,
         status.session, status.received, status.total, status.count, status.orphans, capacity, total, used,
+        (unsigned)uxTaskGetStackHighWaterMark(NULL),
         status.upload_us, status.validation_us, status.commit_us, status.enumeration_us,
         status.lookup_us, status.launch_us, status.removal_us, status.error);
     unsigned records = error == ESP_OK ? (list ? status.count : (info ? 1 : 0)) : 0;
