@@ -57,7 +57,8 @@ static esp_err_t submit(uint8_t *bytes, size_t size, uint32_t abi_version)
 {
     roundie_elf_info_t info;
     char error[ROUNDIE_ELF_ERROR_SIZE];
-    if (!roundie_elf_validate(bytes, size, &info, error) || info.abi_version != abi_version) {
+    if (!roundie_elf_validate(bytes, size, &info, error) ||
+        (info.abi_version != abi_version && !(abi_version == 2 && info.abi_version == 3))) {
         return ESP_ERR_INVALID_ARG;
     }
     bool expected = false;

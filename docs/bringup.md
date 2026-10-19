@@ -1,5 +1,9 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Milestone 3C:** see [Application UI](app-ui.md) and [Input bridge](input-bridge.md)
+for the scoped native UI extension and its separate host/target/device evidence.
+The existing LCD/DMA driver, GUI task and CST816S input mapping are reused.
+
 **Milestone 3B physical runtime checkpoint, 2026-10-19:** firmware 0.3.2 reached
 VALID/STABLE in A by genuine inactive-slot RO1 OTA; preserved B 0.3.1 remains
 VALID/fallback. The event-driven ABI 2 example passed three complete native

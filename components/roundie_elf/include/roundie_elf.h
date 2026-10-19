@@ -52,6 +52,7 @@ typedef struct {
     uint32_t events_delivered;
     uint32_t timers_delivered;
     uint32_t users_delivered;
+    uint32_t ui_delivered;
     uint32_t last_value;
     uint32_t latency_max_us;
     uint32_t queue_depth;
@@ -76,7 +77,7 @@ typedef struct {
 
 /* Single system worker owns staging/Flash policy. No initialization on boot.
  * Submission transfers input ONLY on ESP_OK. RUN accepts only ABI 1; START
- * accepts only ABI 2. Controls acknowledge admission; observe completion via
+ * accepts ABI 2/3. Controls acknowledge admission; observe completion via
  * control_completed/result. No synchronous waiting for application callbacks. */
 esp_err_t roundie_elf_submit(uint8_t *bytes, size_t size);
 esp_err_t roundie_elf_start(uint8_t *bytes, size_t size);

@@ -29,6 +29,7 @@ class ElfTests(unittest.TestCase):
                             "-fsanitize=address,undefined", "-pthread",
                             "-I" + str(ROOT / "tests/elf_mocks"), "-I" + str(ROOT / "include"),
                             "-I" + str(ROOT / "components/roundie_elf/include"),
+                            "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             str(ROOT / "tests/test_elf.c"), str(ROOT / "components/roundie_elf/validate.c"),
                             "-o", executable], check=True)
             subprocess.run([executable, str(Path(example) / "hello.app.elf"), str(Path(event) / "event.app.elf")], check=True, timeout=20)
@@ -39,6 +40,7 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "tests/elf_mocks"), "-I" + str(ROOT / "tests/ota_mocks"),
                             "-I" + str(ROOT / "include"), "-I" + str(ROOT / "components/roundie_elf/include"),
                             "-I" + str(ROOT / "components/roundie_ota/include"),
+                            "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),
                             str(ROOT / "tests/test_elf_development.c"), str(ROOT / "components/roundie_elf/validate.c"),
                             str(ROOT / "components/roundie_ota/ota_protocol.c"), "-lcrypto", "-o", staging], check=True)
@@ -72,8 +74,8 @@ class ElfTests(unittest.TestCase):
             for standard in ("c11", "c23"):
                 subprocess.run([str(TOOLCHAIN / "xtensa-esp32s3-elf-gcc"), f"-std={standard}",
                                 "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-x", "c",
-                                "-I" + str(ROOT / "include"), "-"], input='#include "rep/rep_app.h"\n#include "rep/rep_app_v2.h"\n',
-                               text=True, check=True)
+                                "-I" + str(ROOT / "include"), "-"], input='#include "rep/rep_app.h"\n#include "rep/rep_app_v2.h"\n#include "rep/rep_app_v3.h"\n',
+                                text=True, check=True)
 
 
 if __name__ == "__main__":

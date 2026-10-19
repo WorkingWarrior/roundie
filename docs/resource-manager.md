@@ -1,5 +1,12 @@
 # Milestone 3B resource ownership
 
+**Milestone 3C extension:** [UI ownership](app-ui.md) tracks generation-owned
+logical view/label/button slots, input registrations and copied GUI commands.
+These counters join runtime resource diagnostics for ABI 3. UI teardown must
+acknowledge LVGL root/descendant deletion before ownership retirement and ELF
+release. Text backing storage belongs to the GUI and is cleared after deletion.
+The [input bridge](input-bridge.md) uses the existing owned runtime event FIFO.
+
 **Decision (REP §10):** extend the existing `roundie_elf` manager, rather than
 creating an unused global service. It is the ResourceManager foundation for
 resources exercised by one loaded application. Peripheral leasing, GUI handles,

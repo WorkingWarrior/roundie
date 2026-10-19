@@ -1,5 +1,12 @@
 # Milestone 3B: event-driven native application lifecycle
 
+**Milestone 3C extension:** [Application UI](app-ui.md) adds a GUI creation/show
+barrier after start, hide/show on suspend/resume, and acknowledged GUI deletion
+before STOPPED/unload. Callback signatures retain ABI 2 value layouts with
+explicit ABI 3 context negotiation. A stalled GUI keeps code and Flash exclusion
+alive; it never reports successful unload. Historical 3B evidence below is
+unchanged; new device evidence belongs to app-ui.md.
+
 ## Contract and ownership
 
 **Architectural decision (2026-10-19, REP §§5–10, 23):** preserve ABI 1 and

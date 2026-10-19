@@ -1,0 +1,28 @@
+"""Real pinned LVGL + production bridge/runtime; mocked IDF/loader, ASan/UBSan."""
+from pathlib import Path
+import os
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+TOOLCHAIN = Path("/home/solve/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin")
+
+
+class AppUiTests(unittest.TestCase):
+    def test_production_ui_and_runtime(self):
+        with tempfile.TemporaryDirectory(prefix="roundie-ui-test-") as temporary:
+            build = Path(temporary)
+            env = dict(os.environ, PATH=str(TOOLCHAIN) + os.pathsep + os.environ["PATH"])
+            examples = []
+            for name, binary in (("hello_elf", "hello"), ("event_elf", "event"), ("ui_elf", "ui")):
+                target = build / name
+                subprocess.run(["cmake", "-S", str(ROOT / "examples" / name), "-B", str(target)],
+                               check=True, capture_output=True, env=env)
+                subprocess.run(["cmake", "--build", str(target)], check=True, capture_output=True, env=env)
+                examples.append(str(target / f"{binary}.app.elf"))
+            subprocess.run(["cmake", "-S", str(ROOT / "tests/app_ui"), "-B", str(build / "host"),
+                            "-G", "Ninja"], check=True, capture_output=True)
+            subprocess.run(["cmake", "--build", str(build / "host"), "-j", "8"],
+                           check=True, capture_output=True)
+            subprocess.run([str(build / "host/ui_tests"), *examples], check=True, timeout=20)

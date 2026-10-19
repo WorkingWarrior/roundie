@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "rep/rep_app.h"
 #include "rep/rep_app_v2.h"
+#include "roundie_app_ui.h"
 
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static roundie_elf_status_t status;
@@ -23,6 +24,7 @@ static bool lifecycle_initialized;
 static bool lifecycle_started;
 static bool lifecycle_stopped;
 static rep_descriptor_v2_t lifecycle;
+static bool ui_owned;
 static uint32_t timer_serial;
 static uint32_t timer_period_ms;
 static int64_t timer_due_us;
@@ -83,6 +85,13 @@ void roundie_elf_status(roundie_elf_status_t *out)
     out->control_completed = mailbox.completed;
     out->control_result = mailbox.result;
     portEXIT_CRITICAL(&lock);
+    roundie_ui_status_t ui;
+    roundie_ui_status(&ui);
+    if (out->abi_version == 3) {
+        out->resources_acquired += ui.acquired;
+        out->resources_released += ui.released;
+        out->resources_outstanding += ui.outstanding;
+    }
 }
 
 static void state(roundie_elf_state_t next)
@@ -139,6 +148,11 @@ void roundie_elf_set_allowed(bool value)
         mailbox.shutdown = true;
     }
     portEXIT_CRITICAL(&lock);
+    if (!value) {
+        roundie_ui_status_t ui;
+        roundie_ui_status(&ui);
+        roundie_ui_close_admission(ui.generation);
+    }
 }
 
 void roundie_elf_bind_executor(TaskHandle_t task)
@@ -186,6 +200,74 @@ static bool owned_range(const void *pointer, uint32_t bytes)
         }
     }
     return false;
+}
+
+static bool writable_range(const void *pointer, uint32_t bytes)
+{
+    uintptr_t address = (uintptr_t)pointer;
+    for (unsigned i = 0; i < ELF_SECS; i++) {
+        if (i == ELF_SEC_TEXT || i == ELF_SEC_RODATA) {
+            continue;
+        }
+        const esp_elf_sec_t *part = &image.sec[i];
+        if (part->size != 0 && address >= part->addr && address - part->addr <= part->size &&
+            bytes <= part->size - (address - part->addr)) {
+            return true;
+        }
+    }
+    return owned_range(pointer, bytes);
+}
+
+static bool ui_argument(uint32_t instance, const void *pointer, uint32_t bytes)
+{
+    return owner(instance) && status.abi_version == REP_ABI_V3 && atomic_load(&allowed) &&
+        (status.state == ROUNDIE_ELF_READY || status.state == ROUNDIE_ELF_STARTING ||
+         status.state == ROUNDIE_ELF_RUNNING) && pointer != NULL &&
+        ((uintptr_t)pointer & 3U) == 0 &&
+        (loaded_range(pointer, bytes, false) || owned_range(pointer, bytes));
+}
+
+static uint32_t app_ui_create(uint32_t instance, const rep_ui_widget_t *widget)
+{
+    if (!ui_argument(instance, widget, sizeof(*widget))) {
+        return 0;
+    }
+    rep_ui_widget_t copy = *widget;
+    status.api_calls++;
+    return roundie_ui_create(instance, &copy);
+}
+
+static int32_t app_ui_update(uint32_t instance, const rep_ui_update_t *update)
+{
+    if (!ui_argument(instance, update, sizeof(*update))) {
+        return -1;
+    }
+    rep_ui_update_t copy = *update;
+    status.api_calls++;
+    return roundie_ui_update(instance, &copy);
+}
+
+static int32_t app_ui_destroy(uint32_t instance, uint32_t view)
+{
+    if (!owner(instance) || status.abi_version != REP_ABI_V3 || !atomic_load(&allowed) ||
+        status.state != ROUNDIE_ELF_RUNNING) {
+        return -1;
+    }
+    status.api_calls++;
+    return roundie_ui_destroy(instance, view);
+}
+
+static int32_t app_ui_result(uint32_t instance, rep_ui_result_t *result)
+{
+    if (!owner(instance) || status.abi_version != REP_ABI_V3 || result == NULL ||
+        ((uintptr_t)result & 3U) != 0 || !writable_range(result, sizeof(*result))) {
+        return -1;
+    }
+    roundie_ui_status_t ui;
+    roundie_ui_status(&ui);
+    *result = (rep_ui_result_t){1, sizeof(*result), ui.submitted, ui.applied, ui.failed,
+        ui.pending, ui.error, ui.view};
+    return 0;
 }
 
 static int32_t app_log(uint32_t instance, const char *text, uint32_t length)
@@ -323,6 +405,22 @@ const rep_api_v2_t *rep_abi_v2(uint32_t required_version)
     return &api_v2;
 }
 
+static const rep_api_v3_t api_v3 = {
+    REP_ABI_V3, sizeof(rep_api_v3_t), REP_CAP_LOG | REP_CAP_MONOTONIC | REP_CAP_ALLOC |
+        REP2_CAP_TIMER | REP3_CAP_UI,
+    app_log, app_monotonic, app_alloc, app_release, app_timer_start, app_timer_cancel,
+    app_ui_create, app_ui_update, app_ui_destroy, app_ui_result,
+};
+
+const rep_api_v3_t *rep_abi_v3(uint32_t required_version)
+{
+    if (required_version != REP_ABI_V3 || status.abi_version != REP_ABI_V3 || !owner(status.instance)) {
+        return NULL;
+    }
+    status.api_calls++;
+    return &api_v3;
+}
+
 static uintptr_t resolver(const char *name)
 {
     if (!roundie_elf_import_allowed(name)) {
@@ -332,7 +430,10 @@ static uintptr_t resolver(const char *name)
     if (strcmp(name, "rep_abi_v1") == 0 && status.abi_version == 1) {
         return (uintptr_t)rep_abi_v1;
     }
-    return strcmp(name, "rep_abi_v2") == 0 && status.abi_version == 2 ? (uintptr_t)rep_abi_v2 : 0;
+    if (strcmp(name, "rep_abi_v2") == 0 && status.abi_version == 2) {
+        return (uintptr_t)rep_abi_v2;
+    }
+    return strcmp(name, "rep_abi_v3") == 0 && status.abi_version == 3 ? (uintptr_t)rep_abi_v3 : 0;
 }
 
 static void callback_finished(int64_t started)
@@ -352,7 +453,7 @@ static void callback_finished(int64_t started)
 
 static int32_t invoke(rep_callback_v2_t callback)
 {
-    rep_context_v2_t context = {REP_ABI_V2, sizeof(context), status.instance, 0};
+    rep_context_v2_t context = {status.abi_version, sizeof(context), status.instance, 0};
     int64_t started = esp_timer_get_time();
     callback_active = true;
     int32_t result = callback(&context);
@@ -373,37 +474,45 @@ static void clear_events(void)
     portEXIT_CRITICAL(&lock);
 }
 
-static void stop_lifecycle(void)
+static bool stop_lifecycle(void)
 {
-    if (lifecycle_stopped) {
-        return;
+    if (!lifecycle_stopped) {
+        int64_t started = esp_timer_get_time();
+        clear_events();
+        if (status.timer_handle != 0) {
+            status.timer_handle = 0;
+            timer_period_ms = 0;
+            timer_due_us = 0;
+            status.resources_reclaimed++;
+        }
+        if (status.subscriptions != 0) {
+            status.subscriptions = 0;
+            status.resources_released++;
+        }
+        state(ROUNDIE_ELF_STOPPING);
+        if (ui_owned) {
+            roundie_ui_close_admission(status.instance);
+        }
+        if (lifecycle_started && invoke(lifecycle.stop) != 0 && status.error[0] == '\0') {
+            snprintf(status.error, sizeof(status.error), "callback-stop");
+        }
+        lifecycle_stopped = true;
+        status.shutdown_us = (uint32_t)(esp_timer_get_time() - started);
     }
-    int64_t started = esp_timer_get_time();
-    clear_events();
-    if (status.timer_handle != 0) {
-        status.timer_handle = 0;
-        timer_period_ms = 0;
-        timer_due_us = 0;
-        status.resources_reclaimed++;
+    if (ui_owned && !roundie_ui_transition(status.instance, ROUNDIE_UI_DESTROY)) {
+        snprintf(status.error, sizeof(status.error), "ui-teardown-pending");
+        state(ROUNDIE_ELF_STOPPING);
+        return false;
     }
-    if (status.subscriptions != 0) {
-        status.subscriptions = 0;
-        status.resources_released++;
-    }
-    state(ROUNDIE_ELF_STOPPING);
-    if (lifecycle_started && invoke(lifecycle.stop) != 0 && status.error[0] == '\0') {
-        snprintf(status.error, sizeof(status.error), "callback-stop");
-    }
-    lifecycle_stopped = true;
-    status.shutdown_us = (uint32_t)(esp_timer_get_time() - started);
     state(ROUNDIE_ELF_STOPPED);
+    return true;
 }
 
 static void unload(void)
 {
     clear_events();
-    if (status.abi_version == 2) {
-        stop_lifecycle();
+    if (status.abi_version >= 2 && !stop_lifecycle()) {
+        return;
     }
     int64_t started = esp_timer_get_time();
     state(ROUNDIE_ELF_UNLOADING);
@@ -413,6 +522,14 @@ static void unload(void)
         }
     }
     lifecycle_initialized = false;
+    if (ui_owned) {
+        if (!roundie_ui_retire(status.instance)) {
+            snprintf(status.error, sizeof(status.error), "ui-retirement-pending");
+            state(ROUNDIE_ELF_UNLOADING);
+            return;
+        }
+        ui_owned = false;
+    }
     lifecycle_started = false;
     memset(&lifecycle, 0, sizeof(lifecycle));
     for (unsigned i = 0; i < 4; i++) {
@@ -442,7 +559,7 @@ esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation
 {
     portENTER_CRITICAL(&lock);
     roundie_elf_state_t current = snapshot.state;
-    bool valid = instance != 0 && instance == snapshot.instance && snapshot.abi_version == 2 &&
+    bool valid = instance != 0 && instance == snapshot.instance && snapshot.abi_version >= 2 &&
         operation >= ROUNDIE_ELF_SUSPEND && operation <= ROUNDIE_ELF_UNLOAD &&
         mailbox.submitted != UINT32_MAX && mailbox.submitted == mailbox.completed;
     valid = valid && ((operation == ROUNDIE_ELF_SUSPEND && current == ROUNDIE_ELF_RUNNING) ||
@@ -456,17 +573,21 @@ esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation
         mailbox.admitting = false;
     }
     portEXIT_CRITICAL(&lock);
+    if (valid) {
+        roundie_ui_close_admission(instance);
+    }
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 /* A single copied 32-bit payload. Generation is checked under the same lock as
  * admission; queue contents can only belong to the current loaded instance. */
-static esp_err_t post_event(uint32_t instance, uint32_t type, uint32_t value, int64_t posted_us)
+static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t value,
+                                  uint32_t origin, int64_t posted_us)
 {
     esp_err_t result = ESP_OK;
     portENTER_CRITICAL(&lock);
     if (!atomic_load(&allowed) || !mailbox.admitting || instance != snapshot.instance ||
-        snapshot.abi_version != 2 || snapshot.state != ROUNDIE_ELF_RUNNING) {
+        snapshot.abi_version < 2 || snapshot.state != ROUNDIE_ELF_RUNNING) {
         mailbox.rejected++;
         result = ESP_ERR_INVALID_STATE;
     } else {
@@ -484,13 +605,23 @@ static esp_err_t post_event(uint32_t instance, uint32_t type, uint32_t value, in
             result = ESP_ERR_NO_MEM;
         } else {
             mailbox.events[(mailbox.head + mailbox.count) % ROUNDIE_ELF_EVENT_CAPACITY] =
-                (rep_event_v2_t){type, sizeof(rep_event_v2_t), value, 0, (uint64_t)posted_us};
+                (rep_event_v2_t){type, sizeof(rep_event_v2_t), value, origin, (uint64_t)posted_us};
             mailbox.count++;
             mailbox.acquired++;
         }
     }
     portEXIT_CRITICAL(&lock);
     return result;
+}
+
+static esp_err_t post_event(uint32_t instance, uint32_t type, uint32_t value, int64_t posted_us)
+{
+    return post_with_origin(instance, type, value, 0, posted_us);
+}
+
+static bool ui_input(uint32_t instance, uint32_t widget, uint32_t origin, int64_t posted_us)
+{
+    return post_with_origin(instance, REP3_EVENT_BUTTON, widget, origin, posted_us) == ESP_OK;
 }
 
 esp_err_t roundie_elf_post(uint32_t instance, uint32_t value)
@@ -510,7 +641,16 @@ void roundie_elf_step(int64_t now_us)
     uint32_t serial = mailbox.submitted;
     portEXIT_CRITICAL(&lock);
     int32_t result = 0;
-    if (shutdown && status.state != ROUNDIE_ELF_UNLOADED && status.state != ROUNDIE_ELF_LOADING) {
+    roundie_ui_status_t ui;
+    roundie_ui_status(&ui);
+    if ((ui_owned && ui.error != 0) || status.state == ROUNDIE_ELF_STOPPING ||
+        status.state == ROUNDIE_ELF_UNLOADING) {
+        if (status.error[0] == '\0') {
+            snprintf(status.error, sizeof(status.error), "ui-gui-failure");
+        }
+        unload();
+        result = -1;
+    } else if (shutdown && status.state != ROUNDIE_ELF_UNLOADED && status.state != ROUNDIE_ELF_LOADING) {
         unload();
         result = -1;
     } else if (control == ROUNDIE_ELF_UNLOAD && status.state != ROUNDIE_ELF_UNLOADED) {
@@ -524,11 +664,17 @@ void roundie_elf_step(int64_t now_us)
         status.suspend_us = (uint32_t)(esp_timer_get_time() - started);
         /* Already queued ordinary work is canceled, never replayed on resume. */
         clear_events();
+        if (ui_owned && !roundie_ui_transition(status.instance, ROUNDIE_UI_HIDE)) {
+            result = -1;
+        }
         state(ROUNDIE_ELF_SUSPENDED);
     } else if (control == ROUNDIE_ELF_RESUME) {
         state(ROUNDIE_ELF_RESUMING);
         int64_t started = esp_timer_get_time();
         result = invoke(lifecycle.resume);
+        if (result == 0 && ui_owned && !roundie_ui_transition(status.instance, ROUNDIE_UI_SHOW)) {
+            result = -1;
+        }
         status.resume_us = (uint32_t)(esp_timer_get_time() - started);
         timer_due_us = now_us + (int64_t)timer_period_ms * 1000;
         state(ROUNDIE_ELF_RUNNING);
@@ -551,7 +697,7 @@ void roundie_elf_step(int64_t now_us)
         state(status.state);
         return;
     }
-    if (status.state != ROUNDIE_ELF_RUNNING || status.abi_version != 2 || shutdown) {
+    if (status.state != ROUNDIE_ELF_RUNNING || status.abi_version < 2 || shutdown) {
         return;
     }
     if (status.timer_handle != 0 && now_us >= timer_due_us) {
@@ -571,7 +717,13 @@ void roundie_elf_step(int64_t now_us)
     }
     portEXIT_CRITICAL(&lock);
     if (dispatch) {
-        rep_context_v2_t context = {REP_ABI_V2, sizeof(context), status.instance, 0};
+        if (event.type == REP3_EVENT_BUTTON && !roundie_ui_event_valid(status.instance, event.value)) {
+            portENTER_CRITICAL(&lock);
+            mailbox.rejected++;
+            portEXIT_CRITICAL(&lock);
+            return;
+        }
+        rep_context_v2_t context = {status.abi_version, sizeof(context), status.instance, 0};
         int64_t started = esp_timer_get_time();
         uint32_t latency = (uint32_t)((uint64_t)started - event.posted_us);
         if (latency > status.latency_max_us) {
@@ -583,6 +735,10 @@ void roundie_elf_step(int64_t now_us)
         status.events_delivered++;
         status.timers_delivered += event.type == REP2_EVENT_TIMER;
         status.users_delivered += event.type == REP2_EVENT_USER;
+        if (event.type == REP3_EVENT_BUTTON) {
+            roundie_ui_delivered(status.instance, latency);
+            status.ui_delivered++;
+        }
         if (event.type == REP2_EVENT_USER) {
             status.last_value = event.value;
         }
@@ -610,6 +766,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
     lifecycle_initialized = false;
     lifecycle_started = false;
     lifecycle_stopped = false;
+    ui_owned = false;
     memset(&lifecycle, 0, sizeof(lifecycle));
     status.resources_acquired = 2; /* instance and callback-reference record */
     if (!atomic_load(&allowed)) {
@@ -654,16 +811,42 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         goto cleanup;
     }
     started = esp_timer_get_time();
-    if (status.abi_version == 2) {
+    if (status.abi_version >= 2) {
         typedef const rep_descriptor_v2_t *(*entry_v2_t)(const rep_api_v2_t *);
         entry_v2_t entry_v2;
         _Static_assert(sizeof(entry_v2) == sizeof(image.entry), "Loader entry pointer");
         memcpy(&entry_v2, &image.entry, sizeof(entry_v2));
         callback_active = true;
-        const rep_descriptor_v2_t *descriptor = entry_v2(&api_v2);
-        callback_finished(started);
-        if (((uintptr_t)descriptor & 3U) != 0 || !loaded_range(descriptor, sizeof(*descriptor), false) ||
-            descriptor->abi_version != REP_ABI_V2 || descriptor->struct_size != sizeof(*descriptor)) {
+        const rep_descriptor_v2_t *descriptor;
+        if (status.abi_version == 3) {
+            ui_owned = roundie_ui_open(status.instance, ui_input);
+            if (!ui_owned) {
+                callback_active = false;
+                snprintf(status.error, sizeof(status.error), "ui-owner-unavailable");
+                goto cleanup;
+            }
+            typedef const rep_descriptor_v3_t *(*entry_v3_t)(const rep_api_v3_t *);
+            entry_v3_t entry_v3;
+            memcpy(&entry_v3, &image.entry, sizeof(entry_v3));
+            const rep_descriptor_v3_t *v3 = entry_v3(&api_v3);
+            callback_finished(started);
+            if (((uintptr_t)v3 & 3U) != 0 || !loaded_range(v3, sizeof(*v3), false) ||
+                v3->abi_version != 3 || v3->struct_size != sizeof(*v3) ||
+                (v3->required_capabilities & ~api_v3.capabilities) != 0 ||
+                (v3->required_capabilities & REP3_CAP_UI) == 0) {
+                snprintf(status.error, sizeof(status.error), "application-ui-descriptor");
+                goto cleanup;
+            }
+            /* Same callback signatures, with explicit ABI 3 context version. */
+            lifecycle = (rep_descriptor_v2_t){3, sizeof(*v3), v3->init, v3->start, v3->on_event,
+                v3->suspend, v3->resume, v3->stop, v3->destroy};
+            descriptor = &lifecycle;
+        } else {
+            descriptor = entry_v2(&api_v2);
+            callback_finished(started);
+        }
+        if (status.abi_version == 2 && (((uintptr_t)descriptor & 3U) != 0 || !loaded_range(descriptor, sizeof(*descriptor), false) ||
+            descriptor->abi_version != REP_ABI_V2 || descriptor->struct_size != sizeof(*descriptor))) {
             snprintf(status.error, sizeof(status.error), "application-descriptor");
             goto cleanup;
         }
@@ -698,6 +881,10 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         lifecycle_started = true; /* stop also cleans a partially failed start */
         if (invoke(lifecycle.start) != 0 || !atomic_load(&allowed)) {
             snprintf(status.error, sizeof(status.error), "callback-start-or-policy");
+            goto cleanup;
+        }
+        if (ui_owned && !roundie_ui_transition(status.instance, ROUNDIE_UI_SHOW)) {
+            snprintf(status.error, sizeof(status.error), "ui-start-barrier");
             goto cleanup;
         }
         status.executed = true;

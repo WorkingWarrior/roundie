@@ -8,3 +8,4 @@
 __pycache__/
 /examples/hello_elf/build*/
 /examples/event_elf/build*/
+/examples/ui_elf/build*/

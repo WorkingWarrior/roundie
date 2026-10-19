@@ -10,6 +10,28 @@
 #include "../components/roundie_elf/manager.c"
 #include "../components/roundie_elf/executor.c"
 
+/* ABI 1/2 regression executable does not own GUI resources. ABI 3 exercises
+ * the real bridge and LVGL backend in the dedicated UI integration harness. */
+#ifndef ROUNDIE_UI_INTEGRATION
+void roundie_ui_status(roundie_ui_status_t *out) { memset(out, 0, sizeof(*out)); }
+void roundie_ui_close_admission(uint32_t generation) { (void)generation; }
+bool roundie_ui_open(uint32_t generation, roundie_ui_event_sink_t sink)
+{ (void)generation; (void)sink; return false; }
+bool roundie_ui_transition(uint32_t generation, roundie_ui_transition_t operation)
+{ (void)generation; (void)operation; return false; }
+bool roundie_ui_retire(uint32_t generation) { (void)generation; return false; }
+uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_t *widget)
+{ (void)generation; (void)widget; return 0; }
+int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
+{ (void)generation; (void)update; return -1; }
+int32_t roundie_ui_destroy(uint32_t generation, uint32_t view)
+{ (void)generation; (void)view; return -1; }
+bool roundie_ui_event_valid(uint32_t generation, uint32_t widget)
+{ (void)generation; (void)widget; return false; }
+void roundie_ui_delivered(uint32_t generation, uint32_t latency_us)
+{ (void)generation; (void)latency_us; }
+#endif
+
 static unsigned live_bytes;
 static unsigned allocations_live;
 static unsigned load_count;
@@ -218,8 +240,10 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
 {
     (void)bytes;
     load_count++;
-    assert(resolve(status.abi_version == 1 ? "rep_abi_v1" : "rep_abi_v2") ==
-        (status.abi_version == 1 ? (uintptr_t)rep_abi_v1 : (uintptr_t)rep_abi_v2));
+    assert(resolve(status.abi_version == 1 ? "rep_abi_v1" :
+        status.abi_version == 2 ? "rep_abi_v2" : "rep_abi_v3") ==
+        (status.abi_version == 1 ? (uintptr_t)rep_abi_v1 :
+         status.abi_version == 2 ? (uintptr_t)rep_abi_v2 : (uintptr_t)rep_abi_v3));
     assert(resolve("malloc") == 0 && resolve("xTaskCreate") == 0 && resolve(NULL) == 0);
     elf->ptext = heap_caps_malloc(256, 0);
     if (elf->ptext == NULL) {
@@ -229,6 +253,13 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
     if (mode == 2) {
         return -22;
     }
+#ifdef ROUNDIE_UI_INTEGRATION
+    if (status.abi_version == 3) {
+        extern void mock_ui_relocate(esp_elf_t *elf);
+        mock_ui_relocate(elf);
+        return 0;
+    }
+#endif
     uintptr_t first = (uintptr_t)entry < (uintptr_t)callback ? (uintptr_t)entry : (uintptr_t)callback;
     uintptr_t last = (uintptr_t)entry > (uintptr_t)callback ? (uintptr_t)entry : (uintptr_t)callback;
     elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16};
@@ -354,7 +385,8 @@ static void validation_tests(void)
         }
     }
     assert(roundie_elf_import_allowed("rep_abi_v2"));
-    const char *forbidden[] = {"malloc", "esp_restart", "xTaskCreate", "rep_abi_v3", "rep_abi_v1_suffix", "", NULL};
+    assert(roundie_elf_import_allowed("rep_abi_v3"));
+    const char *forbidden[] = {"malloc", "esp_restart", "xTaskCreate", "rep_abi_v4", "rep_abi_v1_suffix", "", NULL};
     for (unsigned i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
         assert(!roundie_elf_import_allowed(forbidden[i]));
     }
@@ -536,4 +568,5 @@ int main(int argc, char **argv)
     runtime_tests(argv[2]);
     printf("ELF production validation/lifecycle PASS; loads=%u deinit=%u callbacks=%u\n",
            load_count, deinit_count, callback_count);
+    return 0;
 }

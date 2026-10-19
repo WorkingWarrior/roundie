@@ -61,7 +61,7 @@ def parse_reply(line, request_id):
                 raise ValueError(key)
         if not 0 <= status["received"] <= status["total"] <= MAX_FILE or status["state"] > 11:
             raise ValueError("progress/state")
-        if re.fullmatch(r"[0-9a-f]{8}", status["session"]) is None or status["abi"] not in (0, 1, 2) or status["loader"] != "1.3.5":
+        if re.fullmatch(r"[0-9a-f]{8}", status["session"]) is None or status["abi"] not in (0, 1, 2, 3) or status["loader"] != "1.3.5":
             raise ValueError("session/ABI/loader")
         if any(type(status[key]) is not int for key in ("loader_result", "app_result")) or not isinstance(status["error"], str):
             raise ValueError("result/error")
@@ -79,7 +79,10 @@ def parse_reply(line, request_id):
                         "coalesced", "rejected", "timer", "subscriptions"):
                 if type(status[key]) is not int or not 0 <= status[key] <= 0xffffffff:
                     raise ValueError(key)
-            if status["queue"] > 8 or status["subscriptions"] > 1 or status["events"] != status["ticks"] + status["users"]:
+            ui_events = status.get("ui_events", 0)
+            if type(ui_events) is not int or not 0 <= ui_events <= 0xffffffff:
+                raise ValueError("ui event accounting")
+            if status["queue"] > 8 or status["subscriptions"] > 1 or status["events"] != status["ticks"] + status["users"] + ui_events:
                 raise ValueError("event accounting")
     except (ValueError, TypeError, KeyError) as error:
         raise TransportError(f"malformed ELF response: {error}") from error

@@ -1,5 +1,10 @@
 # REP application ABI 1 — Milestone 3A
 
+**Milestone 3C:** explicit [ABI 3 and asynchronous UI](app-ui.md) adds a separate
+service table, descriptor capability declaration, entry and sole import. ABI
+1/2 public headers and binary layouts remain unchanged. START accepts 2/3;
+RUN remains 1. See `include/rep/rep_app_v3.h` and `examples/ui_elf`.
+
 **Milestone 3B compatibility:** ABI 1 public header, descriptor, metadata,
 entry and API table remain binary compatible. `RUN` keeps one-shot semantics.
 The separate [ABI 2 lifecycle contract](app-lifecycle.md) uses

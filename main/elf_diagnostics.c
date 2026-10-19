@@ -15,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "psa/crypto.h"
 #include "roundie_elf.h"
+#include "roundie_app_ui.h"
 #include "roundie_ota_protocol.h"
 #include "roundie_boot_guard.h"
 #include "storage_diagnostics.h"
@@ -268,6 +269,63 @@ static esp_err_t runtime_command(const char *operation)
     return ESP_ERR_INVALID_ARG;
 }
 
+static esp_err_t ui_command(const char *operation)
+{
+    if (strcmp(operation, "UI STATUS") == 0) {
+        return ESP_OK;
+    }
+    if (strncmp(operation, "UI PRESS ", 9) == 0) {
+        const char *argument = operation + 9;
+        uint32_t generation;
+        uint32_t widget;
+        if (!decimal(&argument, &generation) || *argument != ' ') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        argument++;
+        if (!decimal(&argument, &widget) || *argument != '\0') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        return permitted && roundie_ui_input(generation, widget, REP3_ORIGIN_INJECTED) ?
+            ESP_OK : ESP_ERR_INVALID_STATE;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+static void ui_reply(const char *id, esp_err_t error)
+{
+    roundie_ui_status_t ui;
+    roundie_ui_status(&ui);
+    /* Development-only, copied diagnostics. No LVGL inspection or pointers. */
+    uint32_t values[] = {ui.generation, ui.view, ui.button, ui.widgets, ui.pending, ui.max_depth,
+        ui.submitted, ui.applied, ui.failed, ui.rejected, ui.canceled, ui.input_accepted,
+        ui.input_dropped, ui.input_rejected, ui.physical, ui.injected, ui.delivered,
+        ui.latency_max_us, ui.enqueue_max_us, ui.create_max_us, ui.update_max_us,
+        ui.teardown_us, ui.input_latency_max_us, ui.acquired, ui.released, ui.outstanding,
+        ui.lvgl_bytes, ui.lvgl_peak, ui.flushes, ui.flush_errors, ui.last_widget, ui.text_hash,
+        ui.foreground, ui.admitting, ui.pool_before, ui.pool_free, ui.realized_objects};
+    char response[768];
+    int length = snprintf(response, sizeof(response), "\n!RE1 %s %d {\"ui\":[", id, (int)error);
+    for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        if (length < 0 || (size_t)length >= sizeof(response)) {
+            return;
+        }
+        int added = snprintf(response + length, sizeof(response) - (size_t)length,
+                             "%s%" PRIu32, i == 0 ? "" : ",", values[i]);
+        if (added < 0) {
+            return;
+        }
+        length += added;
+    }
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        return;
+    }
+    int added = snprintf(response + length, sizeof(response) - (size_t)length,
+                         "],\"error\":%" PRId32 "}\n", ui.error);
+    if (added > 0 && (size_t)(length + added) < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)(length + added), pdMS_TO_TICKS(100));
+    }
+}
+
 void roundie_elf_command(char *line, bool discard)
 {
     roundie_elf_poll(esp_timer_get_time());
@@ -279,6 +337,17 @@ void roundie_elf_command(char *line, bool discard)
     bool start = length_in >= 20 && strncmp(line + 14, "START ", 6) == 0;
     if (length_in >= 14 && length_in - 14 < sizeof(runtime)) {
         memcpy(runtime, line + 14, length_in - 14 + 1);
+    }
+    if (strncmp(runtime, "UI ", 3) == 0) {
+        char frame[21];
+        memcpy(frame, line, 14);
+        memcpy(frame + 14, "STATUS", 7);
+        esp_err_t ui_error = roundie_transfer_parse(frame, discard, "!RE1 ", "RUN", &command);
+        if (ui_error == ESP_OK) {
+            ui_error = ui_command(runtime);
+        }
+        ui_reply(command.id, ui_error);
+        return;
     }
     esp_err_t error = roundie_transfer_parse(line, discard, "!RE1 ", start ? "START" : "RUN", &command);
     if (error == ESP_OK) {
@@ -318,7 +387,7 @@ void roundie_elf_command(char *line, bool discard)
         "\"before\":" MF ",\"relocated\":" MF ",\"during\":" MF ",\"after\":" MF ","
         "\"callbacks\":%" PRIu32 ",\"callback_max_us\":%" PRIu32 ",\"init_us\":%" PRIu32 ","
         "\"suspend_us\":%" PRIu32 ",\"resume_us\":%" PRIu32 ",\"shutdown_us\":%" PRIu32 ","
-        "\"events\":%" PRIu32 ",\"ticks\":%" PRIu32 ",\"users\":%" PRIu32 ",\"value\":%" PRIu32 ","
+        "\"events\":%" PRIu32 ",\"ticks\":%" PRIu32 ",\"users\":%" PRIu32 ",\"ui_events\":%" PRIu32 ",\"value\":%" PRIu32 ","
         "\"latency_max_us\":%" PRIu32 ",\"queue\":%" PRIu32 ",\"dropped\":%" PRIu32 ","
         "\"coalesced\":%" PRIu32 ",\"rejected\":%" PRIu32 ","
         "\"resources\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],"
@@ -331,7 +400,7 @@ void roundie_elf_command(char *line, bool discard)
         safe_error, MV(current.before), MV(current.relocated), MV(current.during), MV(current.after),
         current.callbacks, current.callback_max_us, current.init_us, current.suspend_us, current.resume_us,
         current.shutdown_us, current.events_delivered, current.timers_delivered, current.users_delivered,
-        current.last_value, current.latency_max_us, current.queue_depth, current.events_dropped,
+        current.ui_delivered, current.last_value, current.latency_max_us, current.queue_depth, current.events_dropped,
         current.events_coalesced, current.events_rejected, current.resources_acquired,
         current.resources_released, current.resources_reclaimed, current.resources_outstanding,
         current.timer_handle, current.subscriptions, current.control_submitted,

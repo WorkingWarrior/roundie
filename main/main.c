@@ -31,6 +31,7 @@
 #include "ota_diagnostics.h"
 #include "recovery_diagnostics.h"
 #include "elf_diagnostics.h"
+#include "roundie_app_ui.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -921,6 +922,7 @@ void app_main(void)
         lv_indev_set_read_cb(input, read_touch);
     }
     make_screen(&state, &status, flash_bytes, psram_bytes);
+    roundie_ui_gui_bind();
     bool recovery_screen = roundie_recovery_active();
     if (!recovery_screen) {
         update_sensor_labels(&state);
@@ -950,7 +952,11 @@ void app_main(void)
         if (state.display_fault) {
             roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
         }
-        if (roundie_recovery_active() && !recovery_screen) {
+        roundie_ui_gui_pump();
+        roundie_ui_display_progress(state.completed_transfers, state.transfer_errors);
+        roundie_ui_status_t app_ui;
+        roundie_ui_status(&app_ui);
+        if (roundie_recovery_active() && !recovery_screen && app_ui.generation == 0) {
             if (input != NULL) {
                 lv_indev_enable(input, false);
             }

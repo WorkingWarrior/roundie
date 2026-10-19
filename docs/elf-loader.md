@@ -1,5 +1,11 @@
 # Native ELF proof — Milestone 3A
 
+**Milestone 3C:** loader preflight/resolution additionally allow the exact ABI 3
+pair `rep_abi_v3` / `rep_app_entry_v3`, matching metadata version 3. No broad
+exports, relocation changes or relaxed memory/alignment limits were added.
+ABI 1/2 binaries keep their original entry/import contracts. The new
+[UI bridge](app-ui.md) never retains pointers into an application image.
+
 **Milestone 3B extension:** [application lifecycle](app-lifecycle.md) retains the
 same pinned 1.3.5 loader, executable-memory/cache path and strict relocation
 preflight. ABI metadata now selects exactly one versioned entry/import pair;
