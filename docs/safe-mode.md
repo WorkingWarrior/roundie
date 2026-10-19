@@ -1,5 +1,11 @@
 # Milestone 2C.2 — Safe Mode
 
+**Later 3A integration, 2026-10-19:** explicit Safe Mode inhibits native starts
+and SDK calls, cancels development staging, and defers restart while a native
+callback is still executing. No forced unload is provided. Physical refusal and
+normal/STABLE restoration passed in 0.3.1; see [3A evidence](elf-loader.md).
+The historical 2C.2 validation record below is preserved.
+
 ## Recovery services and OTA contract
 
 Safe Mode is part of the installed REP application. It starts the existing

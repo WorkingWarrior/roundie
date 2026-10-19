@@ -52,8 +52,9 @@ class ElfTests(unittest.TestCase):
                                 "-Wl,-e,rep_app_entry", "-Wl,--undefined=rep_abi_metadata",
                                 f"-DREP_COMPAT_PROBE={probe}", "-I" + str(ROOT / "include"),
                                 str(ROOT / "tests/elf_compat_probe.c"), "-o", str(path)], check=True)
-                with self.assertRaises(roundie_elf.DeviceError):
+                with self.assertRaisesRegex(roundie_elf.DeviceError, "import:|TLS|unsupported-relocation") as rejected:
                     roundie_elf.inspect(path)
+                print(f"Xtensa compatibility probe {probe}: {rejected.exception}")
             # Public header's exact Xtensa pointer layouts in C11 and C23.
             for standard in ("c11", "c23"):
                 subprocess.run([str(TOOLCHAIN / "xtensa-esp32s3-elf-gcc"), f"-std={standard}",

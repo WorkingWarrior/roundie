@@ -1,9 +1,10 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
-**Milestone 3A implementation, 2026-10-19:** native loader 1.3.5, ABI 1,
-standalone example and bounded development staging/executor are implemented.
-See [ELF integration and evidence](elf-loader.md); physical acceptance is
-tracked there separately from compilation and host tests. Historical hardware,
+**Milestone 3A bounded gate passed, 2026-10-19:** native loader 1.3.5, ABI 1,
+standalone ELF, development staging and executor passed physical execution,
+cleanup, negative-candidate and Safe Mode checks. B 0.3.1 is VALID/STABLE;
+preserved A 0.2.5 is VALID/fallback. See [integration and evidence](elf-loader.md),
+including the measured upstream alignment defect and correction. Historical hardware,
 storage, OTA and RTC records below remain unchanged.
 
 **RTC investigation checkpoint, 2026-10-19:** firmware 0.2.4/0.2.5 adds requested,

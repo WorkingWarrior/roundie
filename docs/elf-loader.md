@@ -1,5 +1,9 @@
 # Native ELF proof — Milestone 3A
 
+**Bounded 3A gate passed on 2026-10-19.** Installed B 0.3.1 is VALID/STABLE;
+preserved A 0.2.5 is the compatible VALID fallback. This is a trusted native
+development proof, not the full REP runtime or a production trust boundary.
+
 ## Integration
 
 **Architectural decision:** REP v0.4 §§8–11/23, official
@@ -176,6 +180,8 @@ loads/execution/free, five repeat cycles and automatic allocation cleanup.
 A bounded 4000-case mutation corpus exercises preflight. RE1 tests cover Safe
 Mode/OTA, hash, malformed commands, timeout and preservation of the last file.
 Target C11/C23 layout assertions pass. Mock tests prove no Xtensa execution.
+Focused compatibility probes specifically reject `__udivdi3`, `__errno` and
+TLS symbols, rather than passing because of an unrelated format failure.
 
 **Target verified:** REP 0.3.1 builds with unchanged pinned IDF v6.1, loader
 1.3.5, protection retained, broad exports disabled, XIP off. Standalone hello:
@@ -197,8 +203,8 @@ Load/execution/unload measured 9427/9852/120 microseconds.
 five successful service calls instead of six. Investigation found upstream's
 `esp_elf_map_sym()` uses rounded text size: the original 253-byte text at
 0x1cc absorbed rodata beginning at 0x2c9 into its three padding bytes. Thus the
-first rodata pointer mapped to text; REP's range check refused that log. No
-panic or write outside the allocations occurred. Tests stopped at this failure.
+first rodata pointer mapped to text; REP's range check refused that log before
+dereferencing its pointer. No panic was observed. Tests stopped at this failure.
 
 **Correction:** standalone linking aligns `.rodata` to four bytes using a small
 linker augmentation, every sample log result is checked, and production preflight
@@ -209,9 +215,94 @@ the strict service-call assertion and does not widen pointer ranges or relax
 comparison criteria. The correction is built as 0.3.1 for another bounded B
 update through the preserved A. Historical evidence above is retained.
 
-**Physical PENDING:** inactive-B OTA/confirmation, PSRAM instruction execution,
-result and memory recovery, negative candidates, Safe Mode refusal and final
-service health. Append measurements only after actual operations succeed.
+### Final physical acceptance — 0.3.1
+
+**Verified physical:** guarded selection of original A and its required
+reconfirmation passed. Exact USB/chip/Flash/table/bootloader identity and ROM
+recovery were established by the original bounded read-only preflight (64 KiB
+prefix plus two 288-byte headers). For the correction, running A independently
+reported exact `rep-v1` and mounted storage; the frozen candidate table matched
+that readback, both slots were VALID with expected full ELF identities, and
+no intervening operation wrote bootloader/table/security settings. No second
+prefix/full-Flash readback was needed. All writes used genuine RO1 to inactive
+B and OTA metadata; running A's application bytes were preserved.
+
+The corrected upload/activation took 71.234 seconds host monotonic. B logged
+PENDING_VERIFY at 1160 ms and VALID at 3290 ms after its actual core self-test.
+BootGuard reached normal/STABLE, test injection remained disabled, NVS
+initialized ESP_OK, LittleFS mounted (9240576 total / 20480 used bytes after
+development staging), and RTC was valid/OS=0. Gauge access remained available
+(3975 mV, reported SoC 84%; accuracy remains unverified).
+
+| Final artifact | Bytes | SHA-256 |
+|---|---:|---|
+| REP 0.3.1 image | 695840 | `aab70ebe6d56abbc269dd50b04a2f82df229ac3de6859342101aa6cac1d16365` |
+| REP embedded ELF identity | — | `64e17722a3d8665399ca049eb1277e423e6bd6c3775b3057c008b0f6510a4298` |
+| Standalone hello ELF | 1692 | `5edbfbf49c72890dd80f33263d2e52ffeeba9bfb0c5ef577047428a7360f0c88` |
+| Preserved original A 0.2.5 ELF | — | `1fcfa1092406928118bbe28971415fca99419770eb47ca2a71f7b05a99e754c7` |
+
+Three separately triggered load/run/unload cycles each completed ten actual
+Xtensa relocations, six successful ABI calls, result **42**, no over-budget
+flag and no outstanding SDK allocations. The real serial output included:
+
+```text
+elf: instance=1 text_write=0x3c0a16c8 text_execute=0x420a1794 data=0x3c0a17d4 code=264 data_allocation=115 relocations=10
+rep_app: instance=1 Hello from a native Roundie ELF application!
+rep_app: instance=1 uptime_ms=55304
+rep_app: instance=1 REP ABI 1: 40 + 2 = 42; returning 42
+```
+
+`text_execute` above is the entry address within the instruction alias, not
+the start of the text allocation. All three cycles had identical memory
+accounting (bytes):
+
+| Snapshot | Internal free | Largest internal | PSRAM free | Largest code-heap block |
+|---|---:|---:|---:|---:|
+| Before load | 247159 | 172032 | 8382780 | 8257536 |
+| After relocation / callback admission | 247159 | 172032 | 8382392 | 8257536 |
+| After unload | 247159 | 172032 | 8382780 | 8257536 |
+
+Requested code/data sizes were 264/115 bytes; actual PSRAM free-space delta
+was 388 bytes including allocator rounding/overhead. SDK allocation peak was
+64 bytes, returned to zero. Infrastructure and input-buffer scope is as
+documented above. Before/after counts matched exactly each cycle and across
+these three cycles; this is bounded cleanup evidence, not an endurance result.
+
+| Cycle | Load incl. relocation/cache (µs) | Entry + callback (µs) | Unload (µs) |
+|---|---:|---:|---:|
+| 1 | 9457 | 16095 | 167 |
+| 2 | 9768 | 15626 | 137 |
+| 3 | 9915 | 15505 | 166 |
+
+Two bounded negative transfers had correct SHA-256 but respectively an unknown
+`bad_abi_v1` import and ABI 99. END rejected each with INVALID_ARG and exact
+`import:bad_abi_v1` / `ABI-version` diagnostics, before submission. Instance and
+completed counters stayed at 3. No invalid candidate executed. The previous
+staged valid file survived both failures and an explicit fourth positive run
+returned 42 with six calls and zero outstanding allocation bytes. RE1 run/result
+fields describe the last admitted instance; a staging error does not erase its
+historical `executed` flag. Unchanged counters establish refusal here.
+
+Explicit RS1 REQUEST booted Safe Mode without mounting LittleFS. RE1 STATUS
+reported allowed/busy/completed=0, and RUN of the known-good digest was refused.
+CLEAR/REBOOT returned to normal/STABLE with failures/latch/trial/fault remainder
+all zero. B remained 0.3.1 VALID, A remained compatible VALID, OTA was IDLE,
+NVS/LittleFS/gauge/RTC diagnostics worked, and RTC OS=0 with system time equal
+to RTC at that sample. This does not establish host-UTC accuracy or resolve the
+historical clock discrepancy. After reboot completed=0 with the staged file
+still present: no application autostart occurred. No panic/brownout markers
+appeared in the bounded acceptance logs; no fault injection was performed.
+
+Raw logs, frozen binaries/configs, scripts and JSON evidence are outside Git:
+`/mnt/Dane/Development/roundie-backups/elf-3a-2026-10-19/`; final corrected
+acceptance is in `fix-0.3.1/`. Implementation commits: `43682c9`; measured
+alignment correction: `e1b47bb`. No remote push was performed.
+
+**Pending beyond this bounded gate:** cache/Flash concurrency and XIP comparison,
+large/long-lived apps and fragmentation, non-returning/faulting applications,
+power interruption/endurance, human display/touch responsiveness measurements,
+allocator behavior beyond the documented limits, and full libc/TLS support.
+No hardware isolation, production trust policy or full runtime is claimed.
 Historical OTA/recovery/RTC evidence stays in its original documents.
 
 Full runtime/events, GUI/hardware resources, packages/signatures/registry/MTP,

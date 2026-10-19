@@ -1,5 +1,11 @@
 # Milestone 2C.1 — local A/B firmware updates
 
+**Later 3A checkpoint, 2026-10-19:** B 0.3.1 is VALID/running, with original
+A 0.2.5 VALID/fallback. Native development sessions are gated against pending
+verification/active OTA; OTA mutations are gated against ELF transfers/execution.
+See [3A physical evidence](elf-loader.md#final-physical-acceptance--031).
+The milestone-specific checkpoints below remain historical.
+
 **Milestone 2C.2 extension:** [BootGuard](boot-guard.md) and
 [Safe Mode](safe-mode.md) add recovery for confirmed firmware without
 automatic invalidation or slot switching. RS1 explicitly selects only an
