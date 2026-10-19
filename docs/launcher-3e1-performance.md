@@ -121,3 +121,60 @@ identity and static stack gates are recorded with the frozen candidate.
 
 Device deployment, corrected baseline/comparison, measured stack/memory margins
 and final OTA state are PENDING below until actual execution.
+
+## First instrumented candidate and measured scheduling defect
+
+Candidate `a68d0bc`, 729664 bytes, SHA-256
+`f5fbe49a4ae77def5333162326422f801927786d603e04a13f2b15d720ca440a`
+(ELF `efa41c0f72402e90d4b3e317b083a64790dd746febdeb3ca0098ba36b202022c`)
+passed the genuine A OTA, NEW→PENDING_VERIFY→VALID/STABLE. B 0.3.5 remained
+the unchanged compatible image. Four Hello and four UI launches then compared
+two cold/warm cycles at batch four with two at batch twelve on this same image.
+Every selection/button/Back/Exit was INJECTED. Installed name was exactly
+**Roundie Hello Update**, not an assumed name from the example source.
+
+| Boundary, microseconds | Batch 4, two samples | Batch 12, two samples |
+|---|---|---|
+| Hello request→worker-observed clean unload | 139157 / 139317 | 139085 / 139258 |
+| Result object mutation | 1607 / 1592 | 1599 / 1599 |
+| Executable unload→result GUI ready | 177616 / 176850 | 176867 / 176867 |
+| Back publication→launcher GUI ready | 4219 / 4219 | 4186 / 4217 |
+| UI request→observed RUNNING/SHOW | 419411 / 439382 | 349410 / 349409 |
+| Instance enqueue→dequeue observed maximum | 286600 / 306784 | 211459 / 211451 |
+| UI Exit→clean worker observation | 49453 / 39426 | 39427 / 319411 |
+| List publication→GUI ready after UI Exit | 333591 / 4391 | 4317 / 333588 |
+
+The final slow Exit followed an explicitly tested suspend/resume; preserve that
+state context rather than combining it with ordinary Exit samples. Batch twelve
+eliminated an intermediate four/five-strip spinner redraw between the initial
+four and remaining two commands. UI readiness improved by 70–90 ms in these
+samples; queue maximum by 75–95 ms. This does not make full redraw fast.
+Both two-second steady idle windows produced zero flushes. The first attempted
+idle window included asynchronous registry publication after INFO scans; that
+assertion and traffic are retained, no application had launched, and sampling
+continued after presentation settled without a reset or counter reset.
+
+The UI full-screen traces contain 18 flushes / 129600 pixels and handlers of
+345021–355863 us. Batch-twelve examples had flush-entry→ISR sums of
+178370/178371 us but GUI notification wait sums of 279476/279450 us.
+Source inspection of pinned `esp_lcd_panel_io_spi.c:lcd_spi_post_trans_color_cb`
+shows it calls `on_color_trans_done` **without using the bool return**. The
+application previously returned `higher_priority_woken` expecting the driver
+to request a switch. Thus a notified GUI can wait for the next 100 Hz tick on
+each strip; the trace contains roughly 100 ms of avoidable post-DMA scheduling.
+This is a demonstrated source defect with a hardware-supported causal inference;
+the exact isolated historical 517828 us sample had no stage trace and cannot
+be uniquely reconstructed. Current traces place large delays in queued work
+behind serialized GUI render/transfer, not in the 1–2 ms label mutation itself.
+
+A focused correction explicitly requests `portYIELD_FROM_ISR` after notifying
+GUI. Xtensa defers the task switch to ISR exit; existing notification wait and
+LVGL flushing ownership remain unchanged. The SPI clock, buffer placement,
+refresh period, priorities and managed IDF sources stay unchanged. A production
+callback C test checks completion timestamp publication, notification, and
+conditional switch request under ASan/UBSan. This measured defect justifies a
+second bounded candidate/OTA within 3E.1: use existing Safe Mode selection to
+boot preserved B, confirm B normally, then genuine OTA to inactive A again.
+No active image, B application bytes, bootloader or partition table are written.
+The first frozen artifact and all measurements remain preserved. Final-candidate
+hardware effect is PENDING until the comparison below.

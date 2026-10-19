@@ -558,6 +558,11 @@ static bool lcd_transfer_done(esp_lcd_panel_io_handle_t io,
     portEXIT_CRITICAL_ISR(&state->dma_lock);
     BaseType_t higher_priority_woken = pdFALSE;
     vTaskNotifyGiveFromISR(state->gui_task, &higher_priority_woken);
+    /* IDF v6.1's SPI panel IO discards the color callback's bool return.
+     * Request the deferred ISR-exit switch here, otherwise a blocked GUI may
+     * wait until the next 100 Hz tick for every strip. DMA already completed;
+     * the existing GUI wait callback still controls buffer reuse. */
+    portYIELD_FROM_ISR(higher_priority_woken);
     return higher_priority_woken == pdTRUE;
 }
 
