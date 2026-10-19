@@ -13,6 +13,7 @@
 #include "roundie_ota_protocol.h"
 #include "elf_diagnostics.h"
 #include "storage_diagnostics.h"
+#include "roundie_launcher.h"
 
 bool roundie_packages_allowed(void)
 {
@@ -95,6 +96,75 @@ static void json_text(char out[ROUNDIE_PACKAGE_NAME * 2 + 1], const char *name)
     out[used] = '\0';
 }
 
+static bool navigation_number(const char **text, uint32_t *value)
+{
+    const char *cursor = *text;
+    if (*cursor < '0' || *cursor > '9') {
+        return false;
+    }
+    uint32_t number = 0;
+    while (*cursor >= '0' && *cursor <= '9') {
+        uint32_t digit = (uint32_t)(*cursor++ - '0');
+        if (number > (UINT32_MAX - digit) / 10) {
+            return false;
+        }
+        number = number * 10 + digit;
+    }
+    *value = number;
+    *text = cursor;
+    return true;
+}
+
+static bool navigation_command(const char *operation, const roundie_ota_command_t *command,
+                               esp_err_t parsed)
+{
+    if (strcmp(operation, "NAV") != 0 && strcmp(operation, "REFRESH") != 0 &&
+        strncmp(operation, "SELECT ", 7) != 0 && strncmp(operation, "EXIT ", 5) != 0) {
+        return false;
+    }
+    esp_err_t result = parsed;
+    if (result == ESP_OK && strcmp(operation, "REFRESH") == 0) {
+        result = roundie_launcher_refresh();
+    } else if (result == ESP_OK && strncmp(operation, "SELECT ", 7) == 0) {
+        uint32_t revision;
+        const char *id = operation + 7;
+        if (!navigation_number(&id, &revision) || *id++ != ' ' || !roundie_package_id_valid(id)) {
+            result = ESP_ERR_INVALID_ARG;
+        } else {
+            /* Development semantic selection, same mailbox as real touch. */
+            result = roundie_elf_policy_allowed() ? roundie_launcher_select(id, revision, 2) :
+                ESP_ERR_INVALID_STATE;
+        }
+    } else if (result == ESP_OK && strncmp(operation, "EXIT ", 5) == 0) {
+        uint32_t generation;
+        const char *end = operation + 5;
+        result = navigation_number(&end, &generation) && *end == '\0' ?
+            roundie_launcher_exit(generation) : ESP_ERR_INVALID_ARG;
+    }
+    static roundie_launcher_status_t navigation;
+    roundie_launcher_status(&navigation);
+    static char reply[1400];
+    int length = snprintf(reply, sizeof(reply),
+        "\n!RP1 %s %d {\"nav\":%u,\"revision\":%" PRIu32 ",\"request\":%" PRIu32
+        ",\"generation\":%" PRIu32 ",\"count\":%" PRIu32 ",\"selected\":\"%s\","
+        "\"pending\":[%u,%u],\"foreground\":%u,\"input\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],"
+        "\"result\":[%" PRId32 ",%" PRId32 ",%" PRId32 "],"
+        "\"us\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+        ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"gui\":[%" PRIu32 ",%" PRIu32 "],\"discovery_flushes\":%" PRIu32 ",\"stack_min\":%u}\n",
+        command->id, (int)result, (unsigned)navigation.state, navigation.revision, navigation.request,
+        navigation.generation, navigation.count, navigation.selected, navigation.launch_pending,
+        navigation.exit_pending, navigation.foreground, navigation.physical, navigation.injected,
+        navigation.rejected, navigation.launch_result, navigation.unload_result, navigation.app_result,
+        navigation.refresh_us, navigation.copy_us, navigation.enqueue_max_us, navigation.admission_us,
+        navigation.started_us, navigation.exit_admission_us, navigation.return_us, navigation.gui_create_us,
+        navigation.gui_latency_max_us, navigation.gui_objects, navigation.pool_free, navigation.discovery_flushes,
+        (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    if (length > 0 && (size_t)length < sizeof(reply)) {
+        usb_serial_jtag_write_bytes(reply, (size_t)length, pdMS_TO_TICKS(100));
+    }
+    return true;
+}
+
 void roundie_package_command(char *line, bool discard)
 {
     roundie_package_poll(esp_timer_get_time());
@@ -103,6 +173,15 @@ void roundie_package_command(char *line, bool discard)
     size_t length = strlen(line);
     if (length >= 14 && length - 14 < sizeof(operation)) {
         memcpy(operation, line + 14, length - 14 + 1);
+    }
+    char navigation_frame[21];
+    if (length >= 14) {
+        memcpy(navigation_frame, line, 14);
+        memcpy(navigation_frame + 14, "STATUS", 7);
+        esp_err_t parsed = roundie_transfer_parse(navigation_frame, discard, "!RP1 ", "INSTALL", &command);
+        if (navigation_command(operation, &command, parsed)) {
+            return;
+        }
     }
     bool list = strcmp(operation, "LIST") == 0;
     bool info = strncmp(operation, "INFO ", 5) == 0;

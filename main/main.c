@@ -32,6 +32,7 @@
 #include "recovery_diagnostics.h"
 #include "elf_diagnostics.h"
 #include "package_diagnostics.h"
+#include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
@@ -399,6 +400,10 @@ static void sensor_worker(void *argument)
 #if CONFIG_ROUNDIE_DEV_ELF
         roundie_elf_poll(esp_timer_get_time());
         roundie_package_poll(esp_timer_get_time());
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        roundie_launcher_poll(roundie_elf_policy_allowed(),
+            roundie_elf_transfer_busy() || roundie_packages_busy());
+#endif
 #endif
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
         if (serial_fd >= 0) {
@@ -931,6 +936,11 @@ void app_main(void)
     }
     make_screen(&state, &status, flash_bytes, psram_bytes);
     roundie_ui_gui_bind();
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+    if (!roundie_recovery_active()) {
+        roundie_launcher_gui_bind();
+    }
+#endif
     bool recovery_screen = roundie_recovery_active();
     if (!recovery_screen) {
         update_sensor_labels(&state);
@@ -961,6 +971,9 @@ void app_main(void)
             roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
         }
         roundie_ui_gui_pump();
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        roundie_launcher_gui_pump(roundie_recovery_active());
+#endif
         roundie_ui_display_progress(state.completed_transfers, state.transfer_errors);
         roundie_ui_status_t app_ui;
         roundie_ui_status(&app_ui);

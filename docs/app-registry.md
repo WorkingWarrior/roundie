@@ -49,3 +49,13 @@ separate durable activation mechanism without creating a multi-version database.
 No application autostarts after normal restart, OTA, rollback or Safe Mode.
 See [package format](package-format.md), [transactions](package-manager.md) and
 [acceptance evidence](packages-milestone-3d-acceptance.md).
+
+## Milestone 3E presentation
+
+Successful scans now advance a volatile cache revision; persistence is unchanged.
+The [system launcher](app-launcher.md) copies bounded metadata on the same worker
+and observes revision changes after installation, update, removal or diagnostic
+scans. Failed refresh preserves its previous display but closes selection until
+controlled retry. Selection includes exact ID and presentation revision;
+PackageManager still rescans and fully validates every launch. No GUI filesystem
+access or second persistent registry is introduced.

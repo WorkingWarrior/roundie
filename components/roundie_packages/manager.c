@@ -302,6 +302,9 @@ esp_err_t roundie_packages_scan(void)
     DIR *directory = opendir(PACKAGES_DIRECTORY);
     if (directory == NULL) {
         status.enumeration_us = (uint32_t)(roundie_packages_clock() - started);
+        if (errno == ENOENT) {
+            status.revision++;
+        }
         return errno == ENOENT ? ESP_OK : failed(ESP_FAIL, "registry-open");
     }
     esp_err_t result = ESP_OK;
@@ -356,6 +359,9 @@ esp_err_t roundie_packages_scan(void)
     }
     qsort(registry, status.count, sizeof(registry[0]), compare_records);
     status.enumeration_us = (uint32_t)(roundie_packages_clock() - started);
+    if (result == ESP_OK) {
+        status.revision++;
+    }
     return result;
 }
 

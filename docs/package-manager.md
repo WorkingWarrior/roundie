@@ -1,5 +1,11 @@
 # PackageManager — Milestone 3D
 
+Milestone 3E adds [launcher selection](app-launcher.md) through the existing
+launch-by-ID function and [system navigation diagnostics](system-navigation.md).
+RPK1/RPA1, artifact selection, storage/Flash exclusion and validation are
+unchanged. Successful cache scans publish a volatile revision for UI refresh;
+no revision is written to Flash. The existing 12 KiB worker stack is retained.
+
 `components/roundie_packages` owns persisted RPK1 artifacts and bounded
 installation state. ELFManager/executor still own executable instances; the
 GUI bridge still owns LVGL objects. No new task, thread, filesystem mount,

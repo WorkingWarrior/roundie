@@ -1,5 +1,12 @@
 # Milestone 3C — system-owned application UI
 
+Milestone 3E adds a separate [system launcher](app-launcher.md) and
+[Exit chrome](system-navigation.md), owned by the same GUI task. Neither is
+an app widget or ResourceManager resource. The bridge's captured system screen
+is normally the launcher; its deletion barrier remains unchanged. The top
+central 60-pixel navigation safe area avoids the existing example's content;
+ABI 3 geometry, descriptors and commands remain unchanged.
+
 ## Architecture decision (2026-10-19)
 
 REP §§5–10 and 12 already require asynchronous UI commands, generation-owned

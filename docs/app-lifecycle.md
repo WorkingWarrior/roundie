@@ -1,5 +1,11 @@
 # Milestone 3B: event-driven native application lifecycle
 
+Milestone 3E's [system navigation](system-navigation.md) submits the existing
+UNLOAD control and observes its completed runtime/UI/input retirement before
+reopening launcher selection. Exit works from RUNNING or SUSPENDED; duplicate
+requests are rejected. It does not introduce an application execution state
+machine or forcibly terminate native callbacks.
+
 Milestone 3D adds [explicit launch by installed ID](app-registry.md). Packages
 remain persistent after stop/unload; runtime input is separately allocated and
 owned by the existing executor generation. ABI 1 uses RUN, ABI 2/3 use START.

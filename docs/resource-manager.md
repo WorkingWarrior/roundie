@@ -1,5 +1,10 @@
 # Milestone 3B resource ownership
 
+**Milestone 3E:** the [launcher and navigation chrome](system-navigation.md)
+are persistent system resources. Their LVGL objects and metadata snapshot are
+accounted separately from the generation-owned application resources below.
+Application unload must reach zero resources without deleting the launcher.
+
 **Milestone 3C extension:** [UI ownership](app-ui.md) tracks generation-owned
 logical view/label/button slots, input registrations and copied GUI commands.
 These counters join runtime resource diagnostics for ABI 3. UI teardown must

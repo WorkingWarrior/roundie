@@ -26,3 +26,5 @@ class AppUiTests(unittest.TestCase):
             subprocess.run(["cmake", "--build", str(build / "host"), "-j", "8"],
                            check=True, capture_output=True)
             subprocess.run([str(build / "host/ui_tests"), *examples], check=True, timeout=20)
+            subprocess.run([str(build / "host/launcher_tests")], check=True, timeout=20)
+            subprocess.run([str(build / "host/launcher_tests"), "low-memory"], check=True, timeout=20)

@@ -5,6 +5,32 @@
 #include "test_elf.c"
 #undef main
 #include "lvgl.h"
+#include "roundie_launcher.h"
+
+static roundie_packages_status_t launcher_packages;
+unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task) { (void)task; return 4096; }
+void roundie_packages_status(roundie_packages_status_t *out) { *out = launcher_packages; }
+esp_err_t roundie_packages_scan(void)
+{
+    launcher_packages.count = 1;
+    launcher_packages.revision++;
+    return ESP_OK;
+}
+esp_err_t roundie_packages_get(unsigned index, roundie_package_record_t *out)
+{
+    assert(index == 0);
+    *out = (roundie_package_record_t){.health = ROUNDIE_PACKAGE_OK};
+    strcpy(out->metadata.id, "org.roundie.ui");
+    strcpy(out->metadata.name, "Roundie UI");
+    out->metadata.version[0] = 1;
+    out->metadata.abi = 3;
+    return ESP_OK;
+}
+esp_err_t roundie_packages_launch(const char *id)
+{
+    assert(strcmp(id, "org.roundie.ui") == 0);
+    return roundie_elf_prepare() ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
 
 static bool stall_gui;
 static unsigned fault;
@@ -295,6 +321,48 @@ int main(int argc, char **argv)
         assert(ui_status().outstanding == 0 && ui_status().widgets == 0 && ui_status().pending == 0);
         assert(lv_screen_active() == home);
     }
+    /* Launcher stays outside app resource ownership through a real production
+     * runtime/UI destroy barrier. Package resolution/loader remain mocked. */
+    fault = 0;
+    current_task = (void *)2;
+    roundie_launcher_gui_bind();
+    current_task = (void *)1;
+    roundie_elf_set_allowed(true);
+    roundie_launcher_poll(true, false);
+    current_task = (void *)2;
+    roundie_launcher_gui_pump(false);
+    home = lv_screen_active();
+    static roundie_launcher_status_t navigation;
+    roundie_launcher_status(&navigation);
+    assert(navigation.count == 1 && navigation.foreground);
+    assert(roundie_launcher_select("org.roundie.ui", navigation.revision, 1) == ESP_OK);
+    current_task = (void *)1;
+    roundie_launcher_poll(true, false);
+    assert(status.state == ROUNDIE_ELF_LOADING);
+    assert(roundie_elf_execute(fixture, fixture_size));
+    roundie_launcher_poll(true, false);
+    current_task = (void *)2;
+    roundie_launcher_gui_pump(false);
+    assert(lv_screen_active() != home && lv_obj_is_valid(home));
+    lv_obj_t *exit = lv_obj_get_child(lv_layer_top(), 0);
+    assert(!lv_obj_has_flag(exit, LV_OBJ_FLAG_HIDDEN));
+    unsigned delivered = status.ui_delivered;
+    lv_obj_send_event(exit, LV_EVENT_CLICKED, NULL);
+    assert(status.ui_delivered == delivered && status.state == ROUNDIE_ELF_RUNNING);
+    current_task = (void *)1;
+    roundie_launcher_poll(true, false);
+    assert(!roundie_ui_input(status.instance, ui_status().button, REP3_ORIGIN_TOUCH));
+    roundie_elf_step(esp_timer_get_time());
+    roundie_launcher_poll(true, false);
+    current_task = (void *)2;
+    roundie_launcher_gui_pump(false);
+    roundie_launcher_status(&navigation);
+    assert(navigation.state == ROUNDIE_NAV_LIST && navigation.foreground);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && ui_status().outstanding == 0);
+    assert(lv_screen_active() == home && lv_obj_is_valid(exit));
+    roundie_elf_status_t final_runtime;
+    roundie_elf_status(&final_runtime);
+    assert(final_runtime.resources_outstanding == 0);
     lv_deinit();
     puts("ABI3 production runtime + bridge + LVGL: lifecycle, input, no recursion, full FIFO, recovery, delayed barrier PASS (host C callbacks, mocked loader)");
     return 0;

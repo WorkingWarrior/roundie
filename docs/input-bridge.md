@@ -1,5 +1,11 @@
 # Milestone 3C — touch/input bridge
 
+Milestone 3E [system navigation](system-navigation.md) uses separate LVGL row
+and Exit callbacks. They submit copied system requests and never become ABI 3
+button events. Navigation resets the existing input devices and waits for
+release. The single CST816S acquisition owner and app-event bridge below remain
+unchanged. Launcher SELECT injection is counted separately from physical rows.
+
 The existing CST816S acquisition and LVGL pointer input remain the sole input
 path. Orientation and coordinate mapping are unchanged. LVGL hit testing selects
 the system-owned application button. Its CLICKED callback passes only the

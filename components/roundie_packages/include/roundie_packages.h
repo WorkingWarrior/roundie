@@ -24,6 +24,7 @@ typedef struct {
     size_t total;
     unsigned count;
     unsigned orphans;
+    uint32_t revision; /* Successful cache publication; internal, not persisted. */
     uint32_t upload_us;
     uint32_t validation_us;
     uint32_t commit_us;
