@@ -43,7 +43,7 @@ static const char *string(const uint8_t *bytes, const Elf32_Shdr *strings, uint3
 
 bool roundie_elf_import_allowed(const char *name)
 {
-    return name != NULL && strcmp(name, "rep_abi_v1") == 0;
+    return name != NULL && (strcmp(name, "rep_abi_v1") == 0 || strcmp(name, "rep_abi_v2") == 0);
 }
 
 bool roundie_elf_validate(const void *input, size_t size, roundie_elf_info_t *out,
@@ -109,8 +109,10 @@ bool roundie_elf_validate(const void *input, size_t size, roundie_elf_info_t *ou
             uint32_t words[3];
             CHECK(current.sh_type == SHT_PROGBITS && current.sh_size == sizeof(words), "ABI-metadata");
             memcpy(words, bytes + current.sh_offset, sizeof(words));
-            CHECK(words[0] == UINT32_C(0x31504552) && words[1] == REP_ABI_VERSION && words[2] == 12,
+            CHECK(words[0] == UINT32_C(0x31504552) &&
+                  (words[1] == REP_ABI_VERSION || words[1] == 2) && words[2] == 12,
                   "ABI-version");
+            out->abi_version = words[1];
             metadata++;
         }
         for (int j = 0; j < 5; j++) {
@@ -171,13 +173,14 @@ bool roundie_elf_validate(const void *input, size_t size, roundie_elf_info_t *ou
             CHECK(name != NULL, "symbol-name-bounds");
             CHECK(ELF32_ST_TYPE(symbol.st_info) != STT_TLS, "TLS-symbol");
             if (symbol.st_shndx == SHN_UNDEF && name[0] != '\0') {
-                if (!roundie_elf_import_allowed(name)) {
+                if (!roundie_elf_import_allowed(name) ||
+                    strcmp(name, out->abi_version == 1 ? "rep_abi_v1" : "rep_abi_v2") != 0) {
                     snprintf(error, ROUNDIE_ELF_ERROR_SIZE, "import:%.64s", name);
                     return false;
                 }
                 out->imports++;
             }
-            if (strcmp(name, "rep_app_entry") == 0) {
+            if (strcmp(name, out->abi_version == 1 ? "rep_app_entry" : "rep_app_entry_v2") == 0) {
                 CHECK(symbol.st_value == header.e_entry && ELF32_ST_TYPE(symbol.st_info) == STT_FUNC &&
                       symbol.st_shndx < header.e_shnum && symbol.st_shndx != SHN_UNDEF, "entry-symbol");
                 entry_symbol = true;

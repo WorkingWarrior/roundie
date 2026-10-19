@@ -19,6 +19,21 @@ static unsigned writes, commits, resets, selections;
 static esp_reset_reason_t raw_reset;
 static char response[1200];
 static roundie_ota_status_t ota;
+static bool elf_busy;
+static bool elf_allowed;
+static bool finish_during_poll;
+
+void mock_log(const char *tag, const char *format, ...) { (void)tag; (void)format; }
+bool roundie_elf_development_busy(void) { return elf_busy; }
+void roundie_elf_set_allowed(bool allowed) { elf_allowed = allowed; }
+void roundie_elf_poll(int64_t now)
+{
+    (void)now;
+    if (finish_during_poll) {
+        elf_busy = false;
+    }
+}
+int64_t esp_timer_get_time(void) { return 100; }
 
 esp_err_t nvs_open(const char *name, unsigned mode, nvs_handle_t *handle)
 {
@@ -89,6 +104,9 @@ static void fresh(void)
     blob_present = false;
     nvs_ok = write_ok = true;
     writes = commits = resets = selections = 0;
+    elf_busy = false;
+    elf_allowed = true;
+    finish_during_poll = false;
     memset(blob, 0, sizeof(blob));
     start(ROUNDIE_RESET_POWER);
     ota = (roundie_ota_status_t){.initialized = true, .boot_checked = true, .boot_passed = true};
@@ -262,6 +280,25 @@ int main(void)
     assert(!command(fault, false) && resets == 0 && !roundie_boot_fault_arm());
     assert(!roundie_boot_fault_step(true));
 #endif
+    fresh();
+    stable();
+    elf_busy = true;
+    assert(command("REQUEST", false));
+    assert(status().safe && !elf_allowed && resets == 0 && writes == 0 && commits == 0);
+    assert(!command("CLEAR", false) && !command("REBOOT", false));
+    roundie_recovery_poll(100);
+    assert(writes == 0 && commits == 0 && resets == 0);
+    elf_busy = false; /* Callback returned and executor completed teardown. */
+    roundie_recovery_poll(100);
+    assert(writes == 1 && commits == 1 && resets == 1);
+    fresh();
+    stable();
+    elf_busy = true;
+    finish_during_poll = true; /* Teardown races REQUEST before its reply. */
+    assert(command("REQUEST", false));
+    assert(!elf_busy && writes == 0 && resets == 0);
+    roundie_recovery_poll(100);
+    assert(writes == 1 && commits == 1 && resets == 1);
     for (int reason = ESP_RST_UNKNOWN; reason <= ESP_RST_CPU_LOCKUP; reason++) {
         raw_reset = (esp_reset_reason_t)reason;
         assert(roundie_boot_reset_class() <= ROUNDIE_RESET_EXTERNAL);

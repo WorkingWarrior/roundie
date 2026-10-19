@@ -19,6 +19,18 @@ def status():
 
 
 class ElfToolTests(unittest.TestCase):
+    def test_lifecycle_completion_and_no_retry_on_lost_ack(self):
+        active = status()
+        active.update(abi=2, state=3, busy=1, control=[1, 0, 0])
+        stopped = dict(active, state=11, control=[1, 1, 0])
+        with patch.object(elf, "request", side_effect=[active, stopped]) as request:
+            self.assertEqual(elf.control(object(), "STOP", 1)["state"], 11)
+            self.assertEqual([c.args[1] for c in request.call_args_list], ["STOP 1", "STATUS"])
+        with patch.object(elf, "request", side_effect=elf.TransportError("lost ack")) as request:
+            with self.assertRaises(elf.TransportError):
+                elf.control(object(), "UNLOAD", 1)
+            self.assertEqual(request.call_count, 1)
+
     def test_addressed_response_and_logs(self):
         data = status()
         line = b"!RE1 12345678 0 " + json.dumps(data).encode() + b"\n"
@@ -27,7 +39,7 @@ class ElfToolTests(unittest.TestCase):
         self.assertIsNone(elf.parse_reply(b"application exited successfully\n", "12345678"))
 
     def test_malformed_and_device_refusal(self):
-        for key, value in (("busy", 2), ("state", 6), ("total", 65537),
+        for key, value in (("busy", 2), ("state", 12), ("total", 65537),
                            ("before", []), ("app_result", "42"), ("session", "../file")):
             with self.subTest(key=key):
                 data = status()

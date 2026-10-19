@@ -42,7 +42,7 @@ def parse_reply(line, request_id):
     if not line.startswith(prefix):
         return None
     try:
-        if len(line) > 1400 or not line.endswith(b"\n"):
+        if len(line) > 2048 or not line.endswith(b"\n"):
             raise ValueError("length/framing")
         code, raw = line[len(prefix):].split(b" ", 1)
         if re.fullmatch(rb"-?[0-9]{1,10}", code) is None:
@@ -59,12 +59,28 @@ def parse_reply(line, request_id):
                     "alloc_peak", "calls", "load_us", "execute_us", "unload_us"):
             if type(status[key]) is not int or not 0 <= status[key] <= 0xffffffff:
                 raise ValueError(key)
-        if not 0 <= status["received"] <= status["total"] <= MAX_FILE or status["state"] > 5:
+        if not 0 <= status["received"] <= status["total"] <= MAX_FILE or status["state"] > 11:
             raise ValueError("progress/state")
-        if re.fullmatch(r"[0-9a-f]{8}", status["session"]) is None or status["abi"] != 1 or status["loader"] != "1.3.5":
+        if re.fullmatch(r"[0-9a-f]{8}", status["session"]) is None or status["abi"] not in (0, 1, 2) or status["loader"] != "1.3.5":
             raise ValueError("session/ABI/loader")
         if any(type(status[key]) is not int for key in ("loader_result", "app_result")) or not isinstance(status["error"], str):
             raise ValueError("result/error")
+        if "resources" in status:
+            resources = status["resources"]
+            control = status["control"]
+            if (not isinstance(resources, list) or len(resources) != 4 or
+                    any(type(v) is not int or not 0 <= v <= 0xffffffff for v in resources) or
+                    resources[0] != sum(resources[1:]) or
+                    not isinstance(control, list) or len(control) != 3 or
+                    any(type(v) is not int for v in control) or not 0 <= control[1] <= control[0] <= 0xffffffff):
+                raise ValueError("resource/control accounting")
+            for key in ("callbacks", "callback_max_us", "init_us", "suspend_us", "resume_us", "shutdown_us",
+                        "events", "ticks", "users", "value", "latency_max_us", "queue", "dropped",
+                        "coalesced", "rejected", "timer", "subscriptions"):
+                if type(status[key]) is not int or not 0 <= status[key] <= 0xffffffff:
+                    raise ValueError(key)
+            if status["queue"] > 8 or status["subscriptions"] > 1 or status["events"] != status["ticks"] + status["users"]:
+                raise ValueError("event accounting")
     except (ValueError, TypeError, KeyError) as error:
         raise TransportError(f"malformed ELF response: {error}") from error
     if int(code) != 0:
@@ -76,7 +92,7 @@ def request(port, operation, timeout=8):
     request_id = secrets.token_hex(4)
     deadline = time.monotonic() + timeout
     write_command(port, f"!RE1 {request_id} {operation}")
-    return parse_reply(read_serial_reply(port, f"!RE1 {request_id} ".encode(), deadline, 1400), request_id)
+    return parse_reply(read_serial_reply(port, f"!RE1 {request_id} ".encode(), deadline, 2048), request_id)
 
 
 def upload(port, path, info):
@@ -130,14 +146,54 @@ def run(port, digest):
         time.sleep(0.05)
 
 
+def wait_state(port, instance, state, control=None, timeout=4):
+    deadline = time.monotonic() + timeout
+    while True:
+        result = request(port, "STATUS", timeout=1)
+        if result["instance"] != instance:
+            raise DeviceError("application identity changed")
+        complete = control is None or result["control"][1] == control
+        if complete and result["state"] == state and (state != 0 or not result["busy"]):
+            if result["error"] or result["over_budget"] or (control is not None and result["control"][2] != 0):
+                raise DeviceError(f"application failed: {result}")
+            return result
+        if result["state"] == 0 and state != 0:
+            raise DeviceError(f"application unloaded before requested state: {result}")
+        if time.monotonic() >= deadline:
+            raise DeviceError("lifecycle still pending; no forced unload or mutation retry attempted")
+        time.sleep(0.02)
+
+
+def start(port, digest):
+    if HEX64.fullmatch(digest) is None:
+        raise DeviceError("provide exact ELF file SHA-256")
+    submitted = request(port, f"START {digest}")
+    return wait_state(port, submitted["instance"], 3)
+
+
+def control(port, operation, instance):
+    if operation not in ("SUSPEND", "RESUME", "STOP", "UNLOAD") or not 1 <= instance <= 0xffffffff:
+        raise DeviceError("invalid lifecycle operation/instance")
+    submitted = request(port, f"{operation} {instance}")
+    state = dict(SUSPEND=9, RESUME=3, STOP=11, UNLOAD=0)[operation]
+    return wait_state(port, instance, state, submitted["control"][0])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("resources")
     for name in ("inspect", "upload"):
         commands.add_parser(name).add_argument("file", type=Path)
     commands.add_parser("run").add_argument("--sha256", required=True)
+    commands.add_parser("start").add_argument("--sha256", required=True)
+    for operation in ("suspend", "resume", "stop", "unload", "event"):
+        command = commands.add_parser(operation)
+        command.add_argument("--instance", type=int, required=True)
+        if operation == "event":
+            command.add_argument("--value", type=int, required=True)
     commands.add_parser("abort").add_argument("--session", required=True)
     args = parser.parse_args(argv)
     try:
@@ -153,12 +209,20 @@ def main(argv=None):
                 result["artifact"] = info
             elif args.command == "run":
                 result = run(port, args.sha256)
+            elif args.command == "start":
+                result = start(port, args.sha256)
+            elif args.command in ("suspend", "resume", "stop", "unload"):
+                result = control(port, args.command.upper(), args.instance)
+            elif args.command == "event":
+                if not 1 <= args.instance <= 0xffffffff or not 0 <= args.value <= 0xffffffff:
+                    raise DeviceError("invalid event instance/value")
+                result = request(port, f"EVENT {args.instance} {args.value}")
             elif args.command == "abort":
                 if re.fullmatch(r"[0-9a-f]{8}", args.session) is None or args.session == "00000000":
                     raise DeviceError("invalid session")
                 result = request(port, f"ABORT {args.session}")
             else:
-                result = request(port, "STATUS")
+                result = request(port, "RESOURCES" if args.command == "resources" else "STATUS")
         print(json.dumps(result, indent=2))
         return 0
     except TransportError as error:

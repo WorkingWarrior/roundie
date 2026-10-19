@@ -60,8 +60,12 @@ void roundie_recovery_poll(int64_t now_us)
 #if CONFIG_ROUNDIE_DEV_ELF
     if (deferred_safe_restart && !roundie_elf_development_busy()) {
         deferred_safe_restart = false;
-        roundie_boot_planned_restart();
-        esp_restart();
+        if (roundie_boot_persistence_sync()) {
+            roundie_boot_planned_restart();
+            esp_restart();
+        } else {
+            ESP_LOGE("recovery", "Deferred Safe Mode persistence failed; restart refused");
+        }
         return;
     }
 #endif
@@ -73,7 +77,13 @@ void roundie_recovery_poll(int64_t now_us)
         roundie_boot_operational(now_us, true);
     }
     roundie_boot_tick(now_us);
+#if CONFIG_ROUNDIE_DEV_ELF
+    if (!roundie_elf_development_busy()) {
+        roundie_boot_persistence_sync();
+    }
+#else
     roundie_boot_persistence_sync();
+#endif
 }
 
 void roundie_recovery_command(char *line, bool discard)
@@ -97,6 +107,10 @@ void roundie_recovery_command(char *line, bool discard)
                 roundie_ota_status(&ota);
                 bool idle_valid = ota.initialized && ota.running.state == ESP_OTA_IMG_VALID &&
                     ota.phase == ROUNDIE_OTA_IDLE;
+                bool app_idle = true;
+#if CONFIG_ROUNDIE_DEV_ELF
+                app_idle = !roundie_elf_development_busy();
+#endif
                 if (strcmp(operation, "STATUS") == 0 || strcmp(operation, "SLOT STATUS") == 0) {
                     error = ESP_OK;
                 } else if (strcmp(operation, "REQUEST") == 0 && idle_valid) {
@@ -105,17 +119,19 @@ void roundie_recovery_command(char *line, bool discard)
                     roundie_elf_set_allowed(false);
                     roundie_elf_poll(esp_timer_get_time());
 #endif
-                    error = roundie_boot_persistence_sync() ? ESP_OK : ESP_FAIL;
+                    /* NVS commit is a Flash write too. REQUEST first closes
+                     * admission; persistence/restart follow completed teardown. */
+                    error = app_idle ? (roundie_boot_persistence_sync() ? ESP_OK : ESP_FAIL) : ESP_OK;
                     /* Enter recovery through the early boot path. No GUI work
                      * or storage teardown is performed by the USB owner. */
                     restart = error == ESP_OK;
 #if CONFIG_ROUNDIE_DEV_ELF
-                    if (restart && roundie_elf_development_busy()) {
+                    if (restart && !app_idle) {
                         deferred_safe_restart = true;
                         restart = false;
                     }
 #endif
-                } else if (strcmp(operation, "CLEAR") == 0 && idle_valid && roundie_boot_clear()) {
+                } else if (strcmp(operation, "CLEAR") == 0 && idle_valid && app_idle && roundie_boot_clear()) {
                     error = roundie_boot_persistence_sync() ? ESP_OK : ESP_FAIL;
                 } else if (strcmp(operation, "REBOOT") == 0 && roundie_recovery_active() &&
                            roundie_recovery_restart_allowed()) {
@@ -126,14 +142,14 @@ void roundie_recovery_command(char *line, bool discard)
                     }
                     restart = error == ESP_OK;
                 } else if (strncmp(operation, "SELECT ", 7) == 0 && length == 14 + 7 + 5 + 1 + 64 &&
-                           roundie_recovery_active() && idle_valid && operation[12] == ' ') {
+                           roundie_recovery_active() && idle_valid && app_idle && operation[12] == ' ') {
                     char label[6];
                     memcpy(label, operation + 7, 5);
                     label[5] = '\0';
                     error = roundie_ota_select_valid(label, operation + 13);
 #if CONFIG_ROUNDIE_BOOT_GUARD_TEST
                 } else if (strncmp(operation, "FAULT ", 6) == 0 && length == 14 + 6 + 64 &&
-                           idle_valid && strcmp(operation + 6, ota.running.elf) == 0 && roundie_boot_fault_arm()) {
+                           idle_valid && app_idle && strcmp(operation + 6, ota.running.elf) == 0 && roundie_boot_fault_arm()) {
                     fault = roundie_boot_fault_step(true);
                     error = fault ? ESP_OK : ESP_ERR_INVALID_STATE;
 #endif

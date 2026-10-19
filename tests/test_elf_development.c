@@ -11,7 +11,7 @@ static bool mounted = true;
 static bool app_busy;
 static bool allow;
 static int64_t clock_us = 100000;
-static char response[1400];
+static char response[2048];
 static unsigned submissions;
 static unsigned heap_live;
 static uint8_t fixture[ROUNDIE_ELF_MAX_FILE];
@@ -47,6 +47,20 @@ esp_err_t roundie_elf_submit(uint8_t *bytes, size_t size)
     submissions++;
     heap_caps_free(bytes);
     return ESP_OK;
+}
+esp_err_t roundie_elf_start(uint8_t *bytes, size_t size)
+{
+    return roundie_elf_submit(bytes, size);
+}
+esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation)
+{
+    (void)operation;
+    return allow && instance == 42 ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+esp_err_t roundie_elf_post(uint32_t instance, uint32_t value)
+{
+    (void)value;
+    return allow && instance == 42 ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 int usb_serial_jtag_write_bytes(const void *bytes, size_t length, TickType_t timeout)
 {
@@ -123,6 +137,18 @@ int main(int argc, char **argv)
     strcpy(ota.boot, "ota_1");
     boot.stage = ROUNDIE_BOOT_STABLE;
     assert(command("STATUS") == ESP_OK && allow);
+    assert(command("RESOURCES") == ESP_OK);
+    assert(command("EVENT 42 4294967295") == ESP_OK);
+    assert(command("EVENT 42 4294967296") == ESP_ERR_INVALID_ARG);
+    assert(command("EVENT 4294967296 1") == ESP_ERR_INVALID_ARG);
+    assert(command("EVENT 0 1") == ESP_ERR_INVALID_ARG);
+    assert(command("EVENT 42 -1") == ESP_ERR_INVALID_ARG);
+    assert(command("EVENT 42 1 extra") == ESP_ERR_INVALID_ARG);
+    assert(command("EVENT  42 1") == ESP_ERR_INVALID_ARG);
+    assert(command("SUSPEND 42") == ESP_OK);
+    assert(command("RESUME 42 ") == ESP_ERR_INVALID_ARG);
+    assert(command("UNLOAD 0") == ESP_ERR_INVALID_ARG);
+    assert(command("STOP 41") == ESP_ERR_INVALID_STATE);
     boot.safe = true;
     assert(command("RUN %s", digest_hex) == ESP_ERR_INVALID_STATE && !allow);
     boot.safe = false;

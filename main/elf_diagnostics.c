@@ -120,7 +120,7 @@ failed:
     return NULL;
 }
 
-static esp_err_t operate(const roundie_ota_command_t *command)
+static esp_err_t operate(const roundie_ota_command_t *command, bool start)
 {
     if (command->operation == ROUNDIE_OTA_STATUS) {
         return ESP_OK;
@@ -168,7 +168,7 @@ static esp_err_t operate(const roundie_ota_command_t *command)
         if (bytes == NULL) {
             return ESP_ERR_INVALID_ARG;
         }
-        esp_err_t error = roundie_elf_submit(bytes, size);
+        esp_err_t error = start ? roundie_elf_start(bytes, size) : roundie_elf_submit(bytes, size);
         if (error != ESP_OK) {
             heap_caps_free(bytes);
         }
@@ -214,13 +214,82 @@ static esp_err_t operate(const roundie_ota_command_t *command)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+static bool decimal(const char **text, uint32_t *value)
+{
+    *value = 0;
+    const char *p = *text;
+    if (*p < '0' || *p > '9') {
+        return false;
+    }
+    while (*p >= '0' && *p <= '9') {
+        uint32_t digit = (uint32_t)(*p - '0');
+        if (*value > (UINT32_MAX - digit) / 10) {
+            return false;
+        }
+        *value = *value * 10 + digit;
+        p++;
+    }
+    *text = p;
+    return true;
+}
+
+static esp_err_t runtime_command(const char *operation)
+{
+    if (strcmp(operation, "RESOURCES") == 0) {
+        return ESP_OK;
+    }
+    static const char *const names[] = {"SUSPEND ", "RESUME ", "STOP ", "UNLOAD ", "EVENT "};
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        size_t length = strlen(names[i]);
+        if (strncmp(operation, names[i], length) != 0) {
+            continue;
+        }
+        const char *argument = operation + length;
+        uint32_t generation;
+        if (!decimal(&argument, &generation) || generation == 0) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (i == 4) {
+            uint32_t value;
+            if (*argument != ' ') {
+                return ESP_ERR_INVALID_ARG;
+            }
+            argument++;
+            if (!decimal(&argument, &value) || *argument != '\0') {
+                return ESP_ERR_INVALID_ARG;
+            }
+            return roundie_elf_post(generation, value);
+        }
+        if (*argument != '\0') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        return roundie_elf_control(generation, (roundie_elf_control_t)(i + 1));
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
 void roundie_elf_command(char *line, bool discard)
 {
     roundie_elf_poll(esp_timer_get_time());
     roundie_ota_command_t command;
-    esp_err_t error = roundie_transfer_parse(line, discard, "!RE1 ", "RUN", &command);
+    /* Save only the bounded runtime operation before the shared transfer parser
+     * tokenizes it. A second STATUS parse validates its exact frame/ID. */
+    char runtime[96] = {0};
+    size_t length_in = strlen(line);
+    bool start = length_in >= 20 && strncmp(line + 14, "START ", 6) == 0;
+    if (length_in >= 14 && length_in - 14 < sizeof(runtime)) {
+        memcpy(runtime, line + 14, length_in - 14 + 1);
+    }
+    esp_err_t error = roundie_transfer_parse(line, discard, "!RE1 ", start ? "START" : "RUN", &command);
     if (error == ESP_OK) {
-        error = operate(&command);
+        error = operate(&command, start);
+    } else if (runtime[0] != '\0' && length_in >= 14) {
+        char frame[21];
+        memcpy(frame, line, 14);
+        memcpy(frame + 14, "STATUS", 7);
+        if (roundie_transfer_parse(frame, discard, "!RE1 ", "RUN", &command) == ESP_OK) {
+            error = runtime_command(runtime);
+        }
     }
     roundie_elf_status_t current;
     roundie_elf_status(&current);
@@ -239,19 +308,34 @@ void roundie_elf_command(char *line, bool discard)
      * free, executable free/largest. Compact arrays keep one bounded reply. */
 #define MF "[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]"
 #define MV(m) (m).internal_free, (m).internal_largest, (m).psram_free, (m).exec_free, (m).exec_largest
-    char response[1400];
+    char response[2048];
     int length = snprintf(response, sizeof(response),
         "\n!RE1 %s %d {\"allowed\":%u,\"busy\":%u,\"session\":\"%08" PRIx32 "\",\"received\":%zu,\"total\":%zu,"
-        "\"state\":%u,\"instance\":%" PRIu32 ",\"completed\":%" PRIu32 ",\"abi\":1,\"loader\":\"1.3.5\","
+        "\"state\":%u,\"instance\":%" PRIu32 ",\"completed\":%" PRIu32 ",\"abi\":%" PRIu32 ",\"loader\":\"1.3.5\","
         "\"code\":%" PRIu32 ",\"data\":%" PRIu32 ",\"alloc\":%" PRIu32 ",\"alloc_peak\":%" PRIu32 ",\"calls\":%" PRIu32 ","
         "\"load_us\":%" PRIu32 ",\"execute_us\":%" PRIu32 ",\"unload_us\":%" PRIu32 ","
         "\"loader_result\":%d,\"app_result\":%" PRId32 ",\"executed\":%u,\"over_budget\":%u,\"error\":\"%s\","
-        "\"before\":" MF ",\"relocated\":" MF ",\"during\":" MF ",\"after\":" MF "}\n",
+        "\"before\":" MF ",\"relocated\":" MF ",\"during\":" MF ",\"after\":" MF ","
+        "\"callbacks\":%" PRIu32 ",\"callback_max_us\":%" PRIu32 ",\"init_us\":%" PRIu32 ","
+        "\"suspend_us\":%" PRIu32 ",\"resume_us\":%" PRIu32 ",\"shutdown_us\":%" PRIu32 ","
+        "\"events\":%" PRIu32 ",\"ticks\":%" PRIu32 ",\"users\":%" PRIu32 ",\"value\":%" PRIu32 ","
+        "\"latency_max_us\":%" PRIu32 ",\"queue\":%" PRIu32 ",\"dropped\":%" PRIu32 ","
+        "\"coalesced\":%" PRIu32 ",\"rejected\":%" PRIu32 ","
+        "\"resources\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],"
+        "\"timer\":%" PRIu32 ",\"subscriptions\":%" PRIu32 ","
+        "\"control\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "]}\n",
         command.id, (int)error, permitted, roundie_elf_development_busy(), session, received, total,
-        (unsigned)current.state, current.instance, current.completed, current.code_bytes, current.data_bytes,
+        (unsigned)current.state, current.instance, current.completed, current.abi_version, current.code_bytes, current.data_bytes,
         current.alloc_bytes, current.alloc_peak, current.api_calls, current.load_us, current.execute_us,
         current.unload_us, current.loader_result, current.app_result, current.executed, current.over_budget,
-        safe_error, MV(current.before), MV(current.relocated), MV(current.during), MV(current.after));
+        safe_error, MV(current.before), MV(current.relocated), MV(current.during), MV(current.after),
+        current.callbacks, current.callback_max_us, current.init_us, current.suspend_us, current.resume_us,
+        current.shutdown_us, current.events_delivered, current.timers_delivered, current.users_delivered,
+        current.last_value, current.latency_max_us, current.queue_depth, current.events_dropped,
+        current.events_coalesced, current.events_rejected, current.resources_acquired,
+        current.resources_released, current.resources_reclaimed, current.resources_outstanding,
+        current.timer_handle, current.subscriptions, current.control_submitted,
+        current.control_completed, current.control_result);
     if (length > 0 && (size_t)length < sizeof(response)) {
         usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
     }

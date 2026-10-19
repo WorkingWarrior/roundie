@@ -1,5 +1,12 @@
 # Native ELF proof — Milestone 3A
 
+**Milestone 3B extension:** [application lifecycle](app-lifecycle.md) retains the
+same pinned 1.3.5 loader, executable-memory/cache path and strict relocation
+preflight. ABI metadata now selects exactly one versioned entry/import pair;
+ABI 1 RUN remains one-shot, ABI 2 START retains the relocated image across
+callbacks. Loaded/suspended/stopped instances exclude RO1/RE1 writes until
+unload. The historical 3A acceptance below is preserved.
+
 **Bounded 3A gate passed on 2026-10-19.** Installed B 0.3.1 is VALID/STABLE;
 preserved A 0.2.5 is the compatible VALID fallback. This is a trusted native
 development proof, not the full REP runtime or a production trust boundary.

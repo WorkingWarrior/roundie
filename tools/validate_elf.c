@@ -21,7 +21,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "ELF rejected: %s\n", failed ? "file-read" : error);
         return 3;
     }
-    printf("{\"size\":%zu,\"code\":%u,\"data\":%u,\"relocations\":%u,\"imports\":%u,\"abi\":1}\n",
-           size, info.code_bytes, info.data_bytes, info.relocations, info.imports);
+    printf("{\"size\":%zu,\"code\":%u,\"data\":%u,\"relocations\":%u,\"imports\":%u,\"abi\":%u}\n",
+           size, info.code_bytes, info.data_bytes, info.relocations, info.imports, info.abi_version);
     return 0;
 }

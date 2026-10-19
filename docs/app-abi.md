@@ -1,5 +1,17 @@
 # REP application ABI 1 — Milestone 3A
 
+**Milestone 3B compatibility:** ABI 1 public header, descriptor, metadata,
+entry and API table remain binary compatible. `RUN` keeps one-shot semantics.
+The separate [ABI 2 lifecycle contract](app-lifecycle.md) uses
+`include/rep/rep_app_v2.h`, `rep_app_entry_v2` and the sole import `rep_abi_v2`.
+Its metadata version is 2; firmware rejects mixed-version imports and RUN/START
+contract mismatches. No ABI 1 structure was resized. Both SDK headers have
+C11/C23 layout assertions, including actual Xtensa 32-bit checks. ABI 2 adds
+seven lifecycle/event callbacks, a 24-byte copied event and bounded timer
+registration/cancellation. Ownership, return codes and cleanup are described in
+[app-lifecycle.md](app-lifecycle.md) and [resource-manager.md](resource-manager.md).
+The historical 3A contract and evidence below remain unchanged.
+
 ## Contract
 
 **Architectural decision:** REP v0.4 §§5, 7–10, 21, 23; one trusted native

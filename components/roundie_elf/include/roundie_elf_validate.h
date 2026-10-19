@@ -21,6 +21,7 @@ typedef struct {
     uint32_t entry;
     uint32_t relocations;
     uint32_t imports;
+    uint32_t abi_version;
 } roundie_elf_info_t;
 
 bool roundie_elf_import_allowed(const char *name);

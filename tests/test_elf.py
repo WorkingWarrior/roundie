@@ -20,6 +20,10 @@ class ElfTests(unittest.TestCase):
             example = str(Path(temporary) / "example")
             subprocess.run(["cmake", "-S", str(ROOT / "examples/hello_elf"), "-B", example], env=env, check=True, capture_output=True)
             subprocess.run(["cmake", "--build", example], env=env, check=True, capture_output=True)
+            event = str(Path(temporary) / "event")
+            subprocess.run(["cmake", "-S", str(ROOT / "examples/event_elf"), "-B", event], env=env, check=True, capture_output=True)
+            subprocess.run(["cmake", "--build", event], env=env, check=True, capture_output=True)
+            self.assertEqual(roundie_elf.inspect(Path(event) / "event.app.elf")["abi"], 2)
             executable = str(Path(temporary) / "tests")
             subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-pthread",
@@ -27,7 +31,7 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "components/roundie_elf/include"),
                             str(ROOT / "tests/test_elf.c"), str(ROOT / "components/roundie_elf/validate.c"),
                             "-o", executable], check=True)
-            subprocess.run([executable, str(Path(example) / "hello.app.elf")], check=True, timeout=20)
+            subprocess.run([executable, str(Path(example) / "hello.app.elf"), str(Path(event) / "event.app.elf")], check=True, timeout=20)
             staging = str(Path(temporary) / "staging")
             subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-ffunction-sections", "-Wl,--gc-sections",
@@ -39,6 +43,15 @@ class ElfTests(unittest.TestCase):
                             str(ROOT / "tests/test_elf_development.c"), str(ROOT / "components/roundie_elf/validate.c"),
                             str(ROOT / "components/roundie_ota/ota_protocol.c"), "-lcrypto", "-o", staging], check=True)
             subprocess.run([staging, str(Path(example) / "hello.app.elf")], check=True, timeout=10)
+            policy = str(Path(temporary) / "policy")
+            subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
+                            "-fsanitize=address,undefined", "-ffunction-sections", "-Wl,--gc-sections",
+                            "-DCONFIG_ROUNDIE_DEV_ELF=1",
+                            "-I" + str(ROOT / "tests/ota_mocks"),
+                            "-I" + str(ROOT / "components/roundie_ota/include"),
+                            "-I" + str(ROOT / "components/roundie_boot_guard/include"),
+                            str(ROOT / "tests/test_runtime_policy.c"), "-o", policy], check=True)
+            subprocess.run([policy], check=True, timeout=10)
             for variant, reason in ((1, "import:esp_restart"), (2, "ABI-version")):
                 subprocess.run(["cmake", "-S", str(ROOT / "examples/hello_elf"), "-B", example,
                                 f"-DREP_TEST_VARIANT={variant}"], env=env, check=True, capture_output=True)
@@ -59,7 +72,7 @@ class ElfTests(unittest.TestCase):
             for standard in ("c11", "c23"):
                 subprocess.run([str(TOOLCHAIN / "xtensa-esp32s3-elf-gcc"), f"-std={standard}",
                                 "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-x", "c",
-                                "-I" + str(ROOT / "include"), "-"], input='#include "rep/rep_app.h"\n',
+                                "-I" + str(ROOT / "include"), "-"], input='#include "rep/rep_app.h"\n#include "rep/rep_app_v2.h"\n',
                                text=True, check=True)
 
 

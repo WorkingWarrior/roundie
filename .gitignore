@@ -7,3 +7,4 @@
 /sdkconfig.old
 __pycache__/
 /examples/hello_elf/build*/
+/examples/event_elf/build*/
