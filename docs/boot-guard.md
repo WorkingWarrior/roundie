@@ -131,6 +131,10 @@ with the pinned v6.1 toolchain. Normal image size is 680,384 bytes; diagnostic
 size is 680,704 bytes, both within 3,670,016-byte slots. Image checksum and
 validation hash passed `esptool image-info`; the layout validator passed.
 No compiler warning suppression or managed source change was added.
+The later post-STABLE recovery correction passed the same 50-test suite with
+additional late-fault assertions, then built as normal 0.2.3 (680,400 bytes).
+Its exact identity and genuine OTA/confirmation are recorded in safe-mode.md;
+the corrected late-fault branch itself has actual-engine host evidence.
 
 **Verified physical:** genuine normal OTA/confirmation, explicit safe entry,
 retained software-reset state, normal trial, guarded alternate selection and

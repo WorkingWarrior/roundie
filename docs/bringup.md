@@ -10,6 +10,19 @@ builds are distinct from the bounded physical acceptance sequence recorded
 there. Historical 2C.1 evidence and the long-uptime clock discrepancy below
 remain unchanged. No ELF runtime or later milestone was started.
 
+**Bounded physical gate passed:** genuine OTA/confirmation, explicit Safe Mode
+entry and normal exit, same-image RTC warm retention, guarded selection and
+reconfirmation of original A, and one three-incomplete-startup test in already
+VALID diagnostic firmware. Both slots remained VALID during that fault test;
+Safe Mode stopped further automatic resets. A late-runtime policy gap found
+by a failing host assertion was corrected and revalidated in 0.2.3. Final
+normal 0.2.3 B passed OTA/confirmation and explicit recovery/normal-trial
+controls; A remains original 0.2.1 VALID/fallback. Final BootGuard is STABLE,
+safe=0, failures/latch/trial=0, test_build=0 and fault_remaining=0. NVS,
+LittleFS, RTC/OS=0 and USB diagnostics passed their focused health checks.
+Exact identities, evidence scope and remaining physical fault/visual checks
+are in [the final recovery record](safe-mode.md#final-restoration-and-remaining-evidence).
+
 ## Milestone 2C.1 OTA foundation — 2026-10-18
 
 Local streamed USB OTA, explicit activation, core self-test confirmation and

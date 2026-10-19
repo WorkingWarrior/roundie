@@ -9,6 +9,15 @@ next boot must pass confirmation again. Existing PENDING_VERIFY policy and
 the historical 2C.1 results below are preserved; 2C.2 hardware evidence is
 recorded separately in safe-mode.md.
 
+**Current 2C.2 checkpoint, 2026-10-19:** B is VALID/running normal 0.2.3,
+with BootGuard/Safe Mode and injection disabled. Original A is compatible
+VALID/fallback normal 0.2.1. Genuine OTA/confirmation and final explicit
+Safe Mode/normal trial passed; one bounded confirmed-image failure test
+passed using the subsequently replaced diagnostic. Guarded manual selection
+of A and its required reconfirmation also passed. See
+[final identities and limits](safe-mode.md#final-restoration-and-remaining-evidence).
+The following 2C.1 baseline/restoration results remain historical evidence.
+
 **Implementation decision:** REP §§18, 20, 23; one internal OTAManager and
 the standard ESP-IDF OTA/bootloader APIs. Local development USB delivery only.
 No network transport, TinyUSB, MTP, Safe Mode, Boot Guard, ELF runtime, security
