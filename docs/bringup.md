@@ -1,5 +1,16 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Current display checkpoint — 3E.2, 2026-10-19:**
+[The dedicated throughput record](display-performance.md) documents exact
+1.85B clock/timing sources, 3 MHz ID reads followed by 20 MHz writes, the
+unchanged internal DMA buffer/ownership, 80 passing host regression tests,
+pinned v6.1 target build and genuine RO1 OTA. Final B 0.3.7 is VALID/STABLE;
+original A 0.3.6 remains VALID/compatible. Full-frame handlers measured
+99.8–104.9 ms versus 247.3–247.8 ms; no observed transfer failures, no ELF or
+application resources left loaded. Human visual/touch acceptance and precise
+remaining CPU/outlier attribution stay PENDING. Historical bring-up records
+below retain their original scope and evidence limits.
+
 **Milestone 3E:** [launcher/navigation acceptance](launcher-milestone-3e-acceptance.md)
 records 0.3.5 VALID/STABLE in B, preserved A 0.3.4 VALID, unchanged installed
 Hello/UI packages, and real native launcher-to-app-to-launcher execution with

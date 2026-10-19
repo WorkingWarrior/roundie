@@ -4,6 +4,13 @@ Scope: persistent one-shot completion and measured GUI responsiveness. No 3F,
 package/ABI format change, new task, bus-clock change or storage migration.
 Physical finger/visual acceptance remains PENDING until supplied by a human.
 
+**3E.2 follow-up:** [LCD throughput measurements](display-performance.md) record
+the separate 0.3.7 OTA to B: 3 MHz ID read, 20 MHz writes, unchanged single
+buffer/ISR ownership. Equivalent full-frame handlers fell from a fresh
+247.3–247.8 ms baseline to 99.8–104.9 ms. Historical measurements below remain
+unchanged. Original A 0.3.6 is preserved; human visual/finger acceptance is still
+PENDING.
+
 ## Verified source and implementation
 
 At 3E commit `a3a27d5`, clean ABI 1 teardown immediately reopened LIST.
