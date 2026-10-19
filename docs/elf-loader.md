@@ -115,7 +115,7 @@ cd /mnt/Dane/Development/roundie
 cmake -S examples/hello_elf -B examples/hello_elf/build
 cmake --build examples/hello_elf/build
 python tools/roundie_elf.py inspect examples/hello_elf/build/hello.app.elf
-idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.0 build
+idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.1 build
 # After authorized genuine OTA deployment:
 PORT=/dev/serial/by-id/<actual-device>
 python tools/roundie_elf.py --port "$PORT" status
@@ -177,11 +177,37 @@ A bounded 4000-case mutation corpus exercises preflight. RE1 tests cover Safe
 Mode/OTA, hash, malformed commands, timeout and preservation of the last file.
 Target C11/C23 layout assertions pass. Mock tests prove no Xtensa execution.
 
-**Target verified:** REP 0.3.0 builds with unchanged pinned IDF v6.1, loader
+**Target verified:** REP 0.3.1 builds with unchanged pinned IDF v6.1, loader
 1.3.5, protection retained, broad exports disabled, XIP off. Standalone hello:
-1680 file bytes, 256 code bytes, 115 data-allocation bytes, 10 relocations,
+1692 file bytes, 264 code bytes, 115 data-allocation bytes, 10 relocations,
 one import. File SHA-256:
-`9c6d3b87cd3e284745c5e3a64fddae9e4f1037ba9dcd4ee109bcfb4b26efa723`.
+`5edbfbf49c72890dd80f33263d2e52ffeeba9bfb0c5ef577047428a7360f0c88`.
+
+### First physical execution and alignment correction
+
+**Verified physical, 0.3.0:** genuine OTA to B confirmed PENDING_VERIFY→VALID
+at 1160/3290 ms, BootGuard normal/STABLE, NVS OK, LittleFS mounted and RTC
+OS=0; original A 0.2.5 stayed VALID. One independently staged ELF actually ran
+from PSRAM, resolved the REP import, logged hello/uptime and returned 42.
+Internal free was 247159 before/after; PSRAM was 8382780→8382400→8382780.
+Loader text/data requested 256/115 bytes; SDK allocation peak was 64 bytes.
+Load/execution/unload measured 9427/9852/120 microseconds.
+
+**Acceptance failure, not a complete pass:** the last log was rejected, giving
+five successful service calls instead of six. Investigation found upstream's
+`esp_elf_map_sym()` uses rounded text size: the original 253-byte text at
+0x1cc absorbed rodata beginning at 0x2c9 into its three padding bytes. Thus the
+first rodata pointer mapped to text; REP's range check refused that log. No
+panic or write outside the allocations occurred. Tests stopped at this failure.
+
+**Correction:** standalone linking aligns `.rodata` to four bytes using a small
+linker augmentation, every sample log result is checked, and production preflight
+rejects any loaded section overlapping the rounded text range (including its
+address overflow). The original physical artifact is now rejected on the host
+as `rounded-text-overlap`; the regression test covers this case. This preserves
+the strict service-call assertion and does not widen pointer ranges or relax
+comparison criteria. The correction is built as 0.3.1 for another bounded B
+update through the preserved A. Historical evidence above is retained.
 
 **Physical PENDING:** inactive-B OTA/confirmation, PSRAM instruction execution,
 result and memory recovery, negative candidates, Safe Mode refusal and final

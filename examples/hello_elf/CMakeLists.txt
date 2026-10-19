@@ -13,6 +13,7 @@ add_custom_command(OUTPUT hello.app.elf
         -fPIC -fvisibility=hidden -ffunction-sections -fdata-sections
         -fno-builtin -fno-stack-protector -nostdlib -nostartfiles -shared
         -Wl,--gc-sections -Wl,-e,rep_app_entry -Wl,--undefined=rep_abi_metadata
+        -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/text-padding.ld
         -DREP_TEST_VARIANT=${REP_TEST_VARIANT}
         -I${CMAKE_CURRENT_SOURCE_DIR}/../../include
         ${CMAKE_CURRENT_SOURCE_DIR}/hello.c -o hello.app.elf
@@ -20,5 +21,5 @@ add_custom_command(OUTPUT hello.app.elf
         --remove-section=.got.loc --remove-section=.dynamic
         --remove-section=.xt.lit --remove-section=.xt.prop
         --remove-section=.xtensa.info hello.app.elf
-    DEPENDS hello.c ../../include/rep/rep_app.h VERBATIM)
+    DEPENDS hello.c text-padding.ld ../../include/rep/rep_app.h VERBATIM)
 add_custom_target(elf ALL DEPENDS hello.app.elf)

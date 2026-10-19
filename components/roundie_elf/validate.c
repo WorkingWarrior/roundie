@@ -137,6 +137,12 @@ bool roundie_elf_validate(const void *input, size_t size, roundie_elf_info_t *ou
     CHECK(metadata == 1, "missing-or-duplicate-ABI");
     CHECK(out->code_bytes > 0 && out->code_bytes <= ROUNDIE_ELF_MAX_CODE &&
           out->data_bytes <= ROUNDIE_ELF_MAX_DATA, "memory-limit");
+    CHECK(out->sections[0].address <= UINT32_MAX - out->code_bytes, "rounded-text-overflow");
+    for (unsigned i = 1; i < 5; i++) {
+        const roundie_elf_section_t *data = &out->sections[i];
+        CHECK(data->size == 0 || out->sections[0].address + out->code_bytes <= data->address ||
+              data->address + data->size <= out->sections[0].address, "rounded-text-overlap");
+    }
     CHECK(header.e_entry != 0 && within(header.e_entry, 3, &out->sections[0]), "entry-address");
     out->entry = header.e_entry;
     for (int i = 0; i < 5; i++) {

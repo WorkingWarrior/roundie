@@ -41,7 +41,9 @@ static int32_t start(const rep_app_context_t *context)
         return -5;
     }
     static const char result[] = "REP ABI 1: 40 + 2 = 42; returning 42";
-    services->log(context->instance, result, sizeof(result) - 1);
+    if (services->log(context->instance, result, sizeof(result) - 1) != 0) {
+        return -6;
+    }
     return (int32_t)calculation;
 }
 

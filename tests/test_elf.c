@@ -197,6 +197,17 @@ static void validation_tests(void)
         Elf32_Shdr sh;
         unsigned offset = header.e_shoff + i * sizeof(sh);
         memcpy(&sh, fixture + offset, sizeof(sh));
+        if (sh.sh_type == SHT_PROGBITS && sh.sh_flags == SHF_ALLOC && sh.sh_size > 12) {
+            /* A physically observed loader limitation: rounded text must not
+             * absorb the beginning of adjacent readonly application data. */
+            roundie_elf_info_t valid;
+            assert(roundie_elf_validate(fixture, fixture_size, &valid, error));
+            memcpy(copy, fixture, fixture_size);
+            ((Elf32_Shdr *)(copy + offset))->sh_addr =
+                valid.sections[0].address + valid.code_bytes - 1;
+            assert(!roundie_elf_validate(copy, fixture_size, &info, error));
+            assert(strcmp(error, "rounded-text-overlap") == 0);
+        }
         memcpy(copy, fixture, fixture_size);
         ((Elf32_Shdr *)(copy + offset))->sh_offset = 0xfffffffc;
         if (sh.sh_type != SHT_NOBITS) {
