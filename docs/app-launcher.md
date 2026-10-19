@@ -37,6 +37,7 @@ runtime API, waiting or callback occurs while holding it. The earlier 3D
 LittleFS panic remains evidence of a failure with an inferred, unproven stack
 cause; target stack usage and physical high-water measurements are required.
 
-Implementation, host/target and physical evidence will be recorded separately
-in the milestone acceptance record. Finger/visual acceptance requires a human
+Implementation, host/target and physical evidence are recorded separately
+in the [milestone acceptance record](launcher-milestone-3e-acceptance.md).
+Finger/visual acceptance requires a human
 or physical observation; semantic injection and flush counters cannot supply it.

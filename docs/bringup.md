@@ -1,5 +1,11 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Milestone 3E:** [launcher/navigation acceptance](launcher-milestone-3e-acceptance.md)
+records 0.3.5 VALID/STABLE in B, preserved A 0.3.4 VALID, unchanged installed
+Hello/UI packages, and real native launcher-to-app-to-launcher execution with
+INJECTED input. Finger/visual launcher usability is PENDING. Measured GUI command
+latency and the discovery-counter evidence limitation are recorded explicitly.
+
 **Milestone 3D:** [packages/registry acceptance](packages-milestone-3d-acceptance.md)
 records the package-enabled 0.3.4 build and bounded deployment gates. Package
 format, persistence and launch contracts are in [PackageManager](package-manager.md).
