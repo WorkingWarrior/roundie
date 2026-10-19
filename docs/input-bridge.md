@@ -47,6 +47,9 @@ also do not prove CST816S, finger interaction or actual display appearance.
 5. STOP then UNLOAD; confirm the original system screen returns, zero widgets,
    zero pending commands/resources, and no later callback for that generation.
 
-Build and lifecycle details are in [app-ui.md](app-ui.md). The exact authorized
-device record will distinguish software-injected events, LVGL application,
-LCD DMA completion and pending finger/visual checks.
+Build and lifecycle details are in [app-ui.md](app-ui.md). The
+[authorized device record](ui-milestone-3c-acceptance.md) distinguishes
+software-injected events, LVGL application, LCD DMA completion and pending
+finger/visual checks. Device cycles recorded four INJECTED and zero TOUCH events
+each. The measured input enqueue-to-native-callback maxima were 896–2889 us;
+they exclude USB transport, physical acquisition, hit testing and LCD response.

@@ -37,8 +37,10 @@ submit ordinary UI work. Resume restores retained widgets after its callback.
 | Processing per GUI iteration | at most 4 commands or one lifecycle transition |
 | Widget/update public payload | 132 / 116 bytes |
 | Geometry | positive dimensions, entire box within 360 × 360 |
+| Button minimum | 44 × 44 pixels |
 | Retained LVGL allocation admission | 16 KiB incremental ceiling; create refused above 12 KiB or below 8 KiB pool reserve |
 | Absolute LVGL memory envelope | existing shared 64 KiB built-in pool |
+| Fixed UI component writable symbols | 3118 bytes plus linker alignment; budget below 4 KiB |
 | GUI lifecycle acknowledgment deadline | 1 second per attempt, outside native callbacks |
 
 Fixed command/handle/GUI-text storage does not grow with updates. The small
@@ -49,6 +51,11 @@ crossing it fails and triggers cleanup. The shared 64 KiB pool is the absolute
 bound including system objects, rendering and transient construction. Dynamic
 fonts/assets, animation and app-selected themes are unavailable. Built-in font
 coverage can be smaller than the accepted well-formed UTF-8 repertoire.
+The 3118-byte static-symbol total was read from the built Xtensa component
+archive (1920-byte command FIFO, 96-byte logical slots, 896-byte GUI records,
+and fixed counters/control/lock state). The backing envelope is the existing
+shared 64 KiB pool plus less than 4 KiB of new static UI state; native ELF/SDK
+allocations and the existing event FIFO retain their separate runtime budgets.
 
 ## Copies, identity and completion
 
@@ -72,7 +79,9 @@ The GUI backend stores strings in its own stable 96-byte arrays and deliberately
 uses `lv_label_set_text_static`: LVGL retains SYSTEM storage until deletion.
 Deletion precedes clearing/reusing arrays. This follows the pinned LVGL 9.5.0
 source semantics; ordinary `lv_label_set_text` would allocate/copy instead.
-See [LVGL label ownership](https://lvgl.io/docs/open/9.5/details/widgets/label).
+See the [LVGL label ownership reference](https://lvgl.io/docs/open/9.3/details/widgets/label);
+the installed 9.5.0 `src/widgets/label/lv_label.c` is the version-specific source
+checked for this implementation.
 
 ## Lifecycle and shared-object review
 
@@ -126,6 +135,14 @@ validation, copying, UTF-8, FIFO ordering/saturation, ownership, stale handles,
 input admission, lifecycle/recovery and delayed teardown retaining loaded code.
 The original relocation/alignment and ABI 1/2 regression suite remains required.
 
-Device results, precise identities, memory and timings are added after the
-authorized bounded OTA/test gate. Finger touch and human visual acceptance
-remain PENDING without an actual operator/observation source.
+**Physical verified:** firmware 0.3.3 passed genuine inactive-B OTA and three
+complete native UI lifecycle generations. Each rendered seven LVGL objects,
+delivered three timers and four INJECTED button callbacks to Xtensa, applied
+counter updates and removed all application objects/resources. Global SRAM and
+PSRAM recovered exactly. The measured shared LVGL pool varied by 20 bytes;
+this is reported separately rather than claiming exact pool recovery.
+Maximum observed enqueue-to-apply latency was 310338 us, including screen
+transition workload; this is not a low-latency guarantee. Physical finger touch
+and human visual acceptance remain **PENDING**. Exact artifacts, timings,
+limitations and final slot state are in the
+[3C acceptance record](ui-milestone-3c-acceptance.md).
