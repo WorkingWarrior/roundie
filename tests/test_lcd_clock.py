@@ -30,20 +30,37 @@ static struct { spi_ll_clock_val_t clock; } GPSPI2;
 int main(void)
 {
     spi_ll_clock_val_t r;
+    assert(ROUNDIE_LCD_READ_HZ == 3000000);
+    assert(spi_ll_master_cal_clock(80000000, ROUNDIE_LCD_READ_HZ, 128, &r) == 2962962);
+    assert(r.clkdiv_pre == 0 && r.clkcnt_n == 26 && !r.clk_equ_sysclk);
     assert(spi_ll_master_cal_clock(80000000, 20000000, 128, &r) == 20000000);
     assert(r.clkdiv_pre == 0 && r.clkcnt_n == 3 && r.clkcnt_h == 1);
     assert(spi_ll_master_cal_clock(80000000, 30000000, 128, &r) == 26666666);
     assert(r.clkdiv_pre == 0 && r.clkcnt_n == 2 && r.clkcnt_h == 0);
     assert(spi_ll_master_cal_clock(80000000, 40000000, 128, &r) == 40000000);
     assert(r.clkdiv_pre == 0 && r.clkcnt_n == 1 && r.clkcnt_h == 0);
+    assert(r.clkcnt_l == 1 && !r.clk_equ_sysclk);
+    /* Register fields are minus one. At the pinned 80 MHz source the
+     * high/low intervals are 12.5 ns and the cycle and CS setup/hold 25 ns.
+     * Compare in picoseconds with ST77916 Table 5; no waveform claim. */
+    const unsigned source_ps = 12500;
+    const unsigned cycle_ps = source_ps * (r.clkdiv_pre + 1) * (r.clkcnt_n + 1);
+    const unsigned high_ps = source_ps * (r.clkdiv_pre + 1) * (r.clkcnt_h + 1);
+    assert(cycle_ps == 25000 && cycle_ps >= 16000);
+    assert(high_ps == 12500 && high_ps >= 7000 && cycle_ps - high_ps >= 7000);
+    assert(cycle_ps >= 15000); /* Both write CS delays remain one cycle. */
     return 0;
 }
 '''
         with tempfile.TemporaryDirectory(prefix='roundie-divider-') as temporary:
             c = Path(temporary) / 'divider.c'
             exe = Path(temporary) / 'divider'
-            c.write_text(harness)
-            subprocess.run(['cc', '-std=gnu23', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)],
+            harness_config = Path(temporary) / 'sdkconfig.h'
+            harness_config.write_text('#define CONFIG_ROUNDIE_LCD_WRITE_HZ 40000000\n')
+            c.write_text('#include "lcd_config.h"\n' + harness)
+            subprocess.run(['cc', '-std=gnu23', '-Wall', '-Wextra', '-Werror',
+                            '-fsanitize=address,undefined', '-g', '-I' + temporary,
+                            '-I' + str(ROOT / 'components/roundie_board'), str(c), '-o', str(exe)],
                            check=True, capture_output=True)
             subprocess.run([str(exe)], check=True, timeout=5)
 
