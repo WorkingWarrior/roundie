@@ -12,6 +12,8 @@ SUMMARY = ('batch loops flushes pixels errors handler_max_us pump_max_us wake_ma
 TRACE = ('sequence at_us nav request generation batch pending_before pending_after applied '
          'pump_us handler_us wake_us flushes done pixels submit_us dma_us wait_us render_us '
          'invalidations invalid_pixels full_invalidations').split()
+TRACE_V2 = TRACE + ('swap_us driver_us layout_us carry_done last_submit_id last_done_id '
+                    'submit_driver_max_us submit_swap_max_us').split()
 
 
 def request(port, operation='PERF', timeout=4, allow_error=False):
@@ -28,9 +30,10 @@ def request(port, operation='PERF', timeout=4, allow_error=False):
         if re.fullmatch(rb'-?[0-9]{1,10}', code) is None:
             raise ValueError('code')
         result = json.loads(payload)
-        if result['format'] != 1:
+        if result['format'] not in (1, 2):
             raise ValueError('format')
-        for field, names in (('summary', SUMMARY), ('trace', TRACE)):
+        trace_names = TRACE if result['format'] == 1 else TRACE_V2
+        for field, names in (('summary', SUMMARY), ('trace', trace_names)):
             values = result[field]
             if (not isinstance(values, list) or len(values) != len(names) or
                     any(type(v) is not int or not 0 <= v < 2 ** 64 for v in values)):

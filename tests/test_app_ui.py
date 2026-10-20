@@ -28,3 +28,4 @@ class AppUiTests(unittest.TestCase):
             subprocess.run([str(build / "host/ui_tests"), *examples], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests")], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests"), "low-memory"], check=True, timeout=20)
+            subprocess.run([str(build / "host/display_tests")], check=True, timeout=20)

@@ -33,3 +33,6 @@ target_include_directories(launcher_tests PRIVATE ../elf_mocks ../gui_mocks "${R
     "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")
 target_link_libraries(launcher_tests PRIVATE lvgl m pthread)
+add_executable(display_tests ../test_display_render.c)
+target_compile_options(display_tests PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(display_tests PRIVATE lvgl m pthread)

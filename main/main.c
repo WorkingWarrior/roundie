@@ -69,6 +69,10 @@ typedef struct {
     uint32_t dma_completions;
     roundie_gui_work_t work;
     int64_t render_started_us;
+    int64_t refresh_started_us;
+    uint64_t iteration_id;
+    uint64_t transfer_iteration_id;
+    uint64_t transfer_id;
     bool was_pressed;
     uint16_t last_x;
     uint16_t last_y;
@@ -577,6 +581,8 @@ static void wait_for_display(lv_display_t *display)
         uint32_t dma_us = (uint32_t)(done_us - state->transfer_started_us);
         uint32_t wait_us = (uint32_t)(esp_timer_get_time() - started);
         state->work.done++;
+        state->work.last_done_id = state->transfer_id;
+        state->work.carry_done += state->transfer_iteration_id != state->iteration_id;
         state->work.dma_us += dma_us;
         state->work.wait_us += wait_us;
         if (dma_us > state->work.dma_max_us) {
@@ -613,15 +619,30 @@ static void flush_display(lv_display_t *display, const lv_area_t *area,
     }
     state->transfer_pending = true;
     state->transfer_started_us = esp_timer_get_time();
+    state->transfer_iteration_id = state->iteration_id;
+    state->transfer_id++;
+    state->work.last_submit_id = state->transfer_id;
     state->work.flushes++;
     state->work.pixels += (uint32_t)lv_area_get_size(area);
     /* LVGL stores RGB565 in CPU byte order; ST77916 expects MSB first. */
     lv_draw_sw_rgb565_swap(pixels, lv_area_get_size(area));
+    int64_t driver_started_us = esp_timer_get_time();
+    uint32_t swap_us = (uint32_t)(driver_started_us - state->transfer_started_us);
+    state->work.swap_us += swap_us;
+    if (swap_us > state->work.submit_swap_max_us) {
+        state->work.submit_swap_max_us = swap_us;
+    }
     esp_err_t error = esp_lcd_panel_draw_bitmap(roundie_board_panel(state->board),
                                                 area->x1, area->y1,
                                                 area->x2 + 1, area->y2 + 1,
                                                 pixels);
-    uint32_t submit_us = (uint32_t)(esp_timer_get_time() - state->transfer_started_us);
+    int64_t submitted_us = esp_timer_get_time();
+    uint32_t driver_us = (uint32_t)(submitted_us - driver_started_us);
+    state->work.driver_us += driver_us;
+    if (driver_us > state->work.submit_driver_max_us) {
+        state->work.submit_driver_max_us = driver_us;
+    }
+    uint32_t submit_us = (uint32_t)(submitted_us - state->transfer_started_us);
     state->work.submit_us += submit_us;
     if (submit_us > state->work.submit_max_us) {
         state->work.submit_max_us = submit_us;
@@ -646,8 +667,11 @@ static void display_event(lv_event_t *event)
         state->work.invalidations++;
         state->work.invalid_pixels += pixels;
         state->work.full_invalidations += pixels == DISPLAY_WIDTH * DISPLAY_HEIGHT;
+    } else if (code == LV_EVENT_REFR_START) {
+        state->refresh_started_us = esp_timer_get_time();
     } else if (code == LV_EVENT_RENDER_START) {
         state->render_started_us = esp_timer_get_time();
+        state->work.layout_us += (uint64_t)(state->render_started_us - state->refresh_started_us);
     } else if (code == LV_EVENT_RENDER_READY) {
         state->work.render_us += (uint64_t)(esp_timer_get_time() - state->render_started_us);
     }
@@ -1031,6 +1055,7 @@ void app_main(void)
         uint32_t wake_us = expected_wake_us > 0 && iteration_at > expected_wake_us ?
             (uint32_t)(iteration_at - expected_wake_us) : 0;
         memset(&state.work, 0, sizeof(state.work));
+        state.iteration_id++;
         if (state.display_fault) {
             roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
         }

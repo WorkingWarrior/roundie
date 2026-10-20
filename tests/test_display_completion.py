@@ -30,6 +30,7 @@ typedef struct { int x1, y1, x2, y2; } lv_area_t;
 typedef struct {
     int dma_lock;
     int64_t dma_done_us, transfer_started_us;
+    uint64_t transfer_id, iteration_id, transfer_iteration_id;
     bool transfer_pending, display_fault;
     uint32_t completed_transfers, transfer_errors;
     roundie_gui_work_t work;

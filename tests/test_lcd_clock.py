@@ -8,6 +8,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LcdClockTests(unittest.TestCase):
+    def test_pinned_idf_divider(self):
+        # Compile the actual selected S3 algorithm, not a reimplementation.
+        path = Path('/home/solve/.espressif/v6.1/esp-idf/components/esp_hal_gpspi/esp32s3/include/hal/spi_ll.h')
+        source = path.read_text()
+        start = source.index('static inline int spi_ll_freq_for_pre_n(')
+        end = source.index('static inline int spi_ll_master_set_clock(', start)
+        block = source[start:end]
+        harness = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#define SPI_LL_MAX_PRE_DIV_NUM 16
+typedef union {
+    uint32_t val;
+    struct { uint32_t clkcnt_l:6, clkcnt_h:6, clkcnt_n:6, clkdiv_pre:4, reserved:9, clk_equ_sysclk:1; };
+} spi_ll_clock_val_t;
+static struct { spi_ll_clock_val_t clock; } GPSPI2;
+'''
+        harness += block + r'''
+int main(void)
+{
+    spi_ll_clock_val_t r;
+    assert(spi_ll_master_cal_clock(80000000, 20000000, 128, &r) == 20000000);
+    assert(r.clkdiv_pre == 0 && r.clkcnt_n == 3 && r.clkcnt_h == 1);
+    assert(spi_ll_master_cal_clock(80000000, 30000000, 128, &r) == 26666666);
+    assert(r.clkdiv_pre == 0 && r.clkcnt_n == 2 && r.clkcnt_h == 0);
+    assert(spi_ll_master_cal_clock(80000000, 40000000, 128, &r) == 40000000);
+    assert(r.clkdiv_pre == 0 && r.clkcnt_n == 1 && r.clkcnt_h == 0);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='roundie-divider-') as temporary:
+            c = Path(temporary) / 'divider.c'
+            exe = Path(temporary) / 'divider'
+            c.write_text(harness)
+            subprocess.run(['cc', '-std=gnu23', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)],
+                           check=True, capture_output=True)
+            subprocess.run([str(exe)], check=True, timeout=5)
+
     def test_profiles_and_io_ownership(self):
         source = (ROOT / 'components/roundie_board/board.c').read_text()
         block = source[source.index('    const spi_bus_config_t bus_config = {',
@@ -127,7 +166,7 @@ int main(void)
             (directory / 'sdkconfig.h').touch()
             c = directory / 'clock.c'
             c.write_text(harness)
-            for hz in (3000000, 10000000, 20000000, 40000000, 0, 60000000, 80000000):
+            for hz in (3000000, 10000000, 20000000, 30000000, 40000000, 0, 60000000, 80000000):
                 command = ['cc', '-std=c23', '-Wall', '-Wextra', '-Werror',
                            '-fsanitize=address,undefined', '-g',
                            f'-DCONFIG_ROUNDIE_LCD_WRITE_HZ={hz}', '-I' + temporary,

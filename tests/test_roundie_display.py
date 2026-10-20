@@ -19,11 +19,13 @@ class DisplayDiagnosticsTests(unittest.TestCase):
                 read.return_value = b'!RP1 12345678 0 ' + json.dumps(value).encode() + b'\n'
             reply(response)
             self.assertEqual(display.request(None, 'PERF 0')['trace']['at_us'], 5000000000)
-            for change in (dict(format=2), dict(trace=[1]), dict(summary=[4]), dict(latest=True),
+            for change in (dict(format=3), dict(trace=[1]), dict(summary=[4]), dict(latest=True),
                            dict(trace=[True] + trace[1:]), dict(summary=[13] + summary[1:])):
                 reply(dict(response, **change))
                 with self.assertRaises(display.TransportError):
                     display.request(None)
+            reply(dict(response, format=2, trace=trace + [7] * 8))
+            self.assertEqual(display.request(None)['trace']['swap_us'], 7)
 
     def test_only_bounded_operations(self):
         for operation in ('PERF -1', 'PERF 4294967296', 'BATCH 0', 'BATCH 13', 'RESET', 'PERF 0 extra'):

@@ -10,7 +10,7 @@
 #include "roundie_launcher.h"
 
 #define TRACE_COUNT 32U
-#define TRACE_FIELDS 22U
+#define TRACE_FIELDS 30U
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static unsigned batch = ROUNDIE_UI_QUEUE_CAPACITY;
 static uint32_t sequence;
@@ -73,7 +73,10 @@ void roundie_gui_record(int64_t at_us, uint32_t pump_us, uint32_t handler_us,
             nav.state, nav.request, nav.generation, batch, before, after, applied,
             pump_us, handler_us, wake_us, work->flushes, work->done, work->pixels,
             work->submit_us, work->dma_us, work->wait_us, work->render_us,
-            work->invalidations, work->invalid_pixels, work->full_invalidations};
+            work->invalidations, work->invalid_pixels, work->full_invalidations,
+            work->swap_us, work->driver_us, work->layout_us, work->carry_done,
+            work->last_submit_id, work->last_done_id, work->submit_driver_max_us,
+            work->submit_swap_max_us};
         memcpy(traces[(sequence - 1) % TRACE_COUNT], sample, sizeof(sample));
     }
     portEXIT_CRITICAL(&lock);
@@ -139,7 +142,7 @@ bool roundie_gui_command(const char *operation, const char *id, int parsed)
         handler_max, pump_max, wake_max, dma_max, submit_max, wait_max, stack_min, sequence, dma_completions};
     memcpy(summary, values, sizeof(values));
     portEXIT_CRITICAL(&lock);
-    int length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":1,\"oldest\":%" PRIu32
+    int length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":2,\"oldest\":%" PRIu32
         ",\"latest\":%" PRIu32 ",\"summary\":[", id, (int)result, oldest, latest);
     for (unsigned i = 0; i < 14 + TRACE_FIELDS; i++) {
         if (length < 0 || (size_t)length >= sizeof(response)) {

@@ -17,6 +17,14 @@ typedef struct {
     uint32_t dma_max_us;
     uint32_t submit_max_us;
     uint32_t wait_max_us;
+    uint64_t swap_us;
+    uint64_t driver_us;
+    uint64_t layout_us; /* Refresh start to render start: layout + dirty-area work. */
+    uint64_t carry_done; /* Completion consumed in a later GUI iteration. */
+    uint64_t last_submit_id;
+    uint64_t last_done_id;
+    uint64_t submit_driver_max_us;
+    uint64_t submit_swap_max_us;
 } roundie_gui_work_t;
 
 unsigned roundie_gui_batch(void);

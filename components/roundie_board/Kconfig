@@ -13,6 +13,8 @@ config ROUNDIE_LCD_WRITE_10MHZ
     bool "10 MHz (conservative candidate)"
 config ROUNDIE_LCD_WRITE_20MHZ
     bool "20 MHz (3E.2 candidate)"
+config ROUNDIE_LCD_WRITE_30MHZ
+    bool "30 MHz requested (26.667 MHz with the pinned 80 MHz divider)"
 config ROUNDIE_LCD_WRITE_40MHZ
     bool "40 MHz (requires separate bounded device validation)"
 endchoice
@@ -22,6 +24,7 @@ config ROUNDIE_LCD_WRITE_HZ
     default 3000000 if ROUNDIE_LCD_WRITE_3MHZ
     default 10000000 if ROUNDIE_LCD_WRITE_10MHZ
     default 20000000 if ROUNDIE_LCD_WRITE_20MHZ
+    default 30000000 if ROUNDIE_LCD_WRITE_30MHZ
     default 40000000 if ROUNDIE_LCD_WRITE_40MHZ
 
 endmenu
