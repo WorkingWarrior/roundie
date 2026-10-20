@@ -1,5 +1,13 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
+**Current USB checkpoint — 3F, 2026-10-20:**
+[feasibility NO-GO](usb-mtp-milestone-3f-acceptance.md); installed A 0.3.8
+remains VALID/STABLE selected, B 0.3.9 VALID/compatible unchanged after
+[3E.4](display-3e4-acceptance.md). Only an isolated CDC+MTP component/descriptor
+probe was compiled, with 5 host descriptor checks and all 82 existing tests
+passing. No MTP firmware, OTG takeover, OTA or physical recovery experiment
+was performed. The older display checkpoints below remain historical.
+
 Display work continues in the [Milestone 3E.3 acceptance record](display-3e3-acceptance.md)
 and [rendering measurements](display-rendering.md). Earlier bring-up evidence
 below remains historical and does not establish later performance or visual acceptance.

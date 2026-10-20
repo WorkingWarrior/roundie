@@ -1,5 +1,12 @@
 # PackageManager — Milestone 3D
 
+**3F feasibility checkpoint, 2026-10-20:** MTP is not installed or connected
+to PackageManager. The [USB gate](usb-architecture.md) is NO-GO; released
+MTP direct VFS writes cannot bypass existing Flash admission. The proposed
+[restricted backend](usb-mtp.md) must also reconcile MTP uploads without an
+out-of-band full-package digest with the existing BEGIN digest contract.
+RP1 behavior and transactional activation below remain unchanged.
+
 Milestone 3E adds [launcher selection](app-launcher.md) through the existing
 launch-by-ID function and [system navigation diagnostics](system-navigation.md).
 RPK1/RPA1, artifact selection, storage/Flash exclusion and validation are

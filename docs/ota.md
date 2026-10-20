@@ -1,5 +1,13 @@
 # Milestone 2C.1 — local A/B firmware updates
 
+**3F feasibility checkpoint, 2026-10-20:** fresh read-only RO1/RS1 queries
+confirm A 0.3.8 VALID/STABLE selected/running and B VALID/compatible, matching
+the preserved 0.3.9 identity. [The USB gate](usb-architecture.md) is NO-GO;
+no candidate was deployed and neither slot changed. A hypothetical later
+3F deployment must use genuine RO1 into B and preserve A, only after recovery
+and VBUS/backend prerequisites pass. Existing OTA/rollback protocols remain
+on USJ. [Detailed current evidence](usb-mtp-milestone-3f-acceptance.md).
+
 **Later 3A checkpoint, 2026-10-19:** B 0.3.1 is VALID/running, with original
 A 0.2.5 VALID/fallback. Native development sessions are gated against pending
 verification/active OTA; OTA mutations are gated against ELF transfers/execution.

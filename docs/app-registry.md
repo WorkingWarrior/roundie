@@ -1,5 +1,10 @@
 # AppRegistry — Milestone 3D
 
+**3F status, 2026-10-20:** there is no MTP inbox integration. The
+[feasibility stop](usb-mtp-milestone-3f-acceptance.md) preserves both installed
+package identities/digests. Future completed uploads must remain absent from
+this registry until explicit confirmation and successful PackageManager commit.
+
 The registry is the bounded discovery/metadata portion of `roundie_packages`.
 It has no boot task, separate persistent database, ELF mappings or autostart.
 Each `active` selection is the persistent record; the in-memory array is rebuilt

@@ -1,5 +1,10 @@
 # Native application launcher — Milestone 3E
 
+**3F status, 2026-10-20:** the [USB architecture gate](usb-architecture.md)
+is NO-GO. No MTP installation prompt or upload-to-launcher path is available.
+Launcher ownership/navigation are unchanged; future installation must refresh
+through existing successful PackageManager scans and must not autostart apps.
+
 ## Design decision, 2026-10-19
 
 REP §§5–10, 12–13 and 23 remain authoritative. The existing GUI task owns

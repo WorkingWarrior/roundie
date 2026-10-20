@@ -1,5 +1,11 @@
 # Milestone 2C.2 — Safe Mode
 
+**3F feasibility checkpoint, 2026-10-20:** installed Safe Mode continues to
+use USB Serial/JTAG independently of MTP/storage. A future normal OTG mode
+cannot assume TinyUSB uninstall restores the USJ mux. Post-OTG ROM and
+Safe Mode transport transitions are PENDING; [the architecture gate](usb-architecture.md)
+blocks deployment. No Safe Mode transition/reset was requested in this task.
+
 **Later 3A integration, 2026-10-19:** explicit Safe Mode inhibits native starts
 and SDK calls, cancels development staging, and defers restart while a native
 callback is still executing. No forced unload is provided. Physical refusal and
