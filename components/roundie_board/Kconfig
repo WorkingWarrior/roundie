@@ -2,7 +2,7 @@ menu "Roundie LCD"
 
 choice ROUNDIE_LCD_WRITE_CLOCK
     prompt "ST77916 write clock (compile-time only)"
-    default ROUNDIE_LCD_WRITE_40MHZ
+    default ROUNDIE_LCD_WRITE_30MHZ
     help
         Bounded 1.85B profiles. ID reads always use 3 MHz. See
         docs/display-performance.md for timing and physical evidence limits.
