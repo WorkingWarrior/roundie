@@ -49,3 +49,12 @@ server adds a nonce for Vite's injected styles. No service worker is installed.
 
 See [architecture, protocol and recovery](../../docs/roundie-manager.md) and
 [acceptance / pending physical checks](../../docs/roundie-manager-milestone-3f-w-acceptance.md).
+
+For connection failures, open **http://127.0.0.1:5173/?debug=serial**. Connection
+details retain a bounded, local diagnostic trace; `window.roundieDiagnostics()`
+returns the latest session. The debug-only A–D buttons compare passive raw input,
+raw RO1 STATUS, transport RO1 STATUS and ProtocolClient RO1 STATUS. Ordinary
+Connect is level E (complete status/registry/INFO handshake). These probes never
+install, reset or retry a transaction. Passive probe A may legitimately be idle.
+See the [3F-W.1 investigation and read-only acceptance procedure](../../docs/roundie-manager-milestone-3f-w1-diagnostics.md).
+Physical connectivity remains PENDING until this procedure succeeds on Roundie.

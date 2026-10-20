@@ -1,5 +1,6 @@
 import type { SerialTransport } from './transport.ts';
 import { DIGEST_PATTERN, MAX_PACKAGE, validId, validVersion } from './package.ts';
+import { boundedCleanup, ConnectionDiagnostics, ConnectionFailure } from './diagnostics.ts';
 
 export type Protocol = 'RP1' | 'RS1' | 'RO1' | 'RE1';
 export type JsonRecord = Record<string, unknown>;
@@ -10,7 +11,7 @@ export interface PackageStatus {
   capacity: number[]; us: number[]; error: string; apps: AppRecord[];
   name: string; sha256: string; elf_size: number;
 }
-export class ProtocolError extends Error {}
+export class ProtocolError extends Error { override name = 'ProtocolError'; }
 export class DeviceError extends Error {
   readonly code: number;
   readonly status: JsonRecord;
@@ -67,7 +68,8 @@ export function randomId(): string {
 export class LineDecoder {
   private bytes: number[] = [];
   private discard = false;
-  feed(chunk: Uint8Array, line: (value: string) => void, oversize: (prefix: string) => void): void {
+  feed(chunk: Uint8Array, line: (value: string) => void, oversize: (prefix: string) => void,
+    addressed: (prefix: string) => boolean = () => true): void {
     for (const byte of chunk) {
       if (this.bytes.length >= 2048 && !this.discard) {
         oversize(new TextDecoder().decode(new Uint8Array(this.bytes.slice(0, 14))));
@@ -77,10 +79,11 @@ export class LineDecoder {
       if (byte === 10) {
         if (!this.discard) {
           // Decode only protocol candidates strictly. Arbitrary logs may contain binary noise.
-          if (this.bytes[0] === 33) {
+          // Like Python read_serial_reply: match ASCII address before strict decoding.
+          if (this.bytes[0] === 33 && addressed(String.fromCharCode(...this.bytes.slice(0, 14)))) {
             let value: string;
             try { value = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(this.bytes)); }
-            catch (error) { throw new ProtocolError(`Invalid protocol encoding: ${String(error)}`); }
+            catch (cause) { throw new ProtocolError('Invalid protocol encoding.', { cause }); }
             line(value);
           }
         }
@@ -102,16 +105,24 @@ export class ProtocolClient {
   private decoder = new LineDecoder();
   private pump: Promise<void>;
   private closing?: Promise<void>;
+  private closed?: Promise<void>;
   private dead = false;
   private nextId: () => string;
-  onDisconnect?: (reason: string) => void;
+  private first?: Error;
+  cleanupError?: Error;
+  readonly diagnostics: ConnectionDiagnostics;
+  onDisconnect?: (reason: string, error: Error) => void;
 
-  constructor(transport: SerialTransport, nextId = randomId) {
+  constructor(transport: SerialTransport, nextId = randomId, diagnostics = new ConnectionDiagnostics()) {
     this.transport = transport;
     this.nextId = nextId;
+    this.diagnostics = diagnostics;
+    transport.onError = error => this.fail(error);
+    diagnostics.state.protocol = 'receiving'; diagnostics.note('RECEIVE_PUMP_STARTED');
     this.pump = this.receive();
   }
   get connected(): boolean { return !this.dead; }
+  get failure(): Error | undefined { return this.first; }
 
   async request(protocol: Protocol, operation: string, timeoutMs = 8000): Promise<JsonRecord> {
     if (this.dead) { throw new ProtocolError('Disconnected. Reconnect and refresh device state.'); }
@@ -120,27 +131,43 @@ export class ProtocolClient {
     const wire = encodeFrame(protocol, id, operation);
     return new Promise<JsonRecord>((resolve, reject) => {
       this.pending = { prefix: `!${protocol} ${id} `, protocol, resolve, reject,
-        timer: setTimeout(() => this.fail(new ProtocolError('Response timeout. Request may have reached the device; reconnect to reconcile.')), timeoutMs) };
+        timer: setTimeout(() => this.fail(new ConnectionFailure('timeout', 'Response timeout. Request may have reached the device; reconnect to reconcile.')), timeoutMs) };
+      this.diagnostics.state.pendingId = id;
+      this.diagnostics.note('REQUEST_SENT', { wireProtocol: protocol, command: operation.split(' ')[0] });
       // A write resolving is never an acknowledgement. Only addressed replies resolve requests.
-      void this.transport.write(wire).catch(error => this.fail(new ProtocolError(`Serial write failed: ${String(error)}`)));
+      void this.transport.write(wire).catch(error => this.fail(error instanceof ConnectionFailure ? error :
+        new ConnectionFailure('write', `Serial write failed: ${String(error)}`, error)));
     });
   }
   async package(operation: string): Promise<PackageStatus> {
     const raw = await this.request('RP1', operation);
     try { return decodePackage(raw); }
-    catch (error) { this.fail(error as Error); throw error; }
+    catch (error) {
+      const failure = new ConnectionFailure('protocol', 'Invalid RP1 response.', error);
+      this.fail(failure); throw failure;
+    }
   }
 
   private async receive(): Promise<void> {
     try {
       while (!this.dead) {
         const bytes = await this.transport.read();
-        if (bytes === null) { throw new ProtocolError('USB disconnected. Incomplete operations require reconciliation.'); }
+        // Cancellation may resolve with buffered bytes or reject after fail() won.
+        if (this.dead) { this.diagnostics.note('LATE_READ_IGNORED'); break; }
+        if (bytes === null) { throw new ConnectionFailure('lost', 'USB disconnected. Incomplete operations require reconciliation.'); }
         this.decoder.feed(bytes, line => this.dispatch(line), prefix => {
           if (this.pending?.prefix === prefix) { throw new ProtocolError('Oversized protocol reply.'); }
+        }, prefix => {
+          const matches = this.pending?.prefix === prefix;
+          if (!matches) { this.diagnostics.note('UNRELATED_REPLY_IGNORED'); }
+          return matches;
         });
       }
-    } catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
+    } catch (error) {
+      if (this.dead) { this.diagnostics.note('SECONDARY_RECEIVE_ERROR', { error: String(error) }); }
+      else { this.fail(error instanceof ConnectionFailure ? error : new ConnectionFailure(
+        error instanceof ProtocolError ? 'protocol' : 'read', error instanceof Error ? error.message : String(error), error)); }
+    } finally { this.diagnostics.note('RECEIVE_PUMP_STOPPED'); }
   }
   private dispatch(line: string): void {
     const p = this.pending;
@@ -150,25 +177,46 @@ export class ProtocolClient {
     const match = /^(-?[0-9]{1,10}) (.+)\n$/.exec(line.slice(p.prefix.length));
     requireCondition(match, 'Malformed addressed response.');
     let status: unknown;
-    try { status = JSON.parse(match[2]); } catch { throw new ProtocolError('Malformed response JSON.'); }
+    try { status = JSON.parse(match[2]); } catch (cause) { throw new ProtocolError('Malformed response JSON.', { cause }); }
     requireCondition(status !== null && typeof status === 'object' && !Array.isArray(status));
     // Validate RP1 error payloads as strictly as successful responses.
     if (p.protocol === 'RP1') { decodePackage(status as JsonRecord); }
     clearTimeout(p.timer);
+    this.diagnostics.note('RESPONSE_MATCHED', { wireProtocol: p.protocol, code: Number(match[1]) });
+    this.diagnostics.state.pendingId = null;
     this.pending = undefined;
     if (Number(match[1]) !== 0) { p.reject(new DeviceError(Number(match[1]), status as JsonRecord)); }
     else { p.resolve(status as JsonRecord); }
   }
   private fail(error: Error): void {
-    if (this.dead) { return; }
+    if (this.dead) { this.diagnostics.note('SECONDARY_FAILURE', { error: error.message }); return; }
+    this.first = error;
+    const intentional = error instanceof ConnectionFailure && error.phase === 'user';
+    if (intentional) { this.diagnostics.note('USER_DISCONNECT'); }
+    else { this.diagnostics.failure('PROTOCOL_FAILED', error, error instanceof ConnectionFailure ? error.phase : 'protocol'); }
+    this.diagnostics.note('TEARDOWN_REQUESTED', { initiator: intentional ? 'user' : 'failure' });
     this.dead = true;
+    this.transport.onError = undefined;
+    this.diagnostics.state.protocol = 'dead';
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(error); this.pending = undefined; }
-    this.closing ??= this.transport.close().catch(() => {});
-    this.onDisconnect?.(error.message);
+    this.diagnostics.state.pendingId = null;
+    this.closing ??= Promise.resolve().then(() => boundedCleanup(this.transport.close(), 'Transport', 5000)).catch(cause => {
+      this.cleanupError = cause instanceof Error ? cause : new Error(String(cause));
+      this.diagnostics.failure('PROTOCOL_CLEANUP_FAILED', cause, 'cleanup');
+    });
+    if (!intentional) { this.onDisconnect?.(error.message, error); }
   }
-  async close(): Promise<void> {
-    this.fail(new ProtocolError('Disconnected by user.'));
-    await this.closing;
-    await this.pump;
+  close(reason: Error = new ConnectionFailure('user', 'Disconnected by user.')): Promise<void> {
+    this.fail(reason);
+    this.closed ??= (async () => {
+      await this.closing;
+      try { await boundedCleanup(this.pump, 'Receive pump'); }
+      catch (cause) {
+        this.cleanupError ??= cause instanceof Error ? cause : new Error(String(cause));
+        this.diagnostics.failure('PUMP_CLEANUP_FAILED', cause, 'cleanup');
+      }
+      if (this.cleanupError) { throw this.cleanupError; }
+    })();
+    return this.closed;
   }
 }

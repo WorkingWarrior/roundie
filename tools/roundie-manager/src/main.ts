@@ -1,8 +1,10 @@
 import './style.css';
 import { inspectFile, type InspectedPackage } from './package.ts';
-import { ProtocolClient } from './protocol.ts';
+import { ProtocolClient, ProtocolError } from './protocol.ts';
 import { DeploymentCoordinator, DeviceService, installationPlan, type DeploymentProgress } from './services.ts';
 import { connectionError, serialCapability, WebSerialTransport, type SerialApi } from './transport.ts';
+import { ConnectionDiagnostics, ConnectionFailure, errorDetails } from './diagnostics.ts';
+import { runSerialProbe, type ProbeLevel } from './serial-probe.ts';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 // Only static markup is inserted as HTML. All external metadata uses textContent.
@@ -26,6 +28,50 @@ let selected: InspectedPackage | undefined;
 let working = false;
 let connecting = false;
 let connectionGeneration = 0;
+let disconnecting = false;
+let connectCanceled = false;
+let cleanupBlocked = false;
+const debugSerial = new URLSearchParams(location.search).get('debug') === 'serial';
+let diagnostics = new ConnectionDiagnostics(debugSerial);
+if (debugSerial) { Object.assign(window, { roundieDiagnostics: () => diagnostics.snapshot() }); }
+const technical = document.createElement('details');
+const technicalTitle = document.createElement('summary');
+technicalTitle.textContent = 'Connection details';
+const technicalText = document.createElement('pre');
+technicalText.style.whiteSpace = 'pre-wrap';
+technicalText.style.overflowWrap = 'anywhere';
+technical.append(technicalTitle, technicalText);
+technical.hidden = true;
+el('feedback').after(technical);
+if (debugSerial) {
+  const probes = document.createElement('details');
+  const title = document.createElement('summary');
+  title.textContent = 'Read-only serial diagnostics (A–D; E = Connect device)';
+  probes.append(title);
+  for (const level of ['A', 'B', 'C', 'D'] as ProbeLevel[]) {
+    const probe = document.createElement('button');
+    probe.textContent = `Probe ${level}`;
+    probe.addEventListener('click', async () => {
+      if (connecting || disconnecting || working || device?.client.connected || cleanupBlocked) { return; }
+      working = true;
+      diagnostics = new ConnectionDiagnostics(true);
+      render();
+      try {
+        const result = await runSerialProbe((navigator as unknown as { serial: SerialApi }).serial, level, diagnostics);
+        feedback(`Probe ${level}: ${JSON.stringify(result)}`);
+      } catch (error) { connectionFeedback(error); }
+      finally {
+        if (diagnostics.snapshot().entries.some(entry => entry.operation.endsWith('CLEANUP_FAILED'))) { cleanupBlocked = true; }
+        technical.hidden = false;
+        technicalText.textContent = JSON.stringify(diagnostics.snapshot(), null, 2);
+        working = false;
+        render();
+      }
+    });
+    probes.append(probe);
+  }
+  technical.after(probes);
+}
 const deployment = new DeploymentCoordinator();
 let lastProgress: DeploymentProgress | undefined;
 
@@ -44,14 +90,27 @@ function feedback(message: string, error = false): void {
   text('feedback', message);
   el('feedback').classList.toggle('error', error);
 }
+function connectionFeedback(error: unknown): void {
+  feedback(connectionError(error), true);
+  technical.hidden = false;
+  technicalText.textContent = errorDetails(error) + (debugSerial ? `\n${JSON.stringify(diagnostics.snapshot(), null, 2)}` : '');
+}
+async function closeClient(client: ProtocolClient, reason?: Error): Promise<void> {
+  try { await client.close(reason); }
+  catch (error) {
+    cleanupBlocked = true;
+    connectionFeedback(new ConnectionFailure('close', 'Serial cleanup incomplete. Reload this page before reconnecting.',
+      new AggregateError([client.failure, error].filter(value => value !== undefined))));
+  }
+}
 function render(): void {
   const snapshot = device?.snapshot;
   const connected = !!device?.client.connected;
-  text('connection', connected && snapshot ? 'Connected' : connecting ? 'Connecting' : 'Disconnected');
+  text('connection', connected && snapshot ? 'Connected' : connecting && !connectCanceled ? 'Connecting' : 'Disconnected');
   el('connection').classList.toggle('connected', connected && !!snapshot);
   button('connect').hidden = connected;
-  button('connect').disabled = !!capability || working || connecting;
-  button('disconnect').hidden = !connected && !connecting;
+  button('connect').disabled = !!capability || working || connecting || disconnecting || cleanupBlocked;
+  button('disconnect').hidden = disconnecting || connectCanceled || (!connected && !connecting);
   button('refresh').hidden = !connected;
   button('refresh').disabled = working || connecting;
   button('clear').disabled = working;
@@ -92,7 +151,10 @@ function render(): void {
 
 async function reconcile(): Promise<void> {
   if (!device || !deployment.uncertain) { return; }
-  const result = await deployment.reconcile(device);
+  const current = device;
+  const generation = connectionGeneration;
+  const result = await deployment.reconcile(current);
+  if (generation !== connectionGeneration || device !== current || !current.client.connected) { return; }
   if (result.outcome === 'verified' && lastProgress) { progress({ ...lastProgress, phase: 'completed', message: result.message }); }
   else {
     if (result.outcome === 'not-installed') { text('activity-title', 'Interrupted operation reconciled'); }
@@ -101,45 +163,83 @@ async function reconcile(): Promise<void> {
 }
 async function refresh(showTimings = true): Promise<void> {
   if (!device || working) { return; }
+  const current = device;
+  const generation = connectionGeneration;
   working = true; render();
   try {
-    const snapshot = await device.refresh();
+    const snapshot = await current.refresh();
+    if (generation !== connectionGeneration || device !== current || !current.client.connected) { return; }
     await reconcile();
-    if (showTimings) { details('metrics', Object.entries(snapshot.timings).map(([key, value]) => [key, `${value.toFixed(1)} ms`])); }
-  } catch (error) { feedback(connectionError(error), true); }
+    if (showTimings && generation === connectionGeneration) { details('metrics', Object.entries(snapshot.timings).map(([key, value]) => [key, `${value.toFixed(1)} ms`])); }
+  } catch (error) {
+    if (generation === connectionGeneration) {
+      if (error instanceof ProtocolError && current.client.connected) {
+        disconnecting = true;
+        await closeClient(current.client, new ConnectionFailure('protocol', error.message, error));
+        disconnecting = false;
+      }
+      connectionFeedback(error);
+    }
+  }
   finally { working = false; render(); }
 }
 
 button('connect').addEventListener('click', async () => {
-  if (working || connecting || capability) { return; }
+  if (working || connecting || disconnecting || cleanupBlocked || capability) { return; }
   connecting = true;
+  connectCanceled = false;
+  technical.hidden = true;
+  diagnostics = new ConnectionDiagnostics(debugSerial);
   const generation = ++connectionGeneration;
   render();
   let client: ProtocolClient | undefined;
   try {
-    const transport = await WebSerialTransport.connect((navigator as unknown as { serial: SerialApi }).serial);
-    client = new ProtocolClient(transport);
-    if (generation !== connectionGeneration) { await client.close(); return; }
-    device = new DeviceService(client);
-    client.onDisconnect = reason => {
-      if (device?.client !== client) { return; }
-      if (device) { device.snapshot = undefined; }
-      feedback(reason, true); render();
+    const transport = await WebSerialTransport.connect((navigator as unknown as { serial: SerialApi }).serial, diagnostics);
+    client = new ProtocolClient(transport, undefined, diagnostics);
+    if (generation !== connectionGeneration) { await closeClient(client); return; }
+    const candidate = new DeviceService(client);
+    device = candidate;
+    client.onDisconnect = (_reason, error) => {
+      if (generation !== connectionGeneration || device !== candidate) { return; }
+      candidate.snapshot = undefined;
+      connectionFeedback(error);
+      if (!connecting) {
+        disconnecting = true;
+        void closeClient(candidate.client).then(() => { disconnecting = false; render(); });
+      }
+      render();
     };
-    await device.refresh();
+    diagnostics.state.phase = 'handshake'; diagnostics.note('HANDSHAKE_STARTED');
+    const snapshot = await candidate.refresh();
+    if (generation !== connectionGeneration || !client.connected) { candidate.snapshot = undefined; return; }
+    diagnostics.state.phase = 'connected'; diagnostics.note('HANDSHAKE_COMPLETE');
+    details('metrics', Object.entries(snapshot.timings).map(([key, value]) => [key, `${value.toFixed(1)} ms`]));
     if (deployment.uncertain) { await reconcile(); }
-    else { feedback('Roundie connected. Device status and installed applications checked.'); }
+    else if (generation === connectionGeneration && client.connected) { feedback('Roundie connected. Device status and installed applications checked.'); }
   } catch (error) {
-    await client?.close();
-    feedback(connectionError(error), true);
+    const failure = error instanceof ConnectionFailure && error.phase !== 'timeout' ? error :
+      error instanceof ProtocolError ? new ConnectionFailure('protocol', 'Unsupported REP diagnostics.', error) :
+      new ConnectionFailure('handshake', 'Protocol handshake failed.', error);
+    if (failure.cleanupError) { cleanupBlocked = true; }
+    if (client) { await closeClient(client, failure); }
+    if (generation === connectionGeneration) { connectionFeedback(failure); }
+    if (cleanupBlocked) { connectionFeedback(new ConnectionFailure('close', 'Serial cleanup incomplete. Reload this page before reconnecting.',
+      new AggregateError([failure, failure.cleanupError ?? client?.cleanupError].filter(value => value !== undefined)))); }
     if (device?.client === client) { device = undefined; }
   } finally { connecting = false; render(); }
 });
 button('disconnect').addEventListener('click', async () => {
   connectionGeneration++;
+  connectCanceled = true;
+  disconnecting = true;
   deployment.cancel();
-  await device?.client.close();
-  if (!deployment.busy) { feedback('Disconnected. You can reconnect when ready.'); }
+  const old = device;
+  if (old) { old.snapshot = undefined; }
+  render();
+  if (old) { await closeClient(old.client); }
+  if (device === old) { device = undefined; }
+  disconnecting = false;
+  if (!deployment.busy && !cleanupBlocked) { feedback('Disconnected. You can reconnect when ready.'); }
   render();
 });
 button('refresh').addEventListener('click', () => { void refresh(); });
@@ -194,12 +294,14 @@ deployment.onProgress = progress;
 button('cancel').addEventListener('click', () => { deployment.cancel(); button('cancel').disabled = true; });
 button('install').addEventListener('click', async () => {
   if (working || !device || !selected || button('install').disabled) { return; }
+  const current = device;
+  const generation = connectionGeneration;
   working = true; button('cancel').disabled = false; render();
-  try { await deployment.install(device, selected); }
-  catch (error) { feedback(connectionError(error), true); }
+  try { await deployment.install(current, selected); }
+  catch (error) { if (generation === connectionGeneration) { connectionFeedback(error); } }
   finally {
     working = false; el<HTMLInputElement>('confirm').checked = false; button('cancel').hidden = true;
-    if (device.client.connected) { await refresh(false); }
+    if (generation === connectionGeneration && device === current && current.client.connected) { await refresh(false); }
     render();
   }
 });

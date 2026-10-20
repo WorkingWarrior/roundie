@@ -1,5 +1,13 @@
 # Milestone 3F-W — Roundie Manager acceptance, 2026-10-20
 
+**3F-W.1 amendment:** the physical connection failure is under investigation.
+Host remediation and diagnostics are recorded in the
+[3F-W.1 report](roundie-manager-milestone-3f-w1-diagnostics.md). Physical handshake,
+registry listing, reconnect cycles and original-failure causality remain
+**PENDING**. The older physical installation procedure below is historical
+3F-W scope, and does **not** authorize an installation in 3F-W.1. Current
+3F-W.1 acceptance is read-only; firmware/packages must remain untouched.
+
 **Result: runnable host application delivered; software gates PASS; physical
 Web Serial acceptance PENDING.** This is not a claim of browser-to-board
 installation or physical milestone completion. The task explicitly permits

@@ -158,6 +158,47 @@ Only then is completion reported. Registry refresh follows; nothing autostarts.
 
 ## Failure, cancellation and reconnect
 
+Milestone 3F-W.1 separates port selection, opening, signal setup, stream
+initialization, protocol handshake, invalid/incompatible diagnostics, serial
+I/O, unexpected EOF and user disconnect. The browser exception is retained as
+an Error cause and shown in expandable Connection details. A NetworkError is
+an opening error only when it originated in `SerialPort.open()`.
+
+Reader/writer acquisition rolls back partial ownership. Closing marks the
+transport before cancellation, observes both stream completion promises,
+releases locks before closing the port, and records secondary cleanup failures.
+There is one idempotent close promise per transport/client. A blocked sink is
+bounded by a 2 s stream cleanup deadline; port close has a separate 2 s deadline.
+Protocol shutdown bounds transport cleanup at 5 s and pump completion at 2 s.
+These deadlines report incomplete cleanup and block reconnect until page reload;
+they neither extend response timeouts nor establish that the browser released
+a stuck native operation. Normal response deadlines remain 8 s, with no retries.
+
+Protocol failure stores the first error before requesting teardown. The pump
+does not await teardown from its own receive loop, and ignores data/errors
+arriving after termination. Output-stream failure also invalidates an idle
+connection. UI callbacks and awaited connection/refresh/reconciliation results
+check their generation and device owner before updating visible state. New
+Connect attempts wait for previous cleanup; user disconnect is an intentional
+shutdown and does not produce a device-loss warning.
+
+As in production Python `read_serial_reply`, incoming lines are matched by
+their ASCII protocol/request prefix **before** strict UTF-8/JSON decoding.
+Unrelated/stale lines do not complete a request and cannot fail current decoding.
+Addressed malformed, oversized or invalid responses still fail closed. No
+incoming flush, protocol change or RP1 transaction replay was added.
+
+Opt-in `?debug=serial` records at most 256 metadata events plus a separately
+retained first error, with sequence, relative time, session, connection phase,
+transport/protocol state, pending request ID, lock ownership and teardown
+initiator. No normal-console logging or package payload logging is enabled.
+The latest trace is available through `window.roundieDiagnostics()` and the
+Connection details panel. Debug-only read-only A–D probes compare native
+streams with the Manager layers; ordinary Connect is E. See the
+[3F-W.1 report](roundie-manager-milestone-3f-w1-diagnostics.md) for evidence,
+limitations and the physical procedure. Software tests do not resolve the
+original physical failure without a captured failing session and real acceptance.
+
 | Situation | Behavior |
 |---|---|
 | Canceled before BEGIN | No transaction |
