@@ -5,7 +5,13 @@
 is NO-GO; there is no package inbox, install dialog or CDC composite firmware
 installed. See [acceptance and remaining work](usb-mtp-milestone-3f-acceptance.md).
 
-The current development path remains [RP1/PackageManager](package-manager.md)
+The current browser frontend is [Roundie Manager](roundie-manager.md), a local
+TypeScript application using Web Serial and the unchanged RP1/PackageManager.
+It requires no firmware modifications. Browser/hardware acceptance is tracked
+separately in its [3F-W acceptance](roundie-manager-milestone-3f-w-acceptance.md).
+The original **Milestone 3F — USB MTP remains NO-GO / OPEN**.
+
+The command-line path remains [RP1/PackageManager](package-manager.md)
 using `tools/roundie_package.py` with explicit `--port`. Native artifacts use
 RPK1, authoritative package and ELF validation, transactional active selection
 and explicit launch. Checksums establish integrity, not publisher identity.
@@ -19,3 +25,7 @@ system worker; success refreshes AppRegistry/launcher and never launches code
 automatically. A copied or partially received object is not an installed app.
 The [backend design](usb-mtp.md) records why direct registration of LittleFS
 does not provide this behavior in the inspected released component.
+
+Current ingestion: `browser → Web Serial → RP1 → PackageManager`.
+Future ingestion: `MTP → restricted staging → PackageManager`. Future MTP does
+not need to tunnel through RP1; the same device package authority remains.

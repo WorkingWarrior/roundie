@@ -1,5 +1,11 @@
 # MTP inbox — feasibility status, 2026-10-20
 
+**Milestone 3F — USB MTP: NO-GO / OPEN.** The current browser package-delivery
+frontend is [Roundie Manager (3F-W)](roundie-manager.md), using Web Serial/RP1
+and the existing PackageManager without firmware changes. It does not resolve
+the MTP blockers below. Future MTP remains a separate restricted-staging
+ingestion frontend to PackageManager and need not tunnel RP1.
+
 **Not implemented or deployed.** [The USB architecture gate](usb-architecture.md)
 is NO-GO. [The compile-only probe](../examples/usb_mtp_probe/README.md) proves
 CDC+MTP component compilation and configuration descriptor structure, without

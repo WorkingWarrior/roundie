@@ -34,6 +34,8 @@ See [deployment limits and recovery](docs/flash-migration.md#rep-development-upd
 The historical bring-up updater rejects the physical REP table.
 
 - [Storage/build profiles and validation](docs/storage.md)
+- [Roundie Manager: local Web Serial application management](tools/roundie-manager/README.md)
+- [Manager software acceptance and pending physical checks](docs/roundie-manager-milestone-3f-w-acceptance.md)
 - [Native ELF proof, workflow and evidence](docs/elf-loader.md)
 - [REP C application ABI 1](docs/app-abi.md)
 - [Local USB OTA, confirmation, rollback and pending physical gates](docs/ota.md)
