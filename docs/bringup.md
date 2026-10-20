@@ -749,3 +749,28 @@ Milestone 2.
 The [manual board checklist](#manual-board-checklist) remains the procedure
 for the separate outstanding checks. The ROM result does not complete those
 checks or authorize an endurance run or another milestone.
+
+## Milestone 3E.4 — bounded dual-buffer/40 MHz acceptance, 2026-10-20
+
+One genuine RO1 OTA replaced inactive B 0.3.7 with experimental 0.3.9;
+known-good A 0.3.8 was preserved. B passed NEW/PENDING_VERIFY, core self-test,
+VALID and BootGuard STABLE. Programmed LCD telemetry was source 80 MHz,
+pre=1/n=2/high=1/direct=0: **40 MHz actual**. Slow ID read, panel initialization,
+two internal DMA-capable 20-line LVGL PARTIAL buffers and all other functional
+settings were unchanged. All 82 host regressions passed; target compilation,
+image/layout checks and physical evidence remain distinct.
+
+Five Hello/UI cycles per firmware, fifteen injected counter updates per
+firmware, timer/Exit cleanup and settled idle checks passed without observed
+DMA errors/timeouts, resource/heap growth or idle redraws. Handler medians
+**82.282/82.105 ms** gave only **0.215%** gain. Back, partial updates and
+readiness did not demonstrate a consistent gain. The user reported a modest
+visible improvement, separately from pending detailed pixel/tearing/finger
+checks and unmeasured electrical margins. Engineering selection therefore
+remains **A 0.3.8 / 26.667 MHz / dual buffers**; 0.3.9 is experimental.
+
+The [3E.4 report](display-3e4-acceptance.md) records guarded selection and the
+independent final slot status, exact artifact hashes, all timing samples and
+remaining limitations. Original 0.3.7 remains archived externally; it is no
+longer an installed OTA fallback. No bootloader/table change, format, raw
+update, full-Flash readback, endurance test or Milestone 3F work occurred.

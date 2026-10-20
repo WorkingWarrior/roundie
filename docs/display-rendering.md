@@ -89,3 +89,23 @@ reached. The [acceptance report](display-3e3-acceptance.md) contains the complet
 matrix, stage attribution, retained outliers, RAM costs, exact OTA identities
 and final A VALID/STABLE / original B 0.3.7 VALID state. Camera/finger/visual
 acceptance remains PENDING until directly observed.
+
+## Milestone 3E.4 — clock-only dual-buffer comparison
+
+The separate [3E.4 experiment](display-3e4-acceptance.md) tested the missing
+40 MHz / dual 20-line configuration against a fresh five-cycle 0.3.8 baseline.
+No buffer, swap, queue, scheduling, renderer or trace implementation changed.
+All full native-UI samples retained 129,600 pixels / 18 strips. Median handler
+time was **82.282 → 82.105 ms**, a **0.215%** change; measured completion waits
+were **0.486 → 0.493 ms**. Faster transfers reduced the legacy aggregate DMA
+interval, but did not demonstrate a consistent full-frame/navigation benefit.
+The residual rendering-path wall interval remained about 56 ms. Repeated
+approximately 106 ms loading layout/setup outliers remain unresolved.
+
+Source/real-LVGL sanitizer tests and settled physical completion counters
+support retained buffer ownership, including completion carried across refresh
+iterations. Electrical data integrity and physical pixels remain separately
+limited evidence. The user reported a small visible improvement on the live
+candidate; it does not establish an electrical margin or a repeatable timing
+gain. **26.667 MHz with two 20-line buffers remains the selected default.**
+0.3.9 is a retained experimental image, not the recommended release.

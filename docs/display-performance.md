@@ -348,3 +348,23 @@ loading-submit outlier, worst-case performance and endurance also remain open.
 Evidence is outside Git in
 `/mnt/Dane/Development/roundie-backups/display-3e2-2026-10-19/`.
 No generated binary, raw traffic, backup or private device identifier is committed.
+
+## Milestone 3E.4 — 40 MHz with dual buffers, 2026-10-20
+
+The previously missing 40 MHz / two 20-line internal DMA-buffer combination
+has now completed one bounded physical OTA experiment. Actual register
+telemetry confirmed 80 MHz / 2. Five native-UI activations per firmware gave
+full-frame handler medians **82.282 ms at 26.667 MHz** and **82.105 ms at
+40 MHz**: **0.215% improvement**, with overlapping observed ranges. Completion
+waits stayed around 0.49 ms; ordinary Hello, Back, partial counter updates and
+readiness showed no consistent quantitative improvement. Layout/setup outliers
+around 106 ms remain; no scheduler/driver cause is claimed solved.
+
+The user directly reported a modest visible improvement on 0.3.9, without a
+large breakthrough. That observation is separate from detailed pixel, tearing
+and finger acceptance, and from unmeasured electrical margins. The engineering
+choice remains **0.3.8 / 26.667 MHz / dual 20-line buffers**. The optional
+40 MHz profile and stronger pinned-divider tests remain available. The
+[3E.4 acceptance record](display-3e4-acceptance.md) contains individual samples,
+timing boundaries, artifact identities, ownership evidence and final A/B state.
+Earlier 3E.2/3E.3 records retain their historical scope.
