@@ -1,0 +1,20 @@
+{
+  "name": "roundie-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "python3 tests/reference.py && node --experimental-strip-types --test tests/*.test.ts",
+    "test:ui": "python3 tests/reference.py && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.10.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  }
+}
