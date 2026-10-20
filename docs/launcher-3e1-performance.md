@@ -361,3 +361,8 @@ Human manual gate (all six steps PENDING):
 6. Exit through system navigation and verify the launcher.
 
 The automated maintenance work stops at 3E.1. No 3F work or long campaign follows.
+
+Later display evidence: [3E.2 clock separation](display-performance.md) and
+[3E.3 clock/buffer comparison](display-3e3-acceptance.md). The user subsequently
+confirmed faster 20 MHz rendering with slight progressive painting remaining;
+this does not establish detailed pixel correctness or the final 3E.3 visual gate.

@@ -4,6 +4,10 @@ Scope: exact Waveshare ESP32-S3-Touch-LCD-1.85B, ST77916, RGB565 360 × 360.
 Historical 3E.1 timings remain in [the original record](launcher-3e1-performance.md).
 No 3F, ABI, partition, CPU, optimization or task-scheduling change.
 
+The subsequent [3E.3 comparison](display-3e3-acceptance.md) and
+[rendering analysis](display-rendering.md) evaluate 30/40 MHz requests and
+buffer overlap. This file preserves the 3E.2 implementation and measurements.
+
 ## Source facts and clock decision
 
 Reviewed 2026-10-19:
@@ -290,7 +294,14 @@ Installed packages and full-package digests are unchanged:
 RTC remains valid/OS=0 without SET. This is not a host-UTC accuracy, drift or
 continuous-discipline claim. NVS and LittleFS remain healthy/mounted.
 
-## Human acceptance — PENDING
+## Human acceptance — original pending record and subsequent user evidence
+
+**Update, 2026-10-20:** the user physically confirmed that 20 MHz is
+substantially faster and that progressive painting remains slightly visible.
+Perceived responsiveness therefore has actual USER-REPORTED evidence.
+Detailed pixel correctness, tearing, scanout/electrical behavior and the new
+3E.3 candidate's visual/finger acceptance remain separate and unverified.
+The original unattended acceptance procedure below is retained as history.
 
 No camera or physical observer was available. Faster handler/transfer counters
 do not prove correct pixels, reliable physical touch, absence of progressive
@@ -304,8 +315,9 @@ The user should perform these actions sequentially, without power cycling:
    system **Exit** and compare the return.
 
 **Does progressive screen painting remain noticeable in those transitions?**
-Record the user's answer separately. Until supplied, visual correctness,
-perceived responsiveness and physical touch acceptance stay **PENDING**.
+The response has since been supplied for perceived responsiveness and
+progressive painting, as recorded above. Detailed visual correctness and
+physical touch acceptance remain **PENDING**.
 Exact wire/scanout timing, isolated CPU substage attribution, the retained
 loading-submit outlier, worst-case performance and endurance also remain open.
 
@@ -325,7 +337,8 @@ loading-submit outlier, worst-case performance and endurance also remain open.
   has not been separately isolated.
 - **DMA/synchronization failures?** None observed in bounded acceptance;
   timeout/reuse/ISR invariants also pass host tests.
-- **Visual repainting verified?** PENDING human observation; no claim of
+- **Visual repainting verified?** Subsequently USER-REPORTED as substantially
+  faster with slight progressive painting still visible; no claim of
   artifact elimination or tear-free output.
 - **Remaining work?** Human gate and the measurement limits above. No 3F work.
 - **Delivery?** Implementation/tests/source investigation in `79e12ec`; final

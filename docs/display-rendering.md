@@ -79,8 +79,13 @@ part of roughly 7–8 ms driver time and cannot overlap DMA with rendering.
 Dual 40-line buffering and a full framebuffer are NOT TESTED; doubling memory
 again has no measured justification in this bounded three-deployment matrix.
 
-## Pending final physical comparison
+## Final physical comparison
 
-Clock candidates, measured timing attribution, buffer selection and final
-acceptance are recorded after the bounded experiments. Camera/finger/visual
+The third candidate passed the bounded device tests and is retained as 0.3.8:
+26.667 MHz, two internal 20-line buffers. Full native-UI frames improved to
+78.397–81.814 ms with 0.483–0.486 ms summed completion waits. Pure rendering
+and scheduling are still not independently isolated; the <70 ms goal was not
+reached. The [acceptance report](display-3e3-acceptance.md) contains the complete
+matrix, stage attribution, retained outliers, RAM costs, exact OTA identities
+and final A VALID/STABLE / original B 0.3.7 VALID state. Camera/finger/visual
 acceptance remains PENDING until directly observed.

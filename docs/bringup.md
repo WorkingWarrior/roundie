@@ -1,14 +1,28 @@
 # Milestone 1: ESP-IDF v6.1 bring-up
 
-**Current display checkpoint — 3E.2, 2026-10-19:**
+Display work continues in the [Milestone 3E.3 acceptance record](display-3e3-acceptance.md)
+and [rendering measurements](display-rendering.md). Earlier bring-up evidence
+below remains historical and does not establish later performance or visual acceptance.
+
+**Current display checkpoint — 3E.3, 2026-10-20:** A 0.3.8 VALID/STABLE,
+original B 0.3.7 VALID/fallback. Selected 30 MHz request produces 26.667 MHz;
+two internal DMA buffers of 20 lines overlap drawing and transfer. Controlled
+full native-UI handlers are 78.4–81.8 ms; target <70 ms not reached. 40 MHz
+single-buffer candidate passed bounded tests but is not selected. 82 host
+tests, pinned v6.1 builds and three genuine A-only OTA candidates passed;
+final independent state has zero DMA errors, zero app resources, unchanged
+packages and no idle redraw. Final visual/finger acceptance remains PENDING.
+
+**Historical display checkpoint — 3E.2, 2026-10-19:**
 [The dedicated throughput record](display-performance.md) documents exact
 1.85B clock/timing sources, 3 MHz ID reads followed by 20 MHz writes, the
 unchanged internal DMA buffer/ownership, 80 passing host regression tests,
 pinned v6.1 target build and genuine RO1 OTA. Final B 0.3.7 is VALID/STABLE;
 original A 0.3.6 remains VALID/compatible. Full-frame handlers measured
 99.8–104.9 ms versus 247.3–247.8 ms; no observed transfer failures, no ELF or
-application resources left loaded. Human visual/touch acceptance and precise
-remaining CPU/outlier attribution stay PENDING. Historical bring-up records
+application resources left loaded. The user subsequently confirmed faster
+rendering with slight progressive painting still visible. Detailed visual/touch
+acceptance and precise CPU/outlier attribution were left open. Bring-up records
 below retain their original scope and evidence limits.
 
 **Milestone 3E:** [launcher/navigation acceptance](launcher-milestone-3e-acceptance.md)
