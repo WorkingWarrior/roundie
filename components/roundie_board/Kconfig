@@ -2,7 +2,7 @@ menu "Roundie LCD"
 
 choice ROUNDIE_LCD_WRITE_CLOCK
     prompt "ST77916 write clock (compile-time only)"
-    default ROUNDIE_LCD_WRITE_20MHZ
+    default ROUNDIE_LCD_WRITE_30MHZ
     help
         Bounded 1.85B profiles. ID reads always use 3 MHz. See
         docs/display-performance.md for timing and physical evidence limits.
@@ -12,7 +12,7 @@ config ROUNDIE_LCD_WRITE_3MHZ
 config ROUNDIE_LCD_WRITE_10MHZ
     bool "10 MHz (conservative candidate)"
 config ROUNDIE_LCD_WRITE_20MHZ
-    bool "20 MHz (3E.2 candidate)"
+    bool "20 MHz (accepted 3E.2 fallback)"
 config ROUNDIE_LCD_WRITE_30MHZ
     bool "30 MHz requested (26.667 MHz with the pinned 80 MHz divider)"
 config ROUNDIE_LCD_WRITE_40MHZ
@@ -26,5 +26,13 @@ config ROUNDIE_LCD_WRITE_HZ
     default 20000000 if ROUNDIE_LCD_WRITE_20MHZ
     default 30000000 if ROUNDIE_LCD_WRITE_30MHZ
     default 40000000 if ROUNDIE_LCD_WRITE_40MHZ
+
+config ROUNDIE_LCD_DOUBLE_BUFFER
+    bool "Two internal 20-line LVGL draw buffers"
+    default y
+    help
+        Compile-time partial-render experiment. Adds 14400 bytes of internal
+        DMA memory. LVGL renders the alternate buffer while the previous one
+        transfers; one transfer remains outstanding. Queue depth stays two.
 
 endmenu

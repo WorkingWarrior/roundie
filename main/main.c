@@ -990,6 +990,21 @@ void app_main(void)
                  buffer_bytes);
         headless_recovery();
     }
+    void *draw_buffer_second = NULL;
+    unsigned buffer_count = 1;
+#if CONFIG_ROUNDIE_LCD_DOUBLE_BUFFER
+    draw_buffer_second = heap_caps_malloc(buffer_bytes,
+                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (draw_buffer_second == NULL) {
+        heap_caps_free(draw_buffer);
+        ESP_LOGE(TAG, "No internal DMA memory for second %zu-byte LVGL buffer",
+                 buffer_bytes);
+        headless_recovery();
+    }
+    buffer_count = 2;
+#endif
+    ESP_LOGI(TAG, "LVGL PARTIAL RGB565: %u x %u lines, %zu bytes each, internal DMA",
+             buffer_count, DISPLAY_STRIP_LINES, buffer_bytes);
 
     state.display = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
     if (state.display == NULL) {
@@ -1001,7 +1016,7 @@ void app_main(void)
     lv_display_add_event_cb(state.display, display_event, LV_EVENT_ALL, &state);
     lv_display_set_flush_cb(state.display, flush_display);
     lv_display_set_flush_wait_cb(state.display, wait_for_display);
-    lv_display_set_buffers(state.display, draw_buffer, NULL, buffer_bytes,
+    lv_display_set_buffers(state.display, draw_buffer, draw_buffer_second, buffer_bytes,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_indev_t *input = NULL;
     if (!roundie_recovery_active()) {

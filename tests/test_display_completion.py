@@ -8,6 +8,66 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DisplayCompletionTests(unittest.TestCase):
+    def test_internal_buffer_allocation_failure(self):
+        source = (ROOT / 'main/main.c').read_text()
+        allocation = source[source.index('    const size_t buffer_bytes ='):
+                            source.index('    state.display = lv_display_create(')]
+        harness = r'''
+#include <assert.h>
+#include <stddef.h>
+#include <setjmp.h>
+#define DISPLAY_WIDTH 360
+#define DISPLAY_STRIP_LINES 20
+#define MALLOC_CAP_INTERNAL 1
+#define MALLOC_CAP_DMA 2
+#define ESP_LOGE(...) ((void)0)
+#define ESP_LOGI(...) ((void)0)
+static int calls, frees, fail_at;
+static char memory[2];
+static jmp_buf failed;
+static void *heap_caps_malloc(size_t bytes, int caps)
+{
+    assert(bytes == 14400 && caps == 3);
+    calls++;
+    return calls == fail_at ? NULL : &memory[calls - 1];
+}
+static void heap_caps_free(void *p) { assert(p == &memory[0]); frees++; }
+static _Noreturn void headless_recovery(void) { longjmp(failed, 1); }
+static void allocate(void)
+{
+'''
+        harness += allocation + r'''
+    assert(buffer_count == (CONFIG_ROUNDIE_LCD_DOUBLE_BUFFER ? 2U : 1U));
+    assert(draw_buffer == &memory[0]);
+    assert(draw_buffer_second == (CONFIG_ROUNDIE_LCD_DOUBLE_BUFFER ? &memory[1] : NULL));
+}
+int main(void)
+{
+    for (fail_at = 0; fail_at <= 2; fail_at++) {
+        calls = frees = 0;
+        if (setjmp(failed) == 0) {
+            allocate();
+            assert(fail_at == 0 || (!CONFIG_ROUNDIE_LCD_DOUBLE_BUFFER && fail_at == 2));
+        } else {
+            assert(calls == fail_at);
+            assert(frees == (fail_at == 2));
+        }
+    }
+    (void)heap_caps_free;
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='roundie-draw-allocation-') as temporary:
+            c = Path(temporary) / 'allocation.c'
+            exe = Path(temporary) / 'allocation'
+            c.write_text(harness)
+            for double in (0, 1):
+                subprocess.run(['cc', '-std=c23', '-Wall', '-Wextra', '-Werror',
+                                '-fsanitize=address,undefined', '-g',
+                                f'-DCONFIG_ROUNDIE_LCD_DOUBLE_BUFFER={double}', str(c), '-o', str(exe)],
+                               check=True, capture_output=True)
+                subprocess.run([str(exe)], check=True, timeout=5)
+
     def test_buffer_wait_timeout_and_partial_submission(self):
         source = (ROOT / 'main/main.c').read_text()
         callbacks = source[source.index('static void wait_for_display('):

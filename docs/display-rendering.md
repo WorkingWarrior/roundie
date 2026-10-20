@@ -54,10 +54,32 @@ two DMA descriptors or a larger SPI queue are unnecessary. A real-LVGL host
 test checks buffer hashes through delayed mock completions, full-frame and
 odd-width partial pixels, final completion across refreshes, and RGB565 colors
 at four-byte and two-byte aligned starts. This is software evidence, not DMA
-or physical timing validation. Byte-aligned unaligned RGB565 starts are outside
-the supported halfword-aligned LVGL buffer contract.
+or physical timing validation. Odd-byte RGB565 starts are outside this
+firmware's input domain: internally allocated buffers begin on word boundaries.
 
-## Pending physical comparison
+## Third candidate decision
+
+Two clock-only native-UI full frames measured 96.335–96.383 ms at 26.667 MHz
+and 89.338–89.373 ms at 40 MHz, versus 99.781–99.788 ms in the refreshed
+20 MHz baseline. Neither clock removed the main rendering-path wall cost.
+At 40 MHz, 10.856–12.992 ms remained in GUI completion waits.
+
+**Decision:** spend the third and final candidate deployment on two 20-line
+buffers at **26.667 MHz**. Compare it directly with the first candidate;
+this changes buffering independently of clock. With overlap, the rendering
+path can hide the slower transfer, making this a better conservative-clock
+hypothesis than adding more frequency. The added internal DMA allocation is
+14,400 bytes; the first candidate retained 216,307 bytes internal free and
+139,264 bytes as its largest internal block after native unload. No queue,
+CPU, global optimizer or RGB565 algorithm change is needed.
+
+Single 40-line buffering is pixel/ownership tested with real LVGL on the host,
+but physical performance is NOT TESTED: halving submissions can save only
+part of roughly 7–8 ms driver time and cannot overlap DMA with rendering.
+Dual 40-line buffering and a full framebuffer are NOT TESTED; doubling memory
+again has no measured justification in this bounded three-deployment matrix.
+
+## Pending final physical comparison
 
 Clock candidates, measured timing attribution, buffer selection and final
 acceptance are recorded after the bounded experiments. Camera/finger/visual
