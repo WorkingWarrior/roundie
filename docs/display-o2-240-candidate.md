@@ -260,3 +260,36 @@ transforms, or the loading spinner (about 94 ms a frame on 0.3.11), can cost mor
 period; visual tearing (no LCD_TE sync) and finger latency; runs longer than 300
 frames. 0.3.12 is experimental. Adopting any of these settings needs a recorded
 decision, including the internal memory budget.
+
+## Cheap variant and cache/Flash experiments (2026-11-02)
+
+All three use `-O2`, 160 MHz, two 20-line buffers, 100 Hz tick and 33 ms refresh,
+with the same five-cycle workload and 300-frame `BENCH` as 0.3.12. Records are in
+`/mnt/Dane/Development/roundie-backups/perf-{o2-160,icache32,iram}-2026-11-02/`.
+Every image passed RO1 verify as VALID, with Safe Mode off, stage 4, display errors
+0, flushes equal to DMA completions, and clean launcher return in each cycle.
+
+| Variant | Full UI frame, median | Residual | BENCH UI handler | BENCH UI / launcher FPS | Runtime internal free / largest |
+|---|---:|---:|---:|---:|---:|
+| 0.3.13: `-O2` only | 70.0 ms | 48.8 ms | 59.1 ms | 15.0 / 12.5 | 205,323 / 131,072 B |
+| 0.3.14: + 32 KB I-cache | 47.8 ms | 28.6 ms | 36.7 ms | 24.8 / 16.7 | 188,939 / 114,688 B |
+| 0.3.15: + LVGL core in IRAM | 32.3 ms | 13.8 ms | 27.2 ms | 25.0 / 25.0 | 111,867 / 38,912 B |
+
+With a 100 Hz tick and 33 ms refresh, BENCH periods settle on 40 ms, so 25.0 FPS
+is that configuration's ceiling. Handler time is the better comparison there.
+
+**Findings.** `-O2` alone took the 0.3.8 full frame from 82.3 to 70.0 ms. Moving
+from 160 to 240 MHz then cut residual only 11% (48.8 → 43.6 ms), against the 33%
+a CPU-bound path would show. Growing the instruction cache cut it 41%, and
+moving the core out of Flash cut it a further 52%. This confirms by experiment that
+instruction fetch, not CPU speed or pixel count, was the main cost. Miss counters
+were still not read. 0.3.15's IRAM share is broad, not profiled: 31 objects,
+about 94 KB of DIRAM by the size report and 77 KB of runtime free memory.
+
+**Not deployed: XIP from PSRAM.** A build (`perf-xip-2026-11-02/`) exits 0 but
+`validate_storage_layout.py` rejects it with `config mismatch:
+SPIRAM_XIP_FROM_PSRAM`. The guard reflects the documented REP decision and has a
+test, so it was neither bypassed nor changed. §25 item 8 stays open.
+
+**PENDING:** power at each variant; ELF behavior under low internal memory on
+0.3.15; a trimmed IRAM list based on profiling; visual tearing and finger latency.

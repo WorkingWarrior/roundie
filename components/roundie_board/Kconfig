@@ -36,6 +36,13 @@ config ROUNDIE_LCD_STRIP_LINES
         buffer and the SPI transfer limit use 720 bytes per line of internal
         DMA memory.
 
+config ROUNDIE_LVGL_CORE_IRAM
+    bool "Place the LVGL refresh and draw core in IRAM"
+    default n
+    help
+        Compile-time experiment measuring Flash fetch cost. Uses internal
+        memory for the objects listed in main/lvgl_iram.lf.
+
 config ROUNDIE_LCD_DOUBLE_BUFFER
     bool "Two internal LVGL draw buffers"
     default y
