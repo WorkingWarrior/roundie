@@ -332,6 +332,37 @@ of 0.3.17 (77.7 s total, first ~51 s covered): mean period 51.4 ms, maximum
 68.7 ms, errors 0, against 40.0 ms mean and 42.3 ms maximum idle. There is no
 non-XIP comparison from the same run.
 
-**PENDING:** XIP boot time; Safe Mode, rollback and recovery paths under XIP; package
+## Recovery under XIP (2026-11-02, user-authorized device test)
+
+Device tests, one run each, on 0.3.16 and 0.3.17 with the installed bootloader.
+Evidence is outside Git in `roundie-backups/recovery-xip-2026-11-02/`.
+
+| Test | Result |
+|---|---|
+| RS1 REQUEST on 0.3.17 | Safe Mode, reason=request, latch=1, retained=1, self-test passed, both slots VALID, reached stage 4 |
+| Services in Safe Mode | No LittleFS, I2C probe or touch lines in the boot log; LCD and DMA checks passed; RO1 and RS1 answered |
+| RS1 REBOOT (normal trial) | trial=1, LittleFS mounted, then safe=0, latch=0, failures=0, stage 4 |
+| RS1 CLEAR, SELECT ota_1, REBOOT | 0.3.16 went NEW, PENDING_VERIFY, then VALID after its own self-test; 0.3.17 stayed VALID |
+| Automatic rollback | `0.3.17-rollback-test` in ota_0 booted PENDING_VERIFY, reset unconfirmed, and the bootloader returned to 0.3.16 with ota_0 ABORTED and `rollback=0` |
+| Restoration | Exact 0.3.17 image reinstalled by RO1; PENDING_VERIFY to VALID, `rollback=1` |
+
+No panic, watchdog report or backtrace appeared in these captures. The rollback
+image differs from 0.3.17 only by `ROUNDIE_OTA_TEST_UNCONFIRMED_RESET` and its
+version; image SHA-256 `09f8828abbcd009f5c35ea9faa0b15253a07b9d34ae41d22d89baacf02bbcf02`.
+LittleFS kept 9,240,576 total / 57,344 used bytes across every boot. This checks
+mount and capacity, not file contents.
+
+**Boot time:** 0.3.17 logged its instruction copy at 413 ms, `app_main()` at 912 ms
+and self-test at 3,292 ms. Non-XIP 0.3.7 logged `app_main()` at 874 ms and self-test
+at 3,344 ms. These are different builds, so this bounds the cost only roughly: about
+40 ms before `app_main()`, with no visible delay at self-test.
+
+**After restoration:** `BENCH 300` on the launcher gave 20.0 FPS with 0 errors; the
+UI package started and exited. Final state: 0.3.17 running from ota_0, 0.3.16 VALID
+in ota_1, Safe Mode off, stage 4.
+
+**PENDING:** ROM Download under XIP (needs physical buttons and cable; the ROM route
+does not run application code, but it has not been repeated here); BootGuard
+three-reset loop, real panic and watchdog under XIP; power interruption; package
 installation with GUI load; power; long-duration operation; ELF stress with large
 applications. Adopting XIP needs a recorded decision and an updated guard and test.
