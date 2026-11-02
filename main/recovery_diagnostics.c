@@ -87,12 +87,22 @@ void roundie_recovery_poll(int64_t now_us)
 #endif
 }
 
+#if CONFIG_ROUNDIE_BOOT_GUARD_TEST
+static bool worker_hang_allowed(void)
+{
+    roundie_boot_status_t status;
+    roundie_boot_status(&status);
+    return !status.safe && status.stage == ROUNDIE_BOOT_STABLE;
+}
+#endif
+
 void roundie_recovery_command(char *line, bool discard)
 {
     char id[9] = "00000000";
     esp_err_t error = ESP_ERR_INVALID_ARG;
     bool restart = false;
     bool fault = false;
+    bool hang = false;
     size_t length = strlen(line);
     if (length >= 14 && memcmp(line, "!RS1 ", 5) == 0 && line[13] == ' ') {
         bool valid_id = true;
@@ -153,6 +163,10 @@ void roundie_recovery_command(char *line, bool discard)
                            idle_valid && app_idle && strcmp(operation + 6, ota.running.elf) == 0 && roundie_boot_fault_arm()) {
                     fault = roundie_boot_fault_step(true);
                     error = fault ? ESP_OK : ESP_ERR_INVALID_STATE;
+                } else if (strncmp(operation, "HANG ", 5) == 0 && length == 14 + 5 + 64 &&
+                           strcmp(operation + 5, ota.running.elf) == 0 && worker_hang_allowed()) {
+                    hang = true;
+                    error = ESP_OK;
 #endif
                 } else {
                     error = ESP_ERR_INVALID_STATE;
@@ -195,10 +209,18 @@ void roundie_recovery_command(char *line, bool discard)
         version, ota.running.label, roundie_ota_image_state_name(ota.running.state), ota.running.elf,
         ota.other.label, roundie_ota_image_state_name(ota.other.state), ota.other.image_valid,
         ota.other.compatible, ota.other.elf, heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-        restart || fault, status.fault_app);
+        restart || fault || hang, status.fault_app);
     int written = -1;
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         written = usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));
+    }
+    if (hang && written == length_out) {
+        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
+        /* Keeps the scheduler running and stops only this worker's watchdog
+         * feed: a real task watchdog panic, bounded by its timeout. */
+        for (;;) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
     }
     if ((restart || fault) && written == length_out) {
         if (!fault) {

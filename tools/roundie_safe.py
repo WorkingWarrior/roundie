@@ -63,13 +63,15 @@ def main(argv=None):
     select.add_argument("--elf", required=True, help="explicit confirmation of the exact target ELF identity")
     fault = commands.add_parser("fault", help="development image only: arm exactly three incomplete VALID boots")
     fault.add_argument("--elf", required=True)
+    hang = commands.add_parser("hang", help="development image only: stop the worker until its task watchdog panics")
+    hang.add_argument("--elf", required=True)
     args = parser.parse_args(argv)
     operation = {"status": "STATUS", "request": "REQUEST", "clear": "CLEAR", "reboot": "REBOOT", "slots": "SLOT STATUS"}.get(args.command)
     try:
-        if args.command in ("select", "fault"):
+        if args.command in ("select", "fault", "hang"):
             if re.fullmatch(r"[0-9a-f]{64}", args.elf) is None:
                 raise DeviceError("--elf must be the exact 64-character lowercase identity")
-            operation = f"SELECT {args.slot} {args.elf}" if args.command == "select" else f"FAULT {args.elf}"
+            operation = f"SELECT {args.slot} {args.elf}" if args.command == "select" else f"{args.command.upper()} {args.elf}"
         with open_serial(args.port) as port:
             print(json.dumps(request(port, operation), indent=2))
         return 0

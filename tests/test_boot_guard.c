@@ -2,6 +2,7 @@
  * firmware-only debug API. Persistence and USB controller are separate actual
  * translation units with mocked IDF APIs. No reference state machine. */
 #include <assert.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <string.h>
 #include "../components/roundie_boot_guard/boot_guard.c"
@@ -70,7 +71,15 @@ esp_err_t nvs_commit(nvs_handle_t handle)
 esp_reset_reason_t esp_reset_reason(void) { return raw_reset; }
 void esp_restart(void) { resets++; }
 size_t heap_caps_get_free_size(unsigned flags) { (void)flags; return 100000; }
-void vTaskDelay(unsigned ticks) { assert(ticks == 100); }
+static jmp_buf hang_exit;
+static bool hang_expected;
+void vTaskDelay(unsigned ticks)
+{
+    assert(ticks == 100);
+    if (hang_expected) {
+        longjmp(hang_exit, 1);
+    }
+}
 esp_err_t usb_serial_jtag_wait_tx_done(unsigned ticks) { assert(ticks == 100); return ESP_OK; }
 int usb_serial_jtag_write_bytes(const void *data, size_t size, unsigned ticks)
 {
@@ -299,6 +308,29 @@ int main(void)
     assert(!elf_busy && writes == 0 && resets == 0);
     roundie_recovery_poll(100);
     assert(writes == 1 && commits == 1 && resets == 1);
+    char hang[80];
+    fresh();
+    snprintf(hang, sizeof(hang), "HANG %s", ota.running.elf);
+    assert(!command(hang, false)); /* Not stable yet. */
+    stable();
+#if CONFIG_ROUNDIE_BOOT_GUARD_TEST
+    hang_expected = true;
+    if (setjmp(hang_exit) == 0) {
+        command(hang, false);
+        assert(false);
+    }
+    hang_expected = false;
+    assert(strstr(response, "!RS1 1234abcd 0 ") != NULL && strstr(response, "\"restart\":1") != NULL);
+    assert(resets == 0);
+    char wrong[80];
+    snprintf(wrong, sizeof(wrong), "HANG %064d", 0);
+    assert(!command(wrong, false));
+    fresh();
+    stable();
+    assert(command("REQUEST", false) && !command(hang, false));
+#else
+    assert(!command(hang, false));
+#endif
     /* A failed session names its loaded package for exactly the next boot. */
     fresh();
     stable();
