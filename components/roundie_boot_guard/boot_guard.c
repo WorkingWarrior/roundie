@@ -120,6 +120,9 @@ void roundie_boot_begin(roundie_reset_class_t reset, const uint8_t image[32])
          * the ordinary threshold; unrelated restarts cannot clear the latch. */
         if (retained.trial == 2) {
             enter_safe(ROUNDIE_SAFE_BOOT_LOOP);
+            if (retained.stage == ROUNDIE_BOOT_GUI) {
+                current.skip_gui = true;
+            }
         }
         current.trial = retained.trial == 1 && retained.planned && reset == ROUNDIE_RESET_SOFTWARE;
     } else {
@@ -249,6 +252,9 @@ bool roundie_boot_normal_trial(void)
          * consume the token; power loss or a panic goes back to Safe Mode. */
         current.latch = current.reason;
         retained.safe = 0;
+        /* The trial must run the full normal path: a kept GUI suppression
+         * would fall back to headless recovery and could never pass. */
+        retained.skip_gui = 0;
         retained.trial = 1;
         retained.planned = 1;
         retained.crc = checksum();

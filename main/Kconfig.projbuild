@@ -63,8 +63,8 @@ config ROUNDIE_BOOT_GUARD_TEST
         Adds RS1 FAULT with exact running ELF identity. Only a stable VALID
         image can arm three incomplete-boot software resets. Safe Mode cancels
         all remaining faults. Also adds RS1 HANG, which stops the system
-        worker until its task watchdog panics. Must use a version ending in
-        -boot-test.
+        worker until its task watchdog panics, in any boot state including
+        Safe Mode. Must use a version ending in -boot-test.
         Disable in normal firmware; never causes a fault merely by booting.
 
 config ROUNDIE_DEV_PACKAGES

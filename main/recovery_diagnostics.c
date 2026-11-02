@@ -87,15 +87,6 @@ void roundie_recovery_poll(int64_t now_us)
 #endif
 }
 
-#if CONFIG_ROUNDIE_BOOT_GUARD_TEST
-static bool worker_hang_allowed(void)
-{
-    roundie_boot_status_t status;
-    roundie_boot_status(&status);
-    return !status.safe && status.stage == ROUNDIE_BOOT_STABLE;
-}
-#endif
-
 void roundie_recovery_command(char *line, bool discard)
 {
     char id[9] = "00000000";
@@ -164,7 +155,7 @@ void roundie_recovery_command(char *line, bool discard)
                     fault = roundie_boot_fault_step(true);
                     error = fault ? ESP_OK : ESP_ERR_INVALID_STATE;
                 } else if (strncmp(operation, "HANG ", 5) == 0 && length == 14 + 5 + 64 &&
-                           strcmp(operation + 5, ota.running.elf) == 0 && worker_hang_allowed()) {
+                           strcmp(operation + 5, ota.running.elf) == 0) {
                     hang = true;
                     error = ESP_OK;
 #endif

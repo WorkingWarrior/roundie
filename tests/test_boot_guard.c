@@ -311,26 +311,48 @@ int main(void)
     char hang[80];
     fresh();
     snprintf(hang, sizeof(hang), "HANG %s", ota.running.elf);
-    assert(!command(hang, false)); /* Not stable yet. */
-    stable();
 #if CONFIG_ROUNDIE_BOOT_GUARD_TEST
-    hang_expected = true;
-    if (setjmp(hang_exit) == 0) {
-        command(hang, false);
-        assert(false);
+    /* Faults must also be reachable before STABLE and inside Safe Mode. */
+    for (int state = 0; state < 3; state++) {
+        fresh();
+        if (state >= 1) {
+            stable();
+        }
+        if (state == 2) {
+            assert(command("REQUEST", false));
+        }
+        hang_expected = true;
+        if (setjmp(hang_exit) == 0) {
+            command(hang, false);
+            assert(false);
+        }
+        hang_expected = false;
+        assert(strstr(response, "!RS1 1234abcd 0 ") != NULL && strstr(response, "\"restart\":1") != NULL);
     }
-    hang_expected = false;
-    assert(strstr(response, "!RS1 1234abcd 0 ") != NULL && strstr(response, "\"restart\":1") != NULL);
+    fresh();
+    stable();
     assert(resets == 0);
     char wrong[80];
     snprintf(wrong, sizeof(wrong), "HANG %064d", 0);
     assert(!command(wrong, false));
-    fresh();
-    stable();
-    assert(command("REQUEST", false) && !command(hang, false));
 #else
+    stable();
     assert(!command(hang, false));
 #endif
+    /* A retained GUI suppression must not defeat the explicit normal trial;
+     * a trial that fails in GUI suppresses it again. */
+    fresh();
+    stable();
+    start(ROUNDIE_RESET_WATCHDOG);
+    assert(status().safe && !status().skip_gui);
+    start(ROUNDIE_RESET_PANIC);
+    assert(status().safe && status().skip_gui);
+    assert(roundie_boot_normal_trial() && roundie_boot_persistence_sync());
+    start(ROUNDIE_RESET_SOFTWARE);
+    assert(!status().safe && status().trial && !status().skip_gui);
+    roundie_boot_stage(ROUNDIE_BOOT_GUI);
+    start(ROUNDIE_RESET_PANIC);
+    assert(status().safe && status().skip_gui && status().reason == ROUNDIE_SAFE_BOOT_LOOP);
     /* A failed session names its loaded package for exactly the next boot. */
     fresh();
     stable();
