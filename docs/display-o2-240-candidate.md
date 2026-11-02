@@ -13,8 +13,8 @@ rendering-path wall interval. The firmware builds at `-Og`
 (`COMPILER_OPTIMIZATION_DEBUG`) with the CPU at 160 MHz, one software draw unit
 and no draw assembly (`LV_USE_DRAW_SW_ASM=0`).
 
-**Assumption (unverified):** LVGL software rasterization is CPU-bound, so `-O2`
-and 240 MHz shorten that interval. The gain, and whether it is worth the extra
+**Assumption (unverified, see "Why 60 ms remains"):** LVGL software rasterization
+is CPU-bound, so `-O2` and 240 MHz shorten that interval. The gain, and whether it is worth the extra
 current draw, is a **pending experiment**.
 
 **Pending experiment:** OTA the candidate to the inactive slot and repeat the
@@ -110,3 +110,62 @@ images.
 high-water marks and watchdog margin under load (no endurance run); visual
 smoothness, tearing and finger latency (needs human observation); behavior of
 the 0.3.10 image after repeated OTA or Safe Mode/rollback transitions.
+
+## Why 60 ms remains, and whether 33 ms is reachable
+
+Analysis of the 0.3.10 traces above and of source; no new firmware was deployed.
+
+**Verified fact (traces, `o2-*.json`, median per workload):** the residual
+rendering-path interval follows strip count, not pixels.
+
+| Pixels | Strips | Residual ms | ms per strip | µs per pixel |
+|---:|---:|---:|---:|---:|
+| 840 | 1 | 3.10 | 3.10 | 3.69 |
+| 6,016 | 1 | 2.16 | 2.16 | 0.36 |
+| 8,208 | 2 | 3.62 | 1.81 | 0.44 |
+| 36,384 | 7 | 20.63 | 2.95 | 0.57 |
+| 76,840 | 12 | 48.70 | 4.06 | 0.63 |
+| 129,600 (native UI) | 18 | 43.6 | 2.42 | 0.34 |
+
+An 840-pixel update costs as much per strip as a full frame. The RGB565 swap
+touches all 129,600 pixels in 2.8 ms, which bounds plain pixel work on internal
+RAM at this order. The native UI is a flat background, four labels and one
+rounded button (`examples/ui_elf`), so arcs, shadows and blending do not explain it.
+This replaces the rasterization assumption above: most of the 43.6 ms is fixed
+work repeated per strip, about 2–3 ms each, or 500,000+ cycles at 240 MHz.
+
+**Verified fact (source):** LVGL redraws the object tree for each PARTIAL strip,
+and LVGL runs from Flash through a 16 KB instruction cache with 32-byte lines.
+Flash is DIO at 80 MHz. `FREERTOS_HZ=100`, so the GUI loop's 10 ms delay is one
+tick; `LV_DEF_REFR_PERIOD=33` caps refresh at about 30 Hz. `main.c` sleeps after
+every handler, so a 60 ms frame gives about 14 full frames per second sustained,
+not the 16.5 implied by handler time alone. Sustained cadence was never measured:
+every number here comes from single frames triggered by navigation.
+
+**Assumption (unverified):** instruction-cache misses dominate the per-strip
+cost. A 32-byte DIO refill is roughly 150 flash clocks (about 1.9 µs), so 2.4 ms
+equals about 1,300 misses, or 40 KB of code, which exceeds the cache. Clock and
+`-O2` together cut the residual only 22%, less than the 33% from clock alone,
+which suggests a wall-time component that does not scale with CPU frequency.
+No cache-miss counter has been read.
+
+**Limits for 33.3 ms:** wire time is 19.4 ms at 26.667 MHz and 13.0 ms at 40 MHz.
+With two buffers it overlaps rendering, so it is not a hard limit. CPU-side work
+must fall from about 60 ms to below about 30 ms. The 3E.3 statement that 40-line
+buffering saves only part of the 7–8 ms driver time predates this per-strip
+analysis and ignores the residual.
+
+**Pending experiments, one variable each, by RO1 OTA to the inactive slot:**
+
+| # | Change | Cost | Question |
+|---|---|---|---|
+| 1 | Two 60-line buffers (6 strips), raising the 14,464-byte SPI limit | +57.6 KB internal DMA RAM | Does residual fall with strip count? If it is fully per-strip, the frame reaches about 25–33 ms |
+| 2 | 32 KB instruction cache | Less internal RAM | Is it cache pressure? |
+| 3 | LVGL hot paths in IRAM, or XIP from PSRAM (§25 item 8) | IRAM or PSRAM; XIP needs ELF-loader revalidation | Is it Flash fetch latency? |
+| 4 | Loop waits on LVGL's next timer; lower `LV_DEF_REFR_PERIOD` | Measured GUI/idle share | Does cadence reach handler time? |
+
+Acceptance for any 30 FPS claim: a sustained workload of consecutive full-frame
+invalidations, reporting measured frame period over at least 300 frames, plus
+DMA errors, watchdog and stack margins. Single-frame handler time is not enough.
+Without LCD_TE synchronization (§25 item 18) tearing stays unaddressed: wire time
+exceeds a 16.7 ms scan at 26.667 MHz, though that scan rate is itself unverified.
