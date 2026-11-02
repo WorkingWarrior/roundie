@@ -55,7 +55,23 @@ RE1 development images have no ID.
 OTA and packages is now on the task watchdog (10 s, panic), reset once per loop.
 A stall resets into the runtime recovery rule above. Its largest measured
 request is 294 ms (OTA END, an earlier 668 KB image); the worst case for a full
-slot or a slow Flash erase is unmeasured. No real worker stall has been tested.
+slot or a slow Flash erase is unmeasured.
+
+**Device test, 2026-11-02, under XIP:** diagnostic `0.3.19-boot-test` adds RS1 `HANG
+<exact-running-ELF>`, accepted only when normal and STABLE. It stops the worker's
+watchdog feed while the scheduler keeps running. Two runs, one each:
+
+| Case | Result |
+|---|---|
+| Roundie UI loaded | Task watchdog named `system_worker` after 10.0 s, reset class 4 (raw 6), Safe Mode reason=core, `fault_app=org.roundie.ui` |
+| No package loaded | Same reset and Safe Mode, `fault_app` empty |
+
+RS1 answered after each reset, both images stayed VALID, and REBOOT returned to
+normal. This verifies one real task-watchdog panic path only. A hung native callback,
+other panic types, the display during the stall and repeated faults remain PENDING.
+Evidence is in `roundie-backups/hang-test-2026-11-02/`, outside Git. Normal 0.3.19
+then replaced the test image; five application cycles passed with 0 display errors,
+25.0 FPS on the UI and 20.0 on the launcher.
 
 Failure after a completed stable normal boot is not itself a startup loop.
 Failure during an explicit normal trial returns directly to Safe Mode on the
@@ -155,9 +171,9 @@ one three-reset incomplete-startup experiment in an already VALID diagnostic
 image passed. The count reached 3 and stable Safe Mode; both images remained
 VALID and recovery returned to normal with cleared history. Exact logs,
 image identities and restoration status are in [safe-mode.md](safe-mode.md).
-These are controlled software resets. Real panic/watchdog, brownout,
-power interruption, deep-sleep retention and visual/touch checks remain
-PENDING; controlled software resets do not prove those reset classes.
+These are controlled software resets. Brownout, power interruption, deep-sleep
+retention and visual/touch checks remain PENDING; controlled software resets do
+not prove those reset classes. One real task-watchdog panic is recorded above.
 BootGuard cannot recover code that fails before its own early check, an
 unbootable firmware, broken USB hardware, or inability to allocate its system
 worker. Manually usable ROM Download remains the final recovery path.
