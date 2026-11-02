@@ -56,7 +56,8 @@ int main(void)
             c = Path(temporary) / 'divider.c'
             exe = Path(temporary) / 'divider'
             harness_config = Path(temporary) / 'sdkconfig.h'
-            harness_config.write_text('#define CONFIG_ROUNDIE_LCD_WRITE_HZ 40000000\n')
+            harness_config.write_text('#define CONFIG_ROUNDIE_LCD_WRITE_HZ 40000000\n'
+                                      '#define CONFIG_ROUNDIE_LCD_STRIP_LINES 20\n')
             c.write_text('#include "lcd_config.h"\n' + harness)
             subprocess.run(['cc', '-std=gnu23', '-Wall', '-Wextra', '-Werror',
                             '-fsanitize=address,undefined', '-g', '-I' + temporary,
@@ -186,7 +187,8 @@ int main(void)
             for hz in (3000000, 10000000, 20000000, 30000000, 40000000, 0, 60000000, 80000000):
                 command = ['cc', '-std=c23', '-Wall', '-Wextra', '-Werror',
                            '-fsanitize=address,undefined', '-g',
-                           f'-DCONFIG_ROUNDIE_LCD_WRITE_HZ={hz}', '-I' + temporary,
+                           f'-DCONFIG_ROUNDIE_LCD_WRITE_HZ={hz}', '-DCONFIG_ROUNDIE_LCD_STRIP_LINES=20',
+                           '-I' + temporary,
                            '-I' + str(ROOT / 'components/roundie_board'), str(c),
                            '-o', str(directory / 'clock')]
                 compiled = subprocess.run(command, capture_output=True)

@@ -44,7 +44,7 @@ _Static_assert(sizeof(time_t) == 8, "RTC requires ESP-IDF 64-bit time_t");
 
 #define DISPLAY_WIDTH 360
 #define DISPLAY_HEIGHT 360
-#define DISPLAY_STRIP_LINES 20
+#define DISPLAY_STRIP_LINES CONFIG_ROUNDIE_LCD_STRIP_LINES
 
 static const char *TAG = "roundie";
 

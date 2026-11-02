@@ -27,12 +27,22 @@ config ROUNDIE_LCD_WRITE_HZ
     default 30000000 if ROUNDIE_LCD_WRITE_30MHZ
     default 40000000 if ROUNDIE_LCD_WRITE_40MHZ
 
+config ROUNDIE_LCD_STRIP_LINES
+    int "LVGL partial draw buffer height in lines"
+    range 20 60
+    default 20
+    help
+        Compile-time experiment; firmware accepts only 20 or 60. Each draw
+        buffer and the SPI transfer limit use 720 bytes per line of internal
+        DMA memory.
+
 config ROUNDIE_LCD_DOUBLE_BUFFER
-    bool "Two internal 20-line LVGL draw buffers"
+    bool "Two internal LVGL draw buffers"
     default y
     help
-        Compile-time partial-render experiment. Adds 14400 bytes of internal
-        DMA memory. LVGL renders the alternate buffer while the previous one
-        transfers; one transfer remains outstanding. Queue depth stays two.
+        Compile-time partial-render experiment. Adds one more buffer of
+        internal DMA memory. LVGL renders the alternate buffer while the
+        previous one transfers; one transfer remains outstanding. Queue depth
+        stays two.
 
 endmenu
