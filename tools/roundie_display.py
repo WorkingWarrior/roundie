@@ -17,7 +17,7 @@ TRACE_V2 = TRACE + ('swap_us driver_us layout_us carry_done last_submit_id last_
 
 
 def request(port, operation='PERF', timeout=4, allow_error=False):
-    if operation != 'PERF' and re.fullmatch(r'PERF [0-9]{1,10}|BATCH (?:4|12)', operation) is None:
+    if operation != 'PERF' and re.fullmatch(r'PERF [0-9]{1,10}|BATCH (?:4|12)|BENCH(?: [0-9]{2,4})?', operation) is None:
         raise DeviceError('invalid display diagnostic')
     if operation.startswith('PERF ') and int(operation[5:]) > 0xffffffff:
         raise DeviceError('cursor exceeds uint32')
@@ -30,6 +30,13 @@ def request(port, operation='PERF', timeout=4, allow_error=False):
         if re.fullmatch(rb'-?[0-9]{1,10}', code) is None:
             raise ValueError('code')
         result = json.loads(payload)
+        if operation.startswith('BENCH'):
+            if result['format'] != 3:
+                raise ValueError('format')
+            result['code'] = int(code)
+            if result['code'] and not allow_error:
+                raise DeviceError(f'display diagnostic rejected: {result}')
+            return result
         if result['format'] not in (1, 2):
             raise ValueError('format')
         trace_names = TRACE if result['format'] == 1 else TRACE_V2
@@ -51,6 +58,23 @@ def request(port, operation='PERF', timeout=4, allow_error=False):
     return result
 
 
+def bench(port, frames):
+    """Bounded consecutive full frames; the period is GUI iteration end to end."""
+    request(port, f'BENCH {frames}')
+    deadline = time.monotonic() + frames * 0.2 + 5
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        result = request(port, 'BENCH')
+        if not result['active']:
+            if result['frames'] != frames:
+                raise DeviceError(f'benchmark incomplete: {result}')
+            result['period_mean_us'] = result['period_sum_us'] / result['frames']
+            result['handler_mean_us'] = result['handler_sum_us'] / result['frames']
+            result['fps'] = 1000000 / result['period_mean_us']
+            return result
+    raise TransportError('benchmark deadline exceeded')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', required=True)
@@ -60,7 +84,13 @@ def main():
     trace.add_argument('after', type=int)
     batch = sub.add_parser('batch', help='volatile idle-only comparison; default is 12')
     batch.add_argument('limit', type=int, choices=(4, 12))
+    full = sub.add_parser('bench', help='consecutive full-frame period, 30..1000 frames')
+    full.add_argument('frames', type=int)
     args = parser.parse_args()
+    if args.command == 'bench':
+        with open_serial(args.port) as port:
+            print(json.dumps(bench(port, args.frames), indent=2))
+        return
     operation = 'PERF' if args.command == 'status' else f'PERF {args.after}' if args.command == 'trace' else f'BATCH {args.limit}'
     with open_serial(args.port) as port:
         print(json.dumps(request(port, operation), indent=2))

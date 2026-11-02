@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "roundie_app_ui.h"
@@ -11,6 +12,9 @@
 
 #define TRACE_COUNT 32U
 #define TRACE_FIELDS 30U
+#define BENCH_FRAME_PIXELS 129600U
+#define BENCH_FRAMES_MIN 30U
+#define BENCH_FRAMES_MAX 1000U
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static unsigned batch = ROUNDIE_UI_QUEUE_CAPACITY;
 static uint32_t sequence;
@@ -27,6 +31,20 @@ static uint32_t wait_max;
 static uint32_t errors_seen;
 static uint32_t dma_completions;
 static uint32_t stack_min = UINT32_MAX;
+static struct {
+    bool active;
+    uint32_t requested;
+    uint32_t frames;
+    int64_t last_at_us;
+    uint64_t period_sum_us;
+    uint32_t period_min_us;
+    uint32_t period_max_us;
+    uint64_t handler_sum_us;
+    uint32_t handler_max_us;
+    uint64_t flushes;
+    uint32_t errors_at_start;
+    uint32_t stack_min;
+} bench;
 
 static void maximum(uint32_t *value, uint32_t sample)
 {
@@ -43,6 +61,44 @@ unsigned roundie_gui_batch(void)
     return value;
 }
 
+bool roundie_gui_bench_due(void)
+{
+    portENTER_CRITICAL(&lock);
+    bool active = bench.active;
+    portEXIT_CRITICAL(&lock);
+    return active;
+}
+
+/* Called with the lock held, at the end of a GUI iteration. */
+static void bench_record(const roundie_gui_work_t *work, uint32_t handler_us, uint32_t stack, int64_t now_us)
+{
+    if (!bench.active) {
+        return;
+    }
+    bench.flushes += work->flushes;
+    if (stack < bench.stack_min) {
+        bench.stack_min = stack;
+    }
+    if (work->pixels < BENCH_FRAME_PIXELS) {
+        return;
+    }
+    if (bench.last_at_us != 0) {
+        uint32_t period_us = (uint32_t)(now_us - bench.last_at_us);
+        bench.period_sum_us += period_us;
+        maximum(&bench.period_max_us, period_us);
+        if (period_us < bench.period_min_us) {
+            bench.period_min_us = period_us;
+        }
+        bench.handler_sum_us += handler_us;
+        maximum(&bench.handler_max_us, handler_us);
+        bench.frames++;
+    }
+    bench.last_at_us = now_us;
+    if (bench.frames >= bench.requested) {
+        bench.active = false;
+    }
+}
+
 void roundie_gui_record(int64_t at_us, uint32_t pump_us, uint32_t handler_us,
     uint32_t wake_us, uint32_t before, uint32_t after, uint32_t applied,
     const roundie_gui_work_t *work, uint32_t errors, uint32_t isr_done)
@@ -51,7 +107,9 @@ void roundie_gui_record(int64_t at_us, uint32_t pump_us, uint32_t handler_us,
     static roundie_launcher_status_t nav;
     roundie_launcher_status(&nav);
     uint32_t stack = uxTaskGetStackHighWaterMark(NULL);
+    int64_t now_us = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
+    bench_record(work, handler_us, stack, now_us);
     loops++;
     flushes += work->flushes;
     pixels += work->pixels;
@@ -99,8 +157,61 @@ static bool cursor_number(const char *text, uint32_t *value)
     return true;
 }
 
+/* BENCH <frames> starts consecutive full-frame invalidation in the GUI task;
+ * BENCH reports it. Frame period spans GUI iteration ends, not panel scanout. */
+static void bench_command(const char *operation, const char *id, int parsed)
+{
+    esp_err_t result = parsed;
+    uint32_t requested = 0;
+    bool start = operation[5] == ' ';
+    if (result == ESP_OK && start && !cursor_number(operation + 6, &requested)) {
+        result = ESP_ERR_INVALID_ARG;
+    }
+    if (result == ESP_OK && start && (requested < BENCH_FRAMES_MIN || requested > BENCH_FRAMES_MAX)) {
+        result = ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&lock);
+    if (result == ESP_OK && start && bench.active) {
+        result = ESP_ERR_INVALID_STATE;
+    } else if (result == ESP_OK && start) {
+        memset(&bench, 0, sizeof(bench));
+        bench.active = true;
+        bench.requested = requested;
+        bench.period_min_us = UINT32_MAX;
+        bench.errors_at_start = errors_seen;
+        bench.stack_min = UINT32_MAX;
+    }
+    bool active = bench.active;
+    uint32_t wanted = bench.requested;
+    uint32_t frames = bench.frames;
+    uint64_t period_sum_us = bench.period_sum_us;
+    uint32_t period_min_us = bench.period_min_us;
+    uint32_t period_max_us = bench.period_max_us;
+    uint64_t handler_sum_us = bench.handler_sum_us;
+    uint32_t handler_max_us = bench.handler_max_us;
+    uint64_t bench_flushes = bench.flushes;
+    uint32_t errors = errors_seen - bench.errors_at_start;
+    uint32_t bench_stack_min = bench.stack_min;
+    portEXIT_CRITICAL(&lock);
+    static char response[400];
+    int length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":3,\"active\":%u,"
+        "\"requested\":%" PRIu32 ",\"frames\":%" PRIu32 ",\"period_sum_us\":%" PRIu64
+        ",\"period_min_us\":%" PRIu32 ",\"period_max_us\":%" PRIu32 ",\"handler_sum_us\":%" PRIu64
+        ",\"handler_max_us\":%" PRIu32 ",\"flushes\":%" PRIu64 ",\"errors\":%" PRIu32
+        ",\"stack_min\":%" PRIu32 "}\n",
+        id, (int)result, active ? 1U : 0U, wanted, frames, period_sum_us, period_min_us, period_max_us,
+        handler_sum_us, handler_max_us, bench_flushes, errors, bench_stack_min);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
 bool roundie_gui_command(const char *operation, const char *id, int parsed)
 {
+    if (strcmp(operation, "BENCH") == 0 || strncmp(operation, "BENCH ", 6) == 0) {
+        bench_command(operation, id, parsed);
+        return true;
+    }
     bool perf = strcmp(operation, "PERF") == 0;
     bool cursor = strncmp(operation, "PERF ", 5) == 0;
     bool tuning = strncmp(operation, "BATCH ", 6) == 0;

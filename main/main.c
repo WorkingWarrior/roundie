@@ -45,6 +45,7 @@ _Static_assert(sizeof(time_t) == 8, "RTC requires ESP-IDF 64-bit time_t");
 #define DISPLAY_WIDTH 360
 #define DISPLAY_HEIGHT 360
 #define DISPLAY_STRIP_LINES CONFIG_ROUNDIE_LCD_STRIP_LINES
+#define GUI_DELAY_MAX_MS 10U
 
 static const char *TAG = "roundie";
 
@@ -1095,8 +1096,11 @@ void app_main(void)
             make_screen(&state, &status, flash_bytes, psram_bytes);
             recovery_screen = true;
         }
+        if (!recovery_screen && roundie_gui_bench_due()) {
+            lv_obj_invalidate(lv_screen_active());
+        }
         int64_t handler_at = esp_timer_get_time();
-        lv_timer_handler();
+        uint32_t next_timer_ms = lv_timer_handler();
         uint32_t handler_us = (uint32_t)(esp_timer_get_time() - handler_at);
         if (!health_sent && esp_timer_get_time() >= self_test_at_us) {
             bool memory_ok = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 16384 &&
@@ -1133,7 +1137,15 @@ void app_main(void)
         portEXIT_CRITICAL(&state.dma_lock);
         roundie_gui_record(iteration_at, pump_us, handler_us, wake_us, ui_before.pending,
             app_ui.pending, applied, &state.work, state.transfer_errors, dma_completions);
-        expected_wake_us = esp_timer_get_time() + 10000;
-        vTaskDelay(pdMS_TO_TICKS(10));
+        /* Always sleep at least one tick so idle tasks keep their watchdog. */
+        if (next_timer_ms > GUI_DELAY_MAX_MS) {
+            next_timer_ms = GUI_DELAY_MAX_MS;
+        }
+        TickType_t delay_ticks = pdMS_TO_TICKS(next_timer_ms);
+        if (delay_ticks == 0) {
+            delay_ticks = 1;
+        }
+        expected_wake_us = esp_timer_get_time() + (int64_t)delay_ticks * portTICK_PERIOD_MS * 1000;
+        vTaskDelay(delay_ticks);
     }
 }

@@ -28,6 +28,8 @@ typedef struct {
 } roundie_gui_work_t;
 
 unsigned roundie_gui_batch(void);
+/* GUI task only: true while a bounded full-frame benchmark wants invalidation. */
+bool roundie_gui_bench_due(void);
 void roundie_gui_record(int64_t at_us, uint32_t pump_us, uint32_t handler_us,
     uint32_t wake_us, uint32_t before, uint32_t after, uint32_t applied,
     const roundie_gui_work_t *work, uint32_t errors, uint32_t isr_done);
