@@ -30,6 +30,7 @@
 #include "storage_diagnostics.h"
 #include "ota_diagnostics.h"
 #include "recovery_diagnostics.h"
+#include "app_runtime.h"
 #include "elf_diagnostics.h"
 #include "package_diagnostics.h"
 #include "gui_diagnostics.h"
@@ -409,13 +410,9 @@ static void sensor_worker(void *argument)
             roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
         }
         roundie_recovery_poll(esp_timer_get_time());
-#if CONFIG_ROUNDIE_DEV_ELF
-        roundie_elf_poll(esp_timer_get_time());
-        roundie_package_poll(esp_timer_get_time());
-#if CONFIG_ROUNDIE_DEV_PACKAGES
-        roundie_launcher_poll(roundie_elf_policy_allowed(),
-            roundie_elf_transfer_busy() || roundie_packages_busy());
-#endif
+#if CONFIG_ROUNDIE_APP_RUNTIME
+        roundie_app_runtime_poll(esp_timer_get_time());
+        roundie_launcher_poll(roundie_app_runtime_allowed(), roundie_app_runtime_upload_busy());
 #endif
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
         if (serial_fd >= 0) {
@@ -1035,7 +1032,7 @@ void app_main(void)
     }
     make_screen(&state, &status, flash_bytes, psram_bytes);
     roundie_ui_gui_bind();
-#if CONFIG_ROUNDIE_DEV_PACKAGES
+#if CONFIG_ROUNDIE_APP_RUNTIME
     if (!roundie_recovery_active()) {
         roundie_launcher_gui_bind();
     }
@@ -1079,7 +1076,7 @@ void app_main(void)
         roundie_ui_status(&ui_before);
         roundie_ui_gui_batch(roundie_gui_batch());
         roundie_ui_gui_pump();
-#if CONFIG_ROUNDIE_DEV_PACKAGES
+#if CONFIG_ROUNDIE_APP_RUNTIME
         roundie_launcher_gui_pump(roundie_recovery_active());
 #endif
         roundie_ui_display_progress(state.completed_transfers, state.transfer_errors);

@@ -37,6 +37,7 @@ class ElfTests(unittest.TestCase):
             subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-ffunction-sections", "-Wl,--gc-sections",
                             "-DCONFIG_ROUNDIE_DEV_PACKAGES=1",
+                            "-I" + str(ROOT / "main"),
                             '-DDEVELOPMENT_DIRECTORY="' + str(Path(temporary) / "dev") + '"',
                             "-I" + str(ROOT / "tests/elf_mocks"), "-I" + str(ROOT / "tests/ota_mocks"),
                             "-I" + str(ROOT / "include"), "-I" + str(ROOT / "components/roundie_elf/include"),
@@ -44,13 +45,14 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "components/roundie_packages/include"),
                             "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),
-                            str(ROOT / "tests/test_elf_development.c"), str(ROOT / "components/roundie_elf/validate.c"),
+                            str(ROOT / "tests/test_elf_development.c"), str(ROOT / "main/app_runtime.c"),
+                            str(ROOT / "components/roundie_elf/validate.c"),
                             str(ROOT / "components/roundie_ota/ota_protocol.c"), "-lcrypto", "-o", staging], check=True)
             subprocess.run([staging, str(Path(example) / "hello.app.elf")], check=True, timeout=10)
             policy = str(Path(temporary) / "policy")
             subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-ffunction-sections", "-Wl,--gc-sections",
-                            "-DCONFIG_ROUNDIE_DEV_ELF=1",
+                            "-DCONFIG_ROUNDIE_APP_RUNTIME=1",
                             "-I" + str(ROOT / "tests/ota_mocks"),
                             "-I" + str(ROOT / "components/roundie_ota/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),

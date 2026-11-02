@@ -10,18 +10,13 @@
 #include <unistd.h>
 #include "driver/usb_serial_jtag.h"
 #include "esp_heap_caps.h"
-#include "esp_ota_ops.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "psa/crypto.h"
 #include "roundie_elf.h"
 #include "roundie_app_ui.h"
 #include "roundie_ota_protocol.h"
-#include "roundie_boot_guard.h"
-#include "storage_diagnostics.h"
-#if CONFIG_ROUNDIE_DEV_PACKAGES
-#include "roundie_packages.h"
-#endif
+#include "app_runtime.h"
 
 #ifndef DEVELOPMENT_DIRECTORY
 #define DEVELOPMENT_DIRECTORY "/storage/dev"
@@ -40,23 +35,6 @@ static int64_t deadline;
 static char last_error[ROUNDIE_ELF_ERROR_SIZE];
 static bool permitted;
 
-static bool policy(void)
-{
-    roundie_boot_status_t boot;
-    roundie_boot_status(&boot);
-    roundie_ota_status_t ota;
-    roundie_ota_status(&ota);
-    return !boot.safe && boot.stage == ROUNDIE_BOOT_STABLE &&
-        ota.initialized && ota.boot_checked && ota.boot_passed &&
-        ota.running.state == ESP_OTA_IMG_VALID && ota.phase == ROUNDIE_OTA_IDLE &&
-        strcmp(ota.running.label, ota.boot) == 0 && roundie_storage_available();
-}
-
-bool roundie_elf_policy_allowed(void)
-{
-    return policy();
-}
-
 bool roundie_elf_transfer_busy(void)
 {
     return file >= 0;
@@ -74,22 +52,9 @@ static void abort_transfer(void)
     total = 0;
 }
 
-bool roundie_elf_development_busy(void)
-{
-    return file >= 0 || roundie_elf_busy()
-#if CONFIG_ROUNDIE_DEV_PACKAGES
-        || roundie_packages_busy()
-#endif
-        ;
-}
-
 void roundie_elf_poll(int64_t now_us)
 {
-    permitted = policy();
-#if CONFIG_ROUNDIE_DEV_PACKAGES
-    permitted = permitted && !roundie_packages_busy();
-#endif
-    roundie_elf_set_allowed(permitted);
+    permitted = roundie_app_runtime_admit();
     if (file >= 0 && (!permitted || now_us >= deadline)) {
         snprintf(last_error, sizeof(last_error), "transfer-cancelled-or-expired");
         abort_transfer();
@@ -413,7 +378,7 @@ void roundie_elf_command(char *line, bool discard)
         "\"resources\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],"
         "\"timer\":%" PRIu32 ",\"subscriptions\":%" PRIu32 ","
         "\"control\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "]}\n",
-        command.id, (int)error, permitted, roundie_elf_development_busy(), session, received, total,
+        command.id, (int)error, permitted, roundie_app_runtime_busy(), session, received, total,
         (unsigned)current.state, current.instance, current.completed, current.abi_version, current.code_bytes, current.data_bytes,
         current.alloc_bytes, current.alloc_peak, current.api_calls, current.load_us, current.execute_us,
         current.unload_us, current.loader_result, current.app_result, current.executed, current.over_budget,

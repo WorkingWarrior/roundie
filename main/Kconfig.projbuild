@@ -1,3 +1,15 @@
+menu "Roundie system"
+
+config ROUNDIE_APP_RUNTIME
+    bool "Enable the native application runtime, packages and launcher"
+    default n
+    depends on BOOTLOADER_APP_ROLLBACK_ENABLE
+    help
+        Application Executor, package registry and launcher. Independent of
+        the development USB transports. Requires the REP partition layout.
+
+endmenu
+
 menu "Roundie development diagnostics"
 
 config ROUNDIE_RECOVERY_USB
@@ -37,7 +49,7 @@ config ROUNDIE_OTA_TEST_UNCONFIRMED_RESET
 config ROUNDIE_DEV_ELF
     bool "Enable trusted development ELF staging and explicit execution"
     default n
-    depends on ROUNDIE_DEV_OTA
+    depends on ROUNDIE_DEV_OTA && ROUNDIE_APP_RUNTIME
     help
         RE1 bounded transfer to /storage/dev/hello.elf and explicit RUN by
         SHA-256. Trusted development code only; native code is unisolated.
@@ -60,7 +72,8 @@ config ROUNDIE_DEV_PACKAGES
     help
         RP1 bounded package transport, explicit install, list, launch and remove.
         No authentication, signing, isolation or application autostart. Disable
-        together with the other development interfaces for production.
+        together with the other development interfaces for production; the
+        launcher stays available through ROUNDIE_APP_RUNTIME.
 
 config ROUNDIE_BOOT_STABILITY_SECONDS
     int "BootGuard operational stability window (seconds)"

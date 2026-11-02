@@ -4,66 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
-#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "roundie_packages.h"
 #include "roundie_elf.h"
 #include "roundie_ota_protocol.h"
-#include "elf_diagnostics.h"
+#include "app_runtime.h"
 #include "storage_diagnostics.h"
 #include "roundie_launcher.h"
 #include "gui_diagnostics.h"
-
-bool roundie_packages_allowed(void)
-{
-    return roundie_elf_policy_allowed();
-}
-
-bool roundie_packages_runtime_busy(void)
-{
-    return roundie_elf_busy() || roundie_elf_transfer_busy();
-}
-
-bool roundie_packages_capacity(size_t *free_bytes)
-{
-    size_t total;
-    size_t used;
-    if (!roundie_storage_usage(&total, &used)) {
-        return false;
-    }
-    *free_bytes = total - used;
-    return true;
-}
-
-int64_t roundie_packages_clock(void)
-{
-    return esp_timer_get_time();
-}
-
-void *roundie_packages_allocate(size_t size)
-{
-    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-}
-
-void roundie_packages_free(void *memory)
-{
-    heap_caps_free(memory);
-}
-
-int roundie_packages_execute(uint8_t *bytes, size_t size, uint16_t abi)
-{
-    /* Reopen RE1 admission after a package transaction has retired. Runtime
-     * still checks its own policy/reservation before accepting the input. */
-    roundie_elf_poll(esp_timer_get_time());
-    return abi == 1 ? roundie_elf_submit(bytes, size) : roundie_elf_start(bytes, size);
-}
-
-void roundie_package_poll(int64_t now_us)
-{
-    roundie_packages_poll(now_us);
-}
 
 static esp_err_t transfer_command(const roundie_ota_command_t *command)
 {
@@ -134,7 +84,7 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
             result = ESP_ERR_INVALID_ARG;
         } else {
             /* Development semantic selection, same mailbox as real touch. */
-            result = roundie_elf_policy_allowed() ? roundie_launcher_select(id, revision, 2) :
+            result = roundie_app_runtime_allowed() ? roundie_launcher_select(id, revision, 2) :
                 ESP_ERR_INVALID_STATE;
         }
     } else if (result == ESP_OK && strncmp(operation, "EXIT ", 5) == 0) {
@@ -181,7 +131,7 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
 
 void roundie_package_command(char *line, bool discard)
 {
-    roundie_package_poll(esp_timer_get_time());
+    roundie_packages_poll(esp_timer_get_time());
     roundie_ota_command_t command;
     char operation[96] = {0};
     size_t length = strlen(line);
@@ -240,7 +190,7 @@ void roundie_package_command(char *line, bool discard)
     }
     size_t total = 0;
     size_t used = 0;
-    bool capacity = roundie_packages_allowed() && roundie_storage_usage(&total, &used);
+    bool capacity = roundie_app_runtime_allowed() && roundie_storage_usage(&total, &used);
     /* Sole system-worker scratch: do not keep a 1900-byte reply frame on the
      * stack across nested LittleFS/PSA validation and commit calls. */
     static char response[1900];
@@ -249,7 +199,7 @@ void roundie_package_command(char *line, bool discard)
         "\"session\":\"%08" PRIx32 "\",\"received\":%zu,\"total\":%zu,\"count\":%u,\"orphans\":%u,"
         "\"capacity\":[%u,%zu,%zu],\"stack_min\":%u,\"us\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
         ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"error\":\"%s\",\"apps\":[",
-        command.id, (int)error, roundie_packages_allowed(), roundie_packages_busy(), (unsigned)status.phase,
+        command.id, (int)error, roundie_app_runtime_allowed(), roundie_packages_busy(), (unsigned)status.phase,
         status.session, status.received, status.total, status.count, status.orphans, capacity, total, used,
         (unsigned)uxTaskGetStackHighWaterMark(NULL),
         status.upload_us, status.validation_us, status.commit_us, status.enumeration_us,

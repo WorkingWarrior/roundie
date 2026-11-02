@@ -10,9 +10,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "roundie_ota.h"
-#include "elf_diagnostics.h"
-#include "package_diagnostics.h"
-#if CONFIG_ROUNDIE_DEV_ELF
+#include "sdkconfig.h"
+#if CONFIG_ROUNDIE_APP_RUNTIME
+#include "app_runtime.h"
 #include "roundie_elf.h"
 #include "esp_timer.h"
 static bool deferred_safe_restart;
@@ -34,8 +34,8 @@ bool roundie_recovery_skip_gui(void)
 
 bool roundie_recovery_restart_allowed(void)
 {
-#if CONFIG_ROUNDIE_DEV_ELF
-    if (roundie_elf_development_busy()) {
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    if (roundie_app_runtime_busy()) {
         return false;
     }
 #endif
@@ -58,8 +58,8 @@ bool roundie_recovery_confirmation_allowed(int ota_state)
 
 void roundie_recovery_poll(int64_t now_us)
 {
-#if CONFIG_ROUNDIE_DEV_ELF
-    if (deferred_safe_restart && !roundie_elf_development_busy()) {
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    if (deferred_safe_restart && !roundie_app_runtime_busy()) {
         deferred_safe_restart = false;
         if (roundie_boot_persistence_sync()) {
             roundie_boot_planned_restart();
@@ -78,8 +78,8 @@ void roundie_recovery_poll(int64_t now_us)
         roundie_boot_operational(now_us, true);
     }
     roundie_boot_tick(now_us);
-#if CONFIG_ROUNDIE_DEV_ELF
-    if (!roundie_elf_development_busy()) {
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    if (!roundie_app_runtime_busy()) {
         roundie_boot_persistence_sync();
     }
 #else
@@ -109,17 +109,16 @@ void roundie_recovery_command(char *line, bool discard)
                 bool idle_valid = ota.initialized && ota.running.state == ESP_OTA_IMG_VALID &&
                     ota.phase == ROUNDIE_OTA_IDLE;
                 bool app_idle = true;
-#if CONFIG_ROUNDIE_DEV_ELF
-                app_idle = !roundie_elf_development_busy();
+#if CONFIG_ROUNDIE_APP_RUNTIME
+                app_idle = !roundie_app_runtime_busy();
 #endif
                 if (strcmp(operation, "STATUS") == 0 || strcmp(operation, "SLOT STATUS") == 0) {
                     error = ESP_OK;
                 } else if (strcmp(operation, "REQUEST") == 0 && idle_valid) {
                     roundie_boot_enter_safe(ROUNDIE_SAFE_REQUEST);
-#if CONFIG_ROUNDIE_DEV_ELF
+#if CONFIG_ROUNDIE_APP_RUNTIME
                     roundie_elf_set_allowed(false);
-                    roundie_elf_poll(esp_timer_get_time());
-                    roundie_package_poll(esp_timer_get_time());
+                    roundie_app_runtime_poll(esp_timer_get_time());
 #endif
                     /* NVS commit is a Flash write too. REQUEST first closes
                      * admission; persistence/restart follow completed teardown. */
@@ -127,7 +126,7 @@ void roundie_recovery_command(char *line, bool discard)
                     /* Enter recovery through the early boot path. No GUI work
                      * or storage teardown is performed by the USB owner. */
                     restart = error == ESP_OK;
-#if CONFIG_ROUNDIE_DEV_ELF
+#if CONFIG_ROUNDIE_APP_RUNTIME
                     if (restart && !app_idle) {
                         deferred_safe_restart = true;
                         restart = false;

@@ -14,7 +14,7 @@ class BootGuardTests(unittest.TestCase):
                 subprocess.run([
                     "cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                     "-fsanitize=address,undefined", f"-DCONFIG_ROUNDIE_BOOT_GUARD_TEST={diagnostic}",
-                    "-DCONFIG_ROUNDIE_DEV_ELF=1",
+                    "-DCONFIG_ROUNDIE_APP_RUNTIME=1",
                     "-I" + str(ROOT / "tests/recovery_mocks"),
                     "-I" + str(ROOT / "tests/ota_mocks"),
                     "-I" + str(ROOT / "tests/elf_mocks"),

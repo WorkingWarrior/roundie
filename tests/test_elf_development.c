@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../main/elf_diagnostics.c"
+#include "esp_ota_ops.h"
+#include "roundie_boot_guard.h"
+#include "roundie_ota.h"
 
 static roundie_ota_status_t ota;
 static roundie_boot_status_t boot;
@@ -27,6 +30,9 @@ int64_t esp_timer_get_time(void) { return clock_us; }
 void roundie_ota_status(roundie_ota_status_t *out) { *out = ota; }
 void roundie_boot_status(roundie_boot_status_t *out) { *out = boot; }
 bool roundie_storage_available(void) { return mounted; }
+bool roundie_storage_usage(size_t *total, size_t *used)
+{ *total = 0; *used = 0; return false; }
+void roundie_packages_poll(int64_t now_us) { (void)now_us; }
 bool roundie_elf_busy(void) { return app_busy; }
 void roundie_elf_set_allowed(bool value) { allow = value; }
 void roundie_elf_status(roundie_elf_status_t *out) { memset(out, 0, sizeof(*out)); }
@@ -102,7 +108,7 @@ static void digest(const uint8_t *data, size_t size, char hex[65])
 static void send_file(const uint8_t *bytes, const char *hex)
 {
     assert(command("BEGIN 12345678 %zu %s", fixture_size, hex) == ESP_OK);
-    assert(roundie_elf_development_busy());
+    assert(roundie_app_runtime_busy());
     assert(command("RUN %s", hex) == ESP_ERR_INVALID_STATE);
     assert(command("DATA 87654321 0 00") == ESP_ERR_INVALID_STATE);
     assert(command("DATA 12345678 1 00") == ESP_ERR_INVALID_SIZE);
@@ -180,7 +186,7 @@ int main(int argc, char **argv)
     assert(command("BEGIN 12345678 %zu %s", fixture_size, digest_hex) == ESP_ERR_INVALID_STATE);
     app_busy = false;
     package_busy = true;
-    assert(roundie_elf_development_busy());
+    assert(roundie_app_runtime_busy());
     assert(command("BEGIN 12345678 %zu %s", fixture_size, digest_hex) == ESP_ERR_INVALID_STATE);
     assert(command("RUN %s", digest_hex) == ESP_ERR_INVALID_STATE && !allow);
     package_busy = false;
@@ -196,12 +202,12 @@ int main(int argc, char **argv)
     assert(command("BEGIN 12345678 %zu %s", fixture_size, digest_hex) == ESP_OK);
     clock_us += 10000001;
     roundie_elf_poll(clock_us);
-    assert(!roundie_elf_development_busy() && access(TEMPORARY_ELF, F_OK) != 0);
+    assert(!roundie_app_runtime_busy() && access(TEMPORARY_ELF, F_OK) != 0);
     assert_staged_original();
     assert(command("BEGIN 12345678 %zu %s", fixture_size, digest_hex) == ESP_OK);
     boot.safe = true;
     roundie_elf_poll(clock_us);
-    assert(!roundie_elf_development_busy() && !allow);
+    assert(!roundie_app_runtime_busy() && !allow);
     boot.safe = false;
     assert_staged_original();
     /* Deliberately corrupt bytes with original hash: integrity failure. */

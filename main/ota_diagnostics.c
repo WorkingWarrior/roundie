@@ -10,7 +10,7 @@
 #include "freertos/task.h"
 #include "roundie_ota_protocol.h"
 #include "recovery_diagnostics.h"
-#include "elf_diagnostics.h"
+#include "app_runtime.h"
 
 static const char *TAG = "ota";
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -125,8 +125,8 @@ void roundie_ota_poll(int64_t now_us)
 
 bool roundie_ota_restart_allowed(void)
 {
-#if CONFIG_ROUNDIE_DEV_ELF
-    if (roundie_elf_development_busy()) {
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    if (roundie_app_runtime_busy()) {
         return false;
     }
 #endif
@@ -150,8 +150,8 @@ void roundie_ota_command(char *line, bool discard)
     esp_err_t error = roundie_ota_parse(line, discard, &command);
     bool restart = false;
     if (error == ESP_OK) {
-#if CONFIG_ROUNDIE_DEV_ELF
-        if (command.operation != ROUNDIE_OTA_STATUS && roundie_elf_development_busy()) {
+#if CONFIG_ROUNDIE_APP_RUNTIME
+        if (command.operation != ROUNDIE_OTA_STATUS && roundie_app_runtime_busy()) {
             error = ESP_ERR_INVALID_STATE;
         } else
 #endif

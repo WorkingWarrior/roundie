@@ -24,9 +24,9 @@ static bool elf_allowed;
 static bool finish_during_poll;
 
 void mock_log(const char *tag, const char *format, ...) { (void)tag; (void)format; }
-bool roundie_elf_development_busy(void) { return elf_busy; }
+bool roundie_app_runtime_busy(void) { return elf_busy; }
 void roundie_elf_set_allowed(bool allowed) { elf_allowed = allowed; }
-void roundie_elf_poll(int64_t now)
+void roundie_app_runtime_poll(int64_t now)
 {
     (void)now;
     if (finish_during_poll) {

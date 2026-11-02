@@ -1,5 +1,14 @@
 # Milestone 3B: event-driven native application lifecycle
 
+**Decision, 2026-11-02:** `CONFIG_ROUNDIE_APP_RUNTIME` now gates the Application
+Executor, package registry, launcher and their admission policy in
+`main/app_runtime.c`. `CONFIG_ROUNDIE_DEV_ELF` and `CONFIG_ROUNDIE_DEV_PACKAGES`
+gate only the RE1 and RP1 USB transports, so disabling development interfaces
+keeps launching installed applications. RS1 stays available. Without RP1 there is
+currently no package installation path; a replacement is outside this change.
+Target builds passed for REP, REP without RT1/RO1/RE1/RP1, and legacy. The variant
+without transports was linked and inspected, not run on the device.
+
 Milestone 3E's [system navigation](system-navigation.md) submits the existing
 UNLOAD control and observes its completed runtime/UI/input retirement before
 reopening launcher selection. Exit works from RUNNING or SUSPENDED; duplicate

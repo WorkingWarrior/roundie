@@ -10,7 +10,7 @@ static unsigned mutations;
 static roundie_ota_status_t backend;
 static char reply[1024];
 void mock_log(const char *tag, const char *format, ...) { (void)tag; (void)format; }
-bool roundie_elf_development_busy(void) { return app_busy; }
+bool roundie_app_runtime_busy(void) { return app_busy; }
 void roundie_ota_status(roundie_ota_status_t *out) { *out = backend; }
 bool roundie_recovery_active(void) { return false; }
 bool roundie_recovery_restart_allowed(void) { return false; }
