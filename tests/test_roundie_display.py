@@ -31,3 +31,23 @@ class DisplayDiagnosticsTests(unittest.TestCase):
         for operation in ('PERF -1', 'PERF 4294967296', 'BATCH 0', 'BATCH 13', 'RESET', 'PERF 0 extra'):
             with self.assertRaises(display.DeviceError):
                 display.request(None, operation)
+
+    def test_bench_reports_completed_frames_only(self):
+        progress = [dict(format=3, active=1, frames=10),
+                    dict(format=3, active=0, requested=30, frames=30, period_sum_us=900000,
+                         handler_sum_us=600000)]
+        with patch.object(display, 'request', side_effect=[{}] + progress), \
+             patch.object(display.time, 'sleep'):
+            result = display.bench(None, 30)
+        self.assertEqual(result['fps'], 1000000 / 30000)
+        incomplete = dict(progress[1], frames=29)
+        with patch.object(display, 'request', side_effect=[{}, incomplete]), \
+             patch.object(display.time, 'sleep'), self.assertRaises(display.DeviceError):
+            display.bench(None, 30)
+
+    def test_bench_rejects_wrong_format(self):
+        with patch.object(display.secrets, 'token_hex', return_value='12345678'), \
+             patch.object(display, 'write_command'), \
+             patch.object(display, 'read_serial_reply', return_value=b'!RP1 12345678 0 {"format":2}\n'), \
+             self.assertRaises(display.TransportError):
+            display.request(None, 'BENCH')

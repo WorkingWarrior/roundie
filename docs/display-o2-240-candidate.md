@@ -219,3 +219,44 @@ GUI delay, the final DMA tail and the 33 ms refresh timer. Source suggests about
 300-frame acceptance workload are still PENDING, as are power, stack margin,
 visual tearing and finger latency. 0.3.11 is an experimental image; adopting 60
 lines as the default needs a recorded decision.
+
+## Sustained frame rate — 0.3.12 (2026-11-02)
+
+**Candidate:** 0.3.12, source `4aa8dd7`, the 0.3.11 configuration plus
+`CONFIG_FREERTOS_HZ=1000` and `CONFIG_LV_DEF_REFR_PERIOD=16`. Source changes: the
+GUI delay follows LVGL's next timer, capped at 10 ms and never under one tick, and
+RP1 `BENCH <frames>` (30–1000) invalidates the active screen in the GUI task.
+Repository defaults stay 20 lines, 100 Hz and 33 ms, where the delay remains one
+tick. App SHA-256 `c4654a04ea53c43b92f9b73e0583f5b1bbbd5f4f686c14110a3aa1e9f87162c0`.
+Records: `/mnt/Dane/Development/roundie-backups/perf-paced-2026-11-02/`.
+
+**Verification:** one RO1 upload and ACTIVATE to `ota_1`; 0.3.12 is VALID, Safe
+Mode off, stage 4. 0.3.11 stays VALID in `ota_0`; 0.3.10 was overwritten and its
+build remains in the candidate directory. `BENCH 10` and `BENCH 1001` are rejected
+on the device.
+
+**Measured, 300 consecutive full frames (129,600 px, 6 strips):**
+
+| Scene | Mean FPS | Mean period | Min–max period | Mean handler |
+|---|---:|---:|---:|---:|
+| Native UI (`org.roundie.ui` active) | **31.5** | 31.7 ms | 30.0–35.8 ms | 30.5 ms |
+| Launcher | **26.1** | 38.3 ms | 37.5–43.4 ms | 37.2 ms |
+
+Period spans GUI iteration ends, so it measures frame production and not panel
+scanout. Both runs: errors 0, 1,806 flushes. After the five-cycle regression,
+flushes equal DMA completions (4,781), errors 0, every cycle returned to a clean
+launcher, and GUI stack minimum is 2,424 B (0.3.11: 2,472 B).
+
+**Five-cycle comparison with 0.3.11:** first native-UI frame handler 32.9 → 37.0 ms
+(slower; cause not established), foreground readiness about 149 → 130 ms, runtime
+internal free 145,211 → 144,731 B.
+
+**Assessment:** 30 FPS holds on average for the native UI scene, not as a
+per-frame guarantee, since its longest period is 35.8 ms. The launcher stays below
+30 FPS. The full-frame benchmark is a synthetic worst case; real animations with
+transforms, or the loading spinner (about 94 ms a frame on 0.3.11), can cost more.
+
+**PENDING:** idle CPU and current draw at a 1 kHz tick, 240 MHz and a 16 ms refresh
+period; visual tearing (no LCD_TE sync) and finger latency; runs longer than 300
+frames. 0.3.12 is experimental. Adopting any of these settings needs a recorded
+decision, including the internal memory budget.
