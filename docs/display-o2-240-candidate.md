@@ -332,6 +332,22 @@ of 0.3.17 (77.7 s total, first ~51 s covered): mean period 51.4 ms, maximum
 68.7 ms, errors 0, against 40.0 ms mean and 42.3 ms maximum idle. There is no
 non-XIP comparison from the same run.
 
+## Decision: XIP with 16 KB I-cache (2026-11-02)
+
+**Architectural decision (user, 2026-11-02; REP §§11.5 and 25 item 8):** the REP
+profile uses `SPIRAM_XIP_FROM_PSRAM` with the default 16 KB I-cache and `-O2`,
+which is the configuration measured as 0.3.17. CPU stays at 160 MHz, with two
+20-line buffers, a 100 Hz tick and a 33 ms refresh. `ROUNDIE_LVGL_CORE_IRAM`
+stays off. The legacy profile is unchanged.
+
+**Why:** a full UI frame drops from 70.0 to 35.7 ms for about 710 KB of PSRAM and
+about 1.1 KB of internal RAM, and Safe Mode, slot selection and automatic rollback
+passed on the device. `tools/validate_storage_layout.py` now requires XIP in REP
+builds and rejects a build without it.
+
+This keeps the sustained ceiling of 25 FPS. The PENDING list below still applies
+and the decision can be revisited if those tests fail.
+
 ## Recovery under XIP (2026-11-02, user-authorized device test)
 
 Device tests, one run each, on 0.3.16 and 0.3.17 with the installed bootloader.

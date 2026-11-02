@@ -1949,7 +1949,8 @@ Następujące zagadnienia wymagają pomiarów lub osobnego rozstrzygnięcia:
 5. Techniczna implementacja białej listy symboli.
 6. Model alokacji pamięci aplikacji.
 7. Konfiguracja wykonywania ELF z PSRAM.
-8. Włączenie XIP from PSRAM.
+8. Włączenie XIP from PSRAM: rozstrzygnięte 2026-11-02 dla profilu REP, XIP włączone
+   z I-cache 16 KB ([pomiary i decyzja](display-o2-240-candidate.md)).
 9. Budżety SRAM i PSRAM.
 10. Tabela Flash: układ `rep-v1` wybrany w Milestone 2A i zweryfikowany offline
     ([plan migracji](flash-migration.md)); migracja i walidacja sprzętowa pozostają otwarte.

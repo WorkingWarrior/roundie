@@ -160,7 +160,7 @@ class LayoutTest(unittest.TestCase):
         config_path = self.build / "config/sdkconfig.json"
         original = json.loads(config_path.read_text())
         for key, bad in {"BOOTLOADER_APP_ROLLBACK_ENABLE": False,
-                         "SPIRAM_XIP_FROM_PSRAM": True,
+                         "SPIRAM_XIP_FROM_PSRAM": False,
                          "PARTITION_TABLE_OFFSET": 0x9000,
                          "SECURE_FLASH_ENC_ENABLED": True}.items():
             with self.subTest(key=key):

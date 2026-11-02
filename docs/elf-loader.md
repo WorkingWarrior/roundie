@@ -111,7 +111,8 @@ I-cache lines. IDF's S3 MMU region specifies shared instruction/data buses and
 the PSRAM target. This requires physical execution evidence; ordinary PSRAM
 allocation alone proves no executable capability.
 
-Firmware XIP/instruction/rodata relocation stays disabled. No permanent ELF heap
+Firmware XIP/instruction/rodata relocation was disabled for this gate; REP has
+used XIP since the [2026-11-02 decision](display-o2-240-candidate.md). No permanent ELF heap
 or new MMU allocator is introduced. Limits: 64 KiB file, 16 KiB code, 16 KiB
 data including padding, 128 sections, 16 segments, 1024 symbols/table and 1024
 relocations. Require 48 KiB internal free, 64 KiB PSRAM reserve beyond code/data

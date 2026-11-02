@@ -82,7 +82,7 @@ def validate_build(build, generator):
         "PARTITION_TABLE_CUSTOM": True,
         "PARTITION_TABLE_CUSTOM_FILENAME": "partitions/rep.csv",
         "BOOTLOADER_APP_ROLLBACK_ENABLE": True,
-        "SPIRAM_XIP_FROM_PSRAM": False,
+        "SPIRAM_XIP_FROM_PSRAM": True,
         "ESP_PHY_INIT_DATA_IN_PARTITION": False,
         "ESP_COREDUMP_ENABLE_TO_NONE": True,
         "SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,

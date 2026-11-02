@@ -5,8 +5,10 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_ROUNDIE_DEV_OTA=y
 # Reserve coredump space; enabling capture needs a separate measured gate.
 CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
-# No Flash/cache policy change without comparative measurements.
-# CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
+# Measured display decision: see docs/display-o2-240-candidate.md.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# Keeps the default 16 KB I-cache; a larger cache adds little under XIP.
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 CONFIG_ROUNDIE_DEV_ELF=y
 CONFIG_ELF_LOADER=y
 CONFIG_ELF_LOADER_LOAD_PSRAM=y
