@@ -497,7 +497,7 @@ esp_err_t roundie_packages_launch(const char *id)
     if (elf == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    result = roundie_packages_execute(elf, metadata.elf_size, metadata.abi);
+    result = roundie_packages_execute(id, elf, metadata.elf_size, metadata.abi);
     if (result != ESP_OK) {
         roundie_packages_free(elf);
     }

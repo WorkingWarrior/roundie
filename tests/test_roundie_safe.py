@@ -24,8 +24,11 @@ class SafeToolTests(unittest.TestCase):
     def test_addressing_schema_and_failure(self):
         self.assertEqual(tool.parse_reply(reply(), "1234abcd"), status())
         self.assertIsNone(tool.parse_reply(reply(), "ffffffff"))
+        with_app = {**status(), "fault_app": "org.roundie.ui"}
+        self.assertEqual(tool.parse_reply(reply(with_app), "1234abcd"), with_app)
         for bad in (reply()[:-1], b"!RS1 1234abcd 0 {}\n", reply({**status(), "safe": 2}),
-                    reply({**status(), "failures": 4}), reply({**status(), "elf": "bad"})):
+                    reply({**status(), "failures": 4}), reply({**status(), "elf": "bad"}),
+                    reply({**status(), "fault_app": 'bad"id'})):
             with self.subTest(bad=bad), self.assertRaises(tool.TransportError):
                 tool.parse_reply(bad, "1234abcd")
         with self.assertRaises(tool.DeviceError):

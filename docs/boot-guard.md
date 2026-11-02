@@ -44,6 +44,13 @@ resets retain the classification above. A core recovery reason identifies a
 lost operational session, not proof of defective firmware or a future ELF
 application; application-specific attribution is deferred to its milestone.
 
+**Failed-session attribution, 2026-11-02:** BootGuard's retained record (now
+version 2) holds the package ID from launch until the runtime has unloaded it. After
+a panic, watchdog or unplanned software reset, that ID appears for one boot as
+`fault_app` in RS1 and in a boot log warning. It names what was loaded, not the
+cause, and does not change Safe Mode policy. Power loss and brownout discard it, and
+RE1 development images have no ID.
+
 Failure after a completed stable normal boot is not itself a startup loop.
 Failure during an explicit normal trial returns directly to Safe Mode on the
 next boot without granting another automatic trial. A fault while already in

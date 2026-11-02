@@ -91,9 +91,9 @@ void roundie_packages_free(void *memory)
         free(memory);
     }
 }
-int roundie_packages_execute(uint8_t *bytes, size_t size, uint16_t abi)
+int roundie_packages_execute(const char *id, uint8_t *bytes, size_t size, uint16_t abi)
 {
-    assert(allowed && !runtime_busy && !roundie_packages_busy());
+    assert(allowed && !runtime_busy && !roundie_packages_busy() && roundie_package_id_valid(id));
     assert(size == package_size - ROUNDIE_PACKAGE_PREFIX);
     assert(memcmp(bytes, package + ROUNDIE_PACKAGE_PREFIX, size) == 0);
     retained = bytes;

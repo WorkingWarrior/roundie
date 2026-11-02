@@ -14,6 +14,8 @@
 #include "elf_diagnostics.h"
 #endif
 
+_Static_assert(ROUNDIE_BOOT_APP_ID == ROUNDIE_PACKAGE_ID, "BootGuard stores a whole package ID");
+
 static bool staging_busy(void)
 {
 #if CONFIG_ROUNDIE_DEV_ELF
@@ -66,6 +68,9 @@ void roundie_app_runtime_poll(int64_t now_us)
 {
     reconcile(now_us);
     roundie_packages_poll(now_us);
+    if (!roundie_elf_busy()) {
+        roundie_boot_app_loaded("");
+    }
 }
 
 bool roundie_packages_allowed(void)
@@ -104,11 +109,16 @@ void roundie_packages_free(void *memory)
     heap_caps_free(memory);
 }
 
-int roundie_packages_execute(uint8_t *bytes, size_t size, uint16_t abi)
+int roundie_packages_execute(const char *id, uint8_t *bytes, size_t size, uint16_t abi)
 {
     /* Reopen admission after a package transaction has retired. Runtime still
      * checks its own policy/reservation before accepting the input. */
     reconcile(esp_timer_get_time());
-    return abi == 1 ? roundie_elf_submit(bytes, size) : roundie_elf_start(bytes, size);
+    roundie_boot_app_loaded(id);
+    esp_err_t error = abi == 1 ? roundie_elf_submit(bytes, size) : roundie_elf_start(bytes, size);
+    if (error != ESP_OK) {
+        roundie_boot_app_loaded("");
+    }
+    return error;
 }
 #endif

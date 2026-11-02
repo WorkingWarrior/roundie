@@ -181,7 +181,7 @@ void roundie_recovery_command(char *line, bool discard)
         "\"retained\":%u,\"persistence\":%u,\"skip_gui\":%u,\"trial\":%u,\"fault_remaining\":%lu,"
         "\"test_build\":%u,\"version\":\"%s\",\"running\":\"%s\",\"ota_state\":\"%s\",\"elf\":\"%s\","
         "\"other\":\"%s\",\"other_state\":\"%s\",\"other_image\":%u,\"other_compatible\":%u,"
-        "\"other_elf\":\"%s\",\"internal_free\":%zu,\"restart\":%u}\n",
+        "\"other_elf\":\"%s\",\"internal_free\":%zu,\"restart\":%u,\"fault_app\":\"%s\"}\n",
         id, (int)error, status.safe, roundie_boot_reason_name(status.reason),
         (unsigned long)status.latch, (unsigned long)status.failures, (unsigned long)status.reset,
         (int)esp_reset_reason(), (unsigned long)status.stage, (unsigned long)status.previous_stage,
@@ -195,7 +195,7 @@ void roundie_recovery_command(char *line, bool discard)
         version, ota.running.label, roundie_ota_image_state_name(ota.running.state), ota.running.elf,
         ota.other.label, roundie_ota_image_state_name(ota.other.state), ota.other.image_valid,
         ota.other.compatible, ota.other.elf, heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-        restart || fault);
+        restart || fault, status.fault_app);
     int written = -1;
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         written = usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));

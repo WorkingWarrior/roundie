@@ -25,6 +25,8 @@ typedef enum {
     ROUNDIE_SAFE_PERSISTENCE,
 } roundie_safe_reason_t;
 
+#define ROUNDIE_BOOT_APP_ID 64U
+
 typedef struct {
     bool safe;
     bool retained_valid;
@@ -38,6 +40,9 @@ typedef struct {
     uint32_t reset;
     uint32_t reason;
     uint32_t latch;
+    /* Package loaded when the previous session failed. Names what was loaded,
+     * not the cause: the failure may be in the system instead. */
+    char fault_app[ROUNDIE_BOOT_APP_ID];
 } roundie_boot_status_t;
 
 #define ROUNDIE_BOOT_FAILURE_LIMIT 3U
@@ -55,6 +60,8 @@ void roundie_boot_enter_safe(roundie_safe_reason_t reason);
 void roundie_boot_stage(roundie_boot_stage_t stage);
 void roundie_boot_operational(int64_t now_us, bool core_passed);
 void roundie_boot_tick(int64_t now_us);
+/* Empty id means no package is loaded. Written only on launch and unload. */
+void roundie_boot_app_loaded(const char *id);
 void roundie_boot_planned_restart(void);
 /* CLEAR keeps the current recovery session active. REBOOT grants exactly one
  * normal trial; the durable latch is cleared only after a stable trial. */

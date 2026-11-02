@@ -28,6 +28,7 @@ static RTC_NOINIT_ATTR struct {
     uint32_t trial;
     uint32_t fault_remaining;
     uint32_t skip_gui;
+    char app[ROUNDIE_BOOT_APP_ID];
     uint32_t crc;
 } retained;
 
@@ -76,12 +77,13 @@ void roundie_boot_begin(roundie_reset_class_t reset, const uint8_t image[32])
 {
     bool retained_reset = reset != ROUNDIE_RESET_POWER && reset != ROUNDIE_RESET_BROWNOUT;
     bool valid = retained_reset && retained.magic == UINT32_C(0x52424731) &&
-        retained.version == 1 && retained.crc == checksum() &&
+        retained.version == 2 && retained.crc == checksum() &&
         memcmp(retained.image, image, 32) == 0 &&
         retained.stage <= ROUNDIE_BOOT_STABLE && retained.reason <= ROUNDIE_SAFE_PERSISTENCE &&
         retained.failures <= ROUNDIE_BOOT_FAILURE_LIMIT && retained.safe <= 1 &&
         retained.planned <= 1 && retained.trial <= 2 && retained.skip_gui <= 1 &&
-        retained.fault_remaining <= ROUNDIE_BOOT_FAILURE_LIMIT;
+        retained.fault_remaining <= ROUNDIE_BOOT_FAILURE_LIMIT &&
+        memchr(retained.app, '\0', sizeof(retained.app)) != NULL;
     current = (roundie_boot_status_t){.retained_valid = valid, .reset = reset};
     operational_since = -1;
     if (valid) {
@@ -93,6 +95,9 @@ void roundie_boot_begin(roundie_reset_class_t reset, const uint8_t image[32])
         current.fault_remaining = retained.fault_remaining;
         bool abnormal = reset == ROUNDIE_RESET_PANIC || reset == ROUNDIE_RESET_WATCHDOG ||
             (reset == ROUNDIE_RESET_SOFTWARE && !retained.planned);
+        if (abnormal) {
+            memcpy(current.fault_app, retained.app, sizeof(current.fault_app));
+        }
         if (abnormal && current.safe) {
             /* Even a late fault in recovery must not retry optional GUI. */
             current.skip_gui = true;
@@ -120,9 +125,10 @@ void roundie_boot_begin(roundie_reset_class_t reset, const uint8_t image[32])
     } else {
         memset(&retained, 0, sizeof(retained));
         retained.magic = UINT32_C(0x52424731);
-        retained.version = 1;
+        retained.version = 2;
         memcpy(retained.image, image, 32);
     }
+    memset(retained.app, 0, sizeof(retained.app));
     /* 2 means the one-shot token was consumed by this boot. */
     retained.trial = current.trial ? 2 : 0;
     retained.planned = 0;
@@ -195,6 +201,17 @@ void roundie_boot_tick(int64_t now_us)
             current.trial = false;
             retained.trial = 0;
         }
+        seal();
+    }
+    UNLOCK();
+}
+
+void roundie_boot_app_loaded(const char *id)
+{
+    LOCK();
+    if (strncmp(retained.app, id, sizeof(retained.app) - 1) != 0) {
+        memset(retained.app, 0, sizeof(retained.app));
+        strncpy(retained.app, id, sizeof(retained.app) - 1);
         seal();
     }
     UNLOCK();

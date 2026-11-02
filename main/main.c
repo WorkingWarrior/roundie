@@ -890,6 +890,9 @@ void app_main(void)
     ESP_LOGI(TAG, "BootGuard reset=%lu retained=%u failures=%lu safe=%u reason=%s trial=%u fault_remaining=%lu",
         (unsigned long)boot.reset, boot.retained_valid, (unsigned long)boot.failures, boot.safe,
         roundie_boot_reason_name(boot.reason), boot.trial, (unsigned long)boot.fault_remaining);
+    if (boot.fault_app[0] != '\0') {
+        ESP_LOGW(TAG, "Previous session failed with package %s loaded", boot.fault_app);
+    }
     roundie_ota_status_t startup_ota;
     roundie_ota_snapshot(&startup_ota);
     if (roundie_boot_fault_step(startup_ota.running.state == ESP_OTA_IMG_VALID)) {

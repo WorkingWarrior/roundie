@@ -33,6 +33,7 @@ bool roundie_storage_available(void) { return mounted; }
 bool roundie_storage_usage(size_t *total, size_t *used)
 { *total = 0; *used = 0; return false; }
 void roundie_packages_poll(int64_t now_us) { (void)now_us; }
+void roundie_boot_app_loaded(const char *id) { (void)id; }
 bool roundie_elf_busy(void) { return app_busy; }
 void roundie_elf_set_allowed(bool value) { allow = value; }
 void roundie_elf_status(roundie_elf_status_t *out) { memset(out, 0, sizeof(*out)); }

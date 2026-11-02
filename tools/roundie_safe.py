@@ -26,6 +26,8 @@ def parse_reply(line, request_id):
         for key in ("failures", "fault_remaining"):
             if type(status[key]) is not int or not 0 <= status[key] <= 3:
                 raise ValueError(f"invalid {key}")
+        if re.fullmatch(r"[A-Za-z0-9._-]{0,63}", status.get("fault_app", "")) is None:
+            raise ValueError("invalid fault_app")
         for key in ("elf", "other_elf"):
             if status[key] and re.fullmatch(r"[0-9a-f]{64}", status[key]) is None:
                 raise ValueError(f"invalid {key}")
