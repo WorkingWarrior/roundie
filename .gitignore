@@ -8,6 +8,7 @@
 __pycache__/
 /examples/hello_elf/build*/
 /examples/event_elf/build*/
+/examples/fault_elf/build*/
 /examples/ui_elf/build*/
 /examples/usb_mtp_probe/build*/
 /examples/usb_mtp_probe/managed_components/
