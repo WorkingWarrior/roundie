@@ -9,6 +9,15 @@ currently no package installation path; a replacement is outside this change.
 Target builds passed for REP, REP without RT1/RO1/RE1/RP1, and legacy. The variant
 without transports was linked and inspected, not run on the device.
 
+**Device test, 2026-11-02:** REP 0.3.18 was installed by RO1 into `ota_1` and
+confirmed VALID, with 0.3.17 VALID in `ota_0`. Five native application cycles passed
+with 0 display errors. BENCH 300 gave 25.0 FPS on the UI and 20.0 FPS on the launcher,
+matching 0.3.17, and a full UI frame took 35.7 ms. With a native UI running, RO1
+RESTART was refused and RS1 REQUEST acknowledged with `restart=0`, then finished
+teardown and entered Safe Mode after one reset. Launcher selection and RP1 LAUNCH were
+refused in Safe Mode. After the normal trial the application started and exited
+again. These are single short runs, without a long test or physical touch input.
+
 Milestone 3E's [system navigation](system-navigation.md) submits the existing
 UNLOAD control and observes its completed runtime/UI/input retirement before
 reopening launcher selection. Exit works from RUNNING or SUSPENDED; duplicate
