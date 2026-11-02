@@ -169,3 +169,53 @@ invalidations, reporting measured frame period over at least 300 frames, plus
 DMA errors, watchdog and stack margins. Single-frame handler time is not enough.
 Without LCD_TE synchronization (§25 item 18) tearing stays unaddressed: wire time
 exceeds a 16.7 ms scan at 26.667 MHz, though that scan rate is itself unverified.
+
+## Experiment 1 result — two 60-line buffers (2026-11-02)
+
+**Candidate:** 0.3.11, source `d6a4f1f`, the 0.3.10 configuration plus
+`CONFIG_ROUNDIE_LCD_STRIP_LINES=60`. The repository default stays at 20 lines.
+Configuration, build and raw records are outside Git in
+`/mnt/Dane/Development/roundie-backups/perf-strip60-2026-11-02/`.
+App SHA-256 `c88ed2b372587bf9fdc5f9987fd4e309cacb799e6fcfb1f60a22765e50be540a`,
+ELF SHA-256 `70edec092b2f7f9a8cd7abd0534c1c05fffcbf7afa015923fe061f4873a6344b`.
+
+**Verification:** 82 host tests pass; pinned REP build exits 0 with no warnings;
+layout validation passes. One RO1 upload and ACTIVATE to `ota_0`; after restart
+0.3.11 is VALID, self-test passed, Safe Mode off, stage 4, RO1 `verify` matches.
+0.3.10 stays VALID in `ota_1`. 0.3.8 was overwritten; its image remains frozen
+in `display-3e3-2026-10-20/candidate-c/` (ELF identity checked first).
+
+**Workload:** identical five-cycle injected scenario. Medians, n=5:
+
+| Native-UI full frame, ms | 0.3.10 (18 strips) | 0.3.11 (6 strips) |
+|---|---:|---:|
+| Handler | 60.493 | **32.937** |
+| Handler range | 59.162–60.560 | 32.835–34.584 |
+| Residual rendering path | 43.614 | 23.219 |
+| Layout | 5.226 | 2.996 |
+| Submit (swap + driver) | 9.857 | 4.564 |
+| Completion wait | 0.720 | 1.202 |
+
+Other handler medians: counter update 5.113 → 3.657 ms (now one strip), Back
+59.822 → 38.313 ms, launcher full frames 71.420 → 40.982 ms. Hello result pixels
+changed to 43,040 and 7 strips with a handler of 32.602 ms, so it is not directly
+comparable. The 68,720-pixel loading frame improved only from 101.436 to
+93.662 ms; its residual stays above 80 ms, so it is a different, unresolved cost.
+
+**Interpretation:** the per-strip hypothesis holds. Two points fit about 1.7 ms
+per strip plus 13 ms of fixed work, which is a two-point estimate, not a model
+check. The instruction-cache explanation stays unverified.
+
+**Observed:** display errors 0, flushes equal DMA completions, every cycle
+returned to a clean launcher with zero application resources.
+
+**Memory cost:** runtime internal free falls from 205,803 to 145,211 B and the
+largest internal block from 131,072 to 69,632 B. PSRAM is unchanged. This is more
+than half of the previous largest block, and no budget for it has been agreed.
+
+**Not 30 FPS yet:** 32.9 ms is single-frame handler time, excluding the 10 ms
+GUI delay, the final DMA tail and the 33 ms refresh timer. Source suggests about
+23 full frames per second sustained (about 43 ms period). Experiment 4 and the
+300-frame acceptance workload are still PENDING, as are power, stack margin,
+visual tearing and finger latency. 0.3.11 is an experimental image; adopting 60
+lines as the default needs a recorded decision.
