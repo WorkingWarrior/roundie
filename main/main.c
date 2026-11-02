@@ -400,8 +400,17 @@ static void sensor_worker(void *argument)
         ESP_LOGE(TAG, "USB recovery unavailable; no new-image confirmation, ROM recovery required");
     }
 #endif
+    /* This worker alone serves USB recovery, OTA and packages. A stall must
+     * reset into BootGuard, not silently remove those paths. */
+    esp_err_t watchdog_error = esp_task_wdt_add(NULL);
+    if (watchdog_error != ESP_OK) {
+        ESP_LOGE(TAG, "System worker watchdog: %s", esp_err_to_name(watchdog_error));
+    }
     int64_t next_sample_us = esp_timer_get_time() + 5000000;
     for (;;) {
+        if (watchdog_error == ESP_OK) {
+            esp_task_wdt_reset();
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
         roundie_ota_poll(esp_timer_get_time());
         roundie_ota_status_t ota_health;

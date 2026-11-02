@@ -51,6 +51,12 @@ a panic, watchdog or unplanned software reset, that ID appears for one boot as
 cause, and does not change Safe Mode policy. Power loss and brownout discard it, and
 RE1 development images have no ID.
 
+**System worker supervision, 2026-11-02:** the worker that serves USB recovery,
+OTA and packages is now on the task watchdog (10 s, panic), reset once per loop.
+A stall resets into the runtime recovery rule above. Its largest measured
+request is 294 ms (OTA END, an earlier 668 KB image); the worst case for a full
+slot or a slow Flash erase is unmeasured. No real worker stall has been tested.
+
 Failure after a completed stable normal boot is not itself a startup loop.
 Failure during an explicit normal trial returns directly to Safe Mode on the
 next boot without granting another automatic trial. A fault while already in
