@@ -40,7 +40,13 @@ static bool path_for(char out[PATH_SIZE], const char *id, const char *name)
     if (!roundie_package_id_valid(id)) {
         return false;
     }
-    int length = snprintf(out, PATH_SIZE, "%s/%s/%s", PACKAGES_DIRECTORY, id, name);
+    int length = snprintf(out,
+                          PATH_SIZE,
+                          "%s/%.*s/%s",
+                          PACKAGES_DIRECTORY,
+                          (int)(ROUNDIE_PACKAGE_ID - 1U),
+                          id,
+                          name);
     return length > 0 && (size_t)length < PATH_SIZE;
 }
 
