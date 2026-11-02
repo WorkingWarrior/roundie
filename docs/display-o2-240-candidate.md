@@ -293,3 +293,45 @@ test, so it was neither bypassed nor changed. §25 item 8 stays open.
 
 **PENDING:** power at each variant; ELF behavior under low internal memory on
 0.3.15; a trimmed IRAM list based on profiling; visual tearing and finger latency.
+
+## XIP from PSRAM (2026-11-02, user-authorized experiment)
+
+The user explicitly authorized deploying XIP despite the REP layout guard. The
+guard was not changed: `validate_storage_layout.py` still rejects both images
+with `config mismatch: SPIRAM_XIP_FROM_PSRAM`, and §25 item 8 stays open. A copy
+of the 0.3.16 build with only that flag cleared passed all other layout checks.
+Only applications were uploaded; the installed bootloader was not touched, and
+the bootloader these builds generate was not compared with it.
+
+Base: `-O2`, 160 MHz, two 20-line buffers, 100 Hz tick, 33 ms refresh, HEAD
+`ab727bd` plus `SPIRAM_XIP_FROM_PSRAM`, `SPIRAM_FETCH_INSTRUCTIONS` and
+`SPIRAM_RODATA`. Records: `perf-{xip,xip16}-2026-11-02/`.
+
+| Variant | Full UI frame, median | Residual | BENCH UI handler | BENCH UI / launcher FPS | Internal free / largest | PSRAM free |
+|---|---:|---:|---:|---:|---:|---:|
+| 0.3.13: no XIP, 16 KB I-cache | 70.0 ms | 48.8 ms | 59.1 ms | 15.0 / 12.5 | 205,323 / 131,072 B | 8,380,764 B |
+| 0.3.14: no XIP, 32 KB I-cache | 47.8 ms | 28.6 ms | 36.7 ms | 24.8 / 16.7 | 188,939 / 114,688 B | 8,380,764 B |
+| 0.3.16: XIP, 32 KB I-cache | 34.2 ms | 16.9 ms | 29.0 ms | 25.0 / 25.0 | 187,795 / 114,688 B | 7,670,984 B |
+| 0.3.17: XIP, 16 KB I-cache | **35.7 ms** | 19.9 ms | 32.1 ms | 25.0 / 20.0 | **204,179 / 131,072 B** | 7,670,976 B |
+
+Both XIP images passed RO1 verify as VALID with self-test passed, Safe Mode off,
+stage 4, display errors 0, flushes equal to DMA completions, and five Hello/UI
+cycles with clean return. FPS is capped at 25.0 here by the tick and refresh
+settings, as above.
+
+**Findings.** XIP cuts Flash fetch cost nearly as far as 0.3.15's IRAM placement
+(32.3 ms), without its internal memory cost. 0.3.17 costs about 1.1 KB of internal
+free memory and about 710 KB of PSRAM against 0.3.13, and halves full-frame time.
+With XIP, the 32 KB cache adds only 1.5 ms, so it is not worth 16 KB of RAM.
+
+**ELF:** native Hello and UI packages loaded, ran and unloaded under XIP in every
+cycle, on the existing `ELF_LOADER_CACHE_OFFSET` path. This is short-run evidence.
+
+**Flash writes:** `BENCH 1000` ran on the launcher on 0.3.16 during the RO1 upload
+of 0.3.17 (77.7 s total, first ~51 s covered): mean period 51.4 ms, maximum
+68.7 ms, errors 0, against 40.0 ms mean and 42.3 ms maximum idle. There is no
+non-XIP comparison from the same run.
+
+**PENDING:** XIP boot time; Safe Mode, rollback and recovery paths under XIP; package
+installation with GUI load; power; long-duration operation; ELF stress with large
+applications. Adopting XIP needs a recorded decision and an updated guard and test.
