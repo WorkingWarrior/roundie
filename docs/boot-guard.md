@@ -67,11 +67,43 @@ watchdog feed while the scheduler keeps running. Two runs, one each:
 | No package loaded | Same reset and Safe Mode, `fault_app` empty |
 
 RS1 answered after each reset, both images stayed VALID, and REBOOT returned to
-normal. This verifies one real task-watchdog panic path only. A hung native callback,
-other panic types, the display during the stall and repeated faults remain PENDING.
-Evidence is in `roundie-backups/hang-test-2026-11-02/`, outside Git. Normal 0.3.19
-then replaced the test image; five application cycles passed with 0 display errors,
-25.0 FPS on the UI and 20.0 on the launcher.
+normal. Evidence is in `roundie-backups/hang-test-2026-11-02/`, outside Git. Normal
+0.3.19 then replaced the test image; five application cycles passed with 0 display
+errors, 25.0 FPS on the UI and 20.0 on the launcher.
+
+**Device test of native faults, 2026-11-02, under XIP:** `examples/fault_elf` builds
+packages that fail in their first timer callback. They ran on normal 0.3.19, without
+test code, nine in a row; one `load` repeated on normal 0.3.20. Each entered Safe Mode
+with reason=core, named its package in `fault_app`, kept both images VALID and
+returned to normal through REBOOT:
+
+| Fault | Failure | Reset class (raw) | Panic text |
+|---|---|---|---|
+| Endless loop, twice | Task watchdog named `rep_executor` after about 10.3 s | 4 (6) | Yes |
+| Null read, write | LoadProhibited, StoreProhibited | 5 (4) | Yes |
+| `ill` instruction | IllegalInstruction | 5 (4) | Yes |
+| Call to null | InstrFetchProhibited | 5 (4) | Yes |
+| Interrupts masked, endless loop | Silent timer-group reset after about 2.7 s | 4 (5) | No |
+| Unbounded recursion | Same silent reset | 4 (5) | No |
+
+During the first endless loop the worker kept answering and display flushes
+continued at about 32 per second until the reset. That is a counter, not a view of the
+panel. The two silent cases recover but leave no reason in the log, so native stack
+overflow is not reported as such. Evidence is in `roundie-backups/faults-2026-11-02/`.
+
+**Fault in Safe Mode, corrected 2026-11-02:** a worker hang in stable Safe Mode kept
+`skip_gui` for the following REBOOT, so the normal trial fell back to headless
+recovery with reason=gui. REBOOT, repeated twice, and CLEAR then did not leave Safe
+Mode; selecting the other image did. The explicit trial now clears the suppression,
+and a trial that fails in the GUI stage sets it again. On `0.3.20-boot-test`, a hang
+during the trial returned to Safe Mode with reason=boot_loop, two further hangs in Safe
+Mode stayed there headless with RS1 answering, and one REBOOT returned to normal. The
+same trap with 0.3.19 and earlier needs another VALID image or power removal. Normal
+0.3.20 passed five application cycles with 0 display errors, 25.0 FPS on the UI
+and 20.0 on the launcher.
+
+This is one pass of each case. Brownout, power interruption, the panel during a
+stall and a worker stall while an application is rendering remain PENDING.
 
 Failure after a completed stable normal boot is not itself a startup loop.
 Failure during an explicit normal trial returns directly to Safe Mode on the
@@ -173,7 +205,7 @@ VALID and recovery returned to normal with cleared history. Exact logs,
 image identities and restoration status are in [safe-mode.md](safe-mode.md).
 These are controlled software resets. Brownout, power interruption, deep-sleep
 retention and visual/touch checks remain PENDING; controlled software resets do
-not prove those reset classes. One real task-watchdog panic is recorded above.
+not prove those reset classes. Real watchdog and panic resets are recorded above.
 BootGuard cannot recover code that fails before its own early check, an
 unbootable firmware, broken USB hardware, or inability to allocate its system
 worker. Manually usable ROM Download remains the final recovery path.

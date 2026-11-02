@@ -286,3 +286,14 @@ closed after use.
   other battery conditions, TinyUSB/USB-OTG takeover, ten cold starts,
   endurance, and fault injection remain outside this test. No battery
   disconnection is required to extend coverage.
+
+## Check under XIP, 2026-11-02
+
+**Verified:** with normal 0.3.20 running under XIP from PSRAM, esptool 5.6.0 entered
+ROM Download through its host reset (`--before default-reset --after hard-reset
+--no-stub flash-id`). It identified the chip and Flash (manufacturer 20, device 4018,
+16 MB) without writing, and the firmware restarted with reset class USB, normal and
+STABLE. This host reset depends on a responding USB Serial/JTAG peripheral.
+
+**PENDING:** the manual BOOT and USB sequence above has not been repeated under XIP.
+It needs a person at the board.
