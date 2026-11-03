@@ -68,6 +68,14 @@ static void button_clicked(lv_event_t *event)
     }
 }
 
+static void dial_long_pressed(lv_event_t *event)
+{
+    unsigned index = (unsigned)(uintptr_t)lv_event_get_user_data(event);
+    if (index < REP_UI_WIDGET_LIMIT) {
+        roundie_ui_input(objects[index].generation, objects[index].handle, REP3_ORIGIN_TOUCH);
+    }
+}
+
 static void value_changed(lv_event_t *event)
 {
     unsigned index = (unsigned)(uintptr_t)lv_event_get_user_data(event);
@@ -175,7 +183,8 @@ static lv_obj_t *add_needle(lv_obj_t *scale, int32_t width, uint32_t color)
     return needle;
 }
 
-/* Dial with 60 ticks and hands. Not clickable: touches reach widgets below. */
+/* Dial with 60 ticks and hands. Display only, so touches reach widgets below,
+ * unless REP_UI_OPTION_LONG_PRESS makes its 340 px box report long presses. */
 static bool create_hands(unsigned index, const rep_ui_widget_v2_t *widget)
 {
     lv_obj_t *scale = lv_scale_create(root);
@@ -183,7 +192,13 @@ static bool create_hands(unsigned index, const rep_ui_widget_v2_t *widget)
     if (scale == NULL) {
         return false;
     }
-    lv_obj_remove_flag(scale, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(scale, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    if ((widget->options & REP_UI_OPTION_LONG_PRESS) != 0) {
+        lv_obj_add_flag(scale, LV_OBJ_FLAG_CLICKABLE);
+        if (lv_obj_add_event_cb(scale, dial_long_pressed, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)index) == NULL) {
+            return false;
+        }
+    }
     lv_obj_set_pos(scale, HANDS_INSET, HANDS_INSET);
     lv_obj_set_size(scale, HANDS_SIZE, HANDS_SIZE);
     lv_scale_set_mode(scale, LV_SCALE_MODE_ROUND_INNER);
@@ -377,6 +392,9 @@ bool roundie_ui_render_inject(uint32_t generation, uint32_t handle, int32_t valu
         } else if (objects[i].type == REP_UI_DIALOG) {
             choose(i, value, REP3_ORIGIN_INJECTED);
             return true;
+        } else if (objects[i].type == REP_UI_CLOCK_HANDS) {
+            /* A long press; the bridge refuses a dial without the option. */
+            return roundie_ui_input(generation, handle, REP3_ORIGIN_INJECTED);
         } else {
             return false;
         }

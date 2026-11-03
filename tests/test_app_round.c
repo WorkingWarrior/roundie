@@ -80,12 +80,17 @@ static void touch_value(lv_obj_t *object, int32_t value)
     current_task = saved;
 }
 
-static void click(lv_obj_t *object)
+static void send_input(lv_obj_t *object, lv_event_code_t code)
 {
     TaskHandle_t saved = current_task;
     current_task = (void *)2;
-    lv_obj_send_event(object, LV_EVENT_CLICKED, NULL);
+    lv_obj_send_event(object, code, NULL);
     current_task = saved;
+}
+
+static void click(lv_obj_t *object)
+{
+    send_input(object, LV_EVENT_CLICKED);
 }
 
 static struct {
@@ -518,6 +523,8 @@ static void clock_widget_tests(void)
     assert(roundie_ui_create(generation, &label_request) == 0);
     label_request.options = REP_UI_OPTION_NO_SECONDS;
     assert(roundie_ui_create(generation, &label_request) == 0);
+    label_request.options = REP_UI_OPTION_LONG_PRESS; /* dial only */
+    assert(roundie_ui_create(generation, &label_request) == 0);
     label_request.options = REP_UI_OPTION_FONT_LARGE;
     uint32_t label = roundie_ui_create(generation, &label_request);
     assert(label != 0);
@@ -548,6 +555,9 @@ static void clock_widget_tests(void)
     pump();
     assert(ui_status().input_rejected == rejected + 1);
     shadow(generation, hands, 2700, 2700, 0); /* display only: no input */
+    unsigned accepted = ui_status().input_accepted;
+    send_input(scale, LV_EVENT_LONG_PRESSED); /* without the option: no event */
+    assert(ui_status().input_accepted == accepted && sunk.widget != hands);
 
     /* Colors, including the root view; a value above 24 bits is refused. */
     assert(set_value(generation, view, REP_UI_COLOR, 0x1000000, NULL) == -1);
@@ -605,11 +615,12 @@ static void watch_runtime_tests(void)
     assert(status.state == ROUNDIE_ELF_RUNNING && clock_app && round_ui);
     uint32_t generation = status.instance;
     roundie_ui_status_t ui = ui_status();
-    assert(ui.widgets == 5 && ui.failed == 0 && ui.foreground);
+    assert(ui.widgets == 4 && ui.failed == 0 && ui.foreground);
     lv_obj_t *root = lv_screen_active();
+    lv_obj_t *dial = child(root, 0);
     lv_obj_t *date = child(root, 1);
     lv_obj_t *time_text = child(root, 2);
-    lv_obj_t *edge = child(root, 3);
+    assert(lv_obj_get_child_count(root) == 3); /* no buttons on the face */
     assert(strcmp(lv_label_get_text(time_text), "--:--") == 0);
     assert(strcmp(lv_label_get_text(date), "Ustaw czas") == 0);
 
@@ -657,10 +668,24 @@ static void watch_runtime_tests(void)
     assert(strcmp(lv_label_get_text(date), "ŚR 4 LIS") == 0);
     assert(strcmp(lv_label_get_text(time_text), "00:00") == 0);
 
-    /* The edge button cycles the theme through COLOR updates. */
-    click(edge);
+    /* A long press anywhere on the dial, including over the labels, cycles the
+     * theme through COLOR updates. A short tap does nothing. */
+    lv_point_t over_time = {180, 230};
+    lv_point_t over_date = {180, 118};
+    lv_obj_update_layout(root);
+    assert(lv_indev_search_obj(root, &over_time) == dial);
+    assert(lv_indev_search_obj(root, &over_date) == dial);
+    click(dial);
+    drain();
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff021a0c);
+    send_input(dial, LV_EVENT_LONG_PRESSED);
     drain();
     assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff0b1220);
+    /* RP1 injection of the dial is a long press. */
+    assert(roundie_ui_inject_value(generation, hands, 0));
+    pump();
+    drain();
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff000000);
     assert(ui_status().failed == 0 && ui_status().error == 0);
 
     control_step(ROUNDIE_ELF_UNLOAD);

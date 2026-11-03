@@ -60,8 +60,13 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
   - `REP_UI_OPTION_NO_SECONDS` removes the second hand.
   - `value` is the seconds of 12 hours (0–43,199), set by `REP_UI_VALUE`, and has
     shadow state.
-  - The dial is display only: not clickable, so touches reach widgets below, and
-    injection is refused. Each view has at most one.
+  - The dial is display only by default: not clickable, so touches reach widgets
+    below, and injection is refused. Each view has at most one.
+  - `REP_UI_OPTION_LONG_PRESS` (16, dial only), added 2026-11-03: the dial's
+    340 × 340 box becomes clickable, and a long press (LVGL's
+    `LONG_PRESSED`, 400 ms by default) sends `REP3_EVENT_BUTTON` with the dial's
+    handle. It covers widgets created before the dial; later, non-clickable
+    labels pass touches to it. RP1 `UI VALUE g <dial> 0` injects a long press.
 - **Styled labels.** A version-2 `LABEL` takes `REP_UI_OPTION_FONT_MEDIUM`
   (28 px) or `REP_UI_OPTION_FONT_LARGE` (48 px), plus `REP_UI_OPTION_HIDDEN`.
   The fonts are described below.
@@ -112,17 +117,19 @@ Polish watch face and accepted Google Sans instead of Montserrat.
 
 ## The example: `examples/watch_elf`
 
-- **Widgets:** a view, the dial, a 28 px date in Polish (`WT 3 LIS`), a 48 px
-  24-hour time and a **Styl** edge button. Five widgets in all.
+- **Widgets:** a view, the dial, a 28 px date in Polish (`WT 3 LIS`) and a 48 px
+  24-hour time. Four widgets in all, with no buttons on the face: the user found
+  the **Styl** and Exit buttons out of place on a watch (2026-11-03). Exit is now
+  the system's [edge swipe](system-navigation.md).
 - **Language:** Polish weekday abbreviations (`ND PN WT ŚR CZW PT SOB`) and
   months (`STY LUT MAR KWI MAJ CZE LIP SIE WRZ PAŹ LIS GRU`), stored as UTF-8.
 - **Updates:** a one-second timer moves the hands with one `VALUE` per second.
   The time and date text change only when the minute or the day changes.
 - **No time yet:** before the first clock event, it shows `--:--` and
   `Ustaw czas`.
-- **Themes:** **Styl** cycles terminal green, blue and amber through `COLOR`
-  updates.
-- **Size:** 4,584 B (1.1.0, Polish). It imports only `rep_abi_v3`, with the same relocation types
+- **Themes:** a long press on the dial cycles terminal green, blue and amber
+  through `COLOR` updates.
+- **Size:** 4,356 B (1.2.0). It imports only `rep_abi_v3`, with the same relocation types
   as the other examples.
 
 ## Verification
@@ -171,6 +178,18 @@ Polish watch face and accepted Google Sans instead of Montserrat.
     18 updates applied in 4 s, 0 failures and 9 objects.
   - **User-reported, 0.3.25:** the Polish text and the new font look good on
     the panel. Individual letters were not checked one by one.
+- **Device, 0.3.26 (edge swipe, long press), 2026-11-03.**
+  - **Firmware:** 952,672 B, SHA-256 `44f9c4d6…8892934d`, no project warnings.
+    OTA after RP1 EXIT; runs from `ota_1`, VALID, self-test passed; 0.3.25 stays
+    VALID in `ota_0`.
+  - **Watch:** 1.2.0 (SHA-256 `27ef974b…2c220dfd46`) launched with 4 widgets,
+    7 objects and 0 failures.
+  - **Long press, injected:** on the dial it was accepted and the theme updates
+    applied with 0 failures. On the time label it was rejected.
+  - **PENDING:** a finger long press and the edge swipe on the panel.
+  - **Host:** a long press cycles the theme; a short tap does not; points over
+    both labels reach the dial; a dial without the option and a label with it
+    are refused. All 85 host tests passed.
 - **Not tested:** RTC loss with the time zone kept, and a DST transition on the
   device.
 

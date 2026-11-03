@@ -1,6 +1,6 @@
 /* Watch face: analog dial with hands, large digital time and date, driven by
- * REP3_EVENT_CLOCK and a one-second timer. The edge button cycles themes.
- * No LVGL access; the system draws the dial. */
+ * REP3_EVENT_CLOCK and a one-second timer. A long press on the dial cycles
+ * themes. No LVGL access; the system draws the dial. */
 #include "rep/rep_app_v3.h"
 #include <stdbool.h>
 REP3_APP_METADATA;
@@ -31,7 +31,6 @@ static uint32_t view;
 static uint32_t hands;
 static uint32_t date_label;
 static uint32_t time_label;
-static uint32_t edge;
 static uint32_t theme;
 /* Last clock sample: local day, millisecond of day and its monotonic time. */
 static bool have_clock;
@@ -43,15 +42,13 @@ static uint32_t shown_days;
 static rep_ui_update_t update = {1, sizeof(update), 0, REP_UI_TEXT, 0, ""};
 static rep_ui_widget_t view_widget = {1, sizeof(rep_ui_widget_t), REP_UI_VIEW, 0, 0, 0, 360, 360, 0, ""};
 static rep_ui_widget_v2_t hands_widget = {
-    {2, sizeof(rep_ui_widget_v2_t), REP_UI_CLOCK_HANDS, 0, 0, 0, 0, 0, 0, ""}, 0, 0, 0, 0};
+    {2, sizeof(rep_ui_widget_v2_t), REP_UI_CLOCK_HANDS, 0, 0, 0, 0, 0, 0, ""}, 0, 0, 0, REP_UI_OPTION_LONG_PRESS};
 static rep_ui_widget_v2_t date_widget = {
     {2, sizeof(rep_ui_widget_v2_t), REP_UI_LABEL, 0, 70, 100, 220, 36, 0, ""},
     0, 0, 0, REP_UI_OPTION_FONT_MEDIUM};
 static rep_ui_widget_v2_t time_widget = {
     {2, sizeof(rep_ui_widget_v2_t), REP_UI_LABEL, 0, 60, 204, 240, 60, 5, "--:--"},
     0, 0, 0, REP_UI_OPTION_FONT_LARGE};
-static rep_ui_widget_v2_t edge_widget = {
-    {2, sizeof(rep_ui_widget_v2_t), REP_UI_EDGE_BUTTON, 0, 0, 0, 0, 0, 4, "Styl"}, 0, 0, 0, 0};
 
 static uint32_t append(uint32_t length, const char *text)
 {
@@ -98,8 +95,7 @@ static int32_t apply_theme(uint32_t instance)
     if (set(instance, view, REP_UI_COLOR, colors->background) != 0 ||
         set(instance, hands, REP_UI_COLOR, colors->accent) != 0 ||
         set(instance, date_label, REP_UI_COLOR, colors->text) != 0 ||
-        set(instance, time_label, REP_UI_COLOR, colors->text) != 0 ||
-        set(instance, edge, REP_UI_COLOR, colors->accent) != 0) {
+        set(instance, time_label, REP_UI_COLOR, colors->text) != 0) {
         return -20;
     }
     return 0;
@@ -166,12 +162,10 @@ static int32_t initialize(const rep_context_v3_t *context)
     hands_widget.base.parent = view;
     date_widget.base.parent = view;
     time_widget.base.parent = view;
-    edge_widget.base.parent = view;
     hands = api->ui_create(instance, &hands_widget.base);
     date_label = api->ui_create(instance, &date_widget.base);
     time_label = api->ui_create(instance, &time_widget.base);
-    edge = api->ui_create(instance, &edge_widget.base);
-    if (hands == 0 || date_label == 0 || time_label == 0 || edge == 0) {
+    if (hands == 0 || date_label == 0 || time_label == 0) {
         return -12;
     }
     if (set_text(instance, date_label, append(0, "Ustaw czas")) != 0) {
@@ -198,7 +192,7 @@ static int32_t event(const rep_context_v3_t *context, const rep_event_v3_t *even
     if (event->type == REP2_EVENT_TIMER) {
         return have_clock ? refresh(instance, event->posted_us) : 0;
     }
-    if (event->type == REP3_EVENT_BUTTON && event->value == edge) {
+    if (event->type == REP3_EVENT_BUTTON && event->value == hands) { /* long press */
         theme = (theme + 1U) % THEME_COUNT;
         return apply_theme(instance);
     }

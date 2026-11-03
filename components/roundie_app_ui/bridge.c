@@ -17,6 +17,7 @@ static struct {
     bool ready;
     bool visible;
     bool enabled;
+    bool long_press; /* CLOCK_HANDS with REP_UI_OPTION_LONG_PRESS: BUTTON input */
     uint32_t items; /* LIST items or DIALOG fields of the newest accepted text */
     int32_t minimum;
     int32_t maximum;
@@ -172,7 +173,7 @@ static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
     if (label) {
         allowed |= REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE;
     } else if (base->type == REP_UI_CLOCK_HANDS) {
-        allowed |= REP_UI_OPTION_NO_SECONDS;
+        allowed |= REP_UI_OPTION_NO_SECONDS | REP_UI_OPTION_LONG_PRESS;
     }
     if (base->version != 2 || base->struct_size != sizeof(*widget) || (!label && !round_type(base->type)) ||
         (widget->options & ~allowed) != 0 || !text_valid(base->text, base->text_length)) {
@@ -308,6 +309,7 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
                 slots[i].maximum = request->maximum;
                 if (widget->type == REP_UI_CLOCK_HANDS) {
                     slots[i].maximum = REP_UI_CLOCK_HANDS_PERIOD - 1;
+                    slots[i].long_press = (request->options & REP_UI_OPTION_LONG_PRESS) != 0;
                 }
                 slots[i].committed = request->value;
                 slots[i].requested = request->value;
@@ -322,7 +324,7 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
                 if (button_type(widget->type)) {
                     status.button = result;
                 }
-                if (interactive(widget->type)) {
+                if (interactive(widget->type) || slots[i].long_press) {
                     status.acquired++; /* input registration */
                 }
             }
@@ -512,7 +514,7 @@ static bool target_valid(uint32_t generation, int index)
 static bool input_valid(uint32_t generation, uint32_t widget)
 {
     int index = find(widget);
-    return target_valid(generation, index) && button_type(slots[index].type);
+    return target_valid(generation, index) && (button_type(slots[index].type) || slots[index].long_press);
 }
 
 static bool value_valid(int index, int32_t value)
@@ -525,6 +527,9 @@ static bool value_valid(int index, int32_t value)
     }
     if (slots[index].type == REP_UI_DIALOG) {
         return value >= 1 && (uint32_t)value < slots[index].items;
+    }
+    if (slots[index].long_press) {
+        return value == 0; /* an injected long press on the dial */
     }
     return false;
 }
@@ -726,7 +731,8 @@ void roundie_ui_gui_pump(void)
             if (destroy) {
                 for (unsigned i = 0; i < REP_UI_WIDGET_LIMIT; i++) {
                     status.released += slots[i].handle != 0;
-                    status.released += slots[i].handle != 0 && interactive(slots[i].type);
+                    status.released += slots[i].handle != 0 &&
+                        (interactive(slots[i].type) || slots[i].long_press);
                 }
                 injection.pending = false;
                 memset(slots, 0, sizeof(slots));

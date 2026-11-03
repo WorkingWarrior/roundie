@@ -96,7 +96,8 @@ typedef struct {
  * unchanged: round widgets use version-2 request and result structures, passed
  * through ui_create/ui_result as a pointer to their leading base member. */
 #define REP3_CAP_ROUND_UI UINT32_C(32)
-/* value = widget handle, reserved = committed int32 value (two's complement).
+/* BUTTON also reports a long press on a CLOCK_HANDS dial with REP_UI_OPTION_LONG_PRESS.
+ * VALUE: value = widget handle, reserved = committed int32 value (two's complement).
  * LIST: selected index. ARC_SLIDER: slider value. DIALOG: 1 primary, 2 secondary. */
 #define REP3_EVENT_VALUE UINT32_C(4)
 #define REP_UI_LIST UINT32_C(4)        /* app box inside the circle; text "a\nb\nc" */
@@ -110,6 +111,7 @@ typedef struct {
 #define REP_UI_OPTION_NO_SECONDS UINT32_C(2)  /* CLOCK_HANDS without a second hand */
 #define REP_UI_OPTION_FONT_MEDIUM UINT32_C(4) /* version-2 LABEL, 28 px */
 #define REP_UI_OPTION_FONT_LARGE UINT32_C(8)  /* version-2 LABEL, 48 px */
+#define REP_UI_OPTION_LONG_PRESS UINT32_C(16) /* CLOCK_HANDS: a long press sends BUTTON */
 #define REP_UI_CLOCK_HANDS_PERIOD INT32_C(43200) /* CLOCK_HANDS value: seconds of 12 h */
 #define REP_UI_LIST_ITEM_LIMIT 16U
 #define REP_UI_SLIDER_RANGE_LIMIT INT32_C(1000000) /* |minimum|, |maximum| */
