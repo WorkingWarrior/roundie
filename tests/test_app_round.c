@@ -25,9 +25,13 @@ void vTaskDelay(TickType_t ticks)
     lv_tick_inc(ticks);
 }
 
+/* The watch example is compiled with renamed exports (tests/app_ui/CMakeLists.txt). */
+const rep_descriptor_v3_t *watch_app_entry_v3(const rep_api_v3_t *table);
+static bool use_watch;
+
 static const rep_descriptor_v3_t *test_entry(const rep_api_v3_t *table)
 {
-    return rep_app_entry_v3(table);
+    return use_watch ? watch_app_entry_v3(table) : rep_app_entry_v3(table);
 }
 
 void mock_ui_relocate(esp_elf_t *elf)
@@ -476,6 +480,196 @@ static void round_runtime_tests(void)
     puts("Round example + production runtime: coalescing, stale rejection, dialog, shadow, capability gate PASS (host C callbacks, mocked loader)");
 }
 
+static lv_obj_t *child(lv_obj_t *parent, unsigned index)
+{
+    return lv_obj_get_child(parent, (int32_t)index);
+}
+
+static void clock_widget_tests(void)
+{
+    uint32_t generation = 3000;
+    assert(roundie_ui_open(generation, sink));
+    rep_ui_widget_v2_t view_request = {0};
+    view_request.base = (rep_ui_widget_t){1, sizeof(rep_ui_widget_t), REP_UI_VIEW, 0, 0, 0, 360, 360, 0, ""};
+    uint32_t view = roundie_ui_create(generation, &view_request);
+    rep_ui_widget_v2_t hands_request = round_widget(REP_UI_CLOCK_HANDS, view, "");
+    hands_request.value = 900; /* 00:15:00 */
+    rep_ui_widget_v2_t invalid = hands_request;
+    invalid.base.width = 100;
+    assert(roundie_ui_create(generation, &invalid) == 0);
+    invalid = hands_request;
+    invalid.value = REP_UI_CLOCK_HANDS_PERIOD;
+    assert(roundie_ui_create(generation, &invalid) == 0);
+    invalid = round_widget(REP_UI_CLOCK_HANDS, view, "12");
+    assert(roundie_ui_create(generation, &invalid) == 0);
+    invalid = hands_request;
+    invalid.options = REP_UI_OPTION_FONT_LARGE;
+    assert(roundie_ui_create(generation, &invalid) == 0);
+    uint32_t hands = roundie_ui_create(generation, &hands_request);
+    assert(hands != 0 && roundie_ui_create(generation, &hands_request) == 0);
+
+    rep_ui_widget_v2_t label_request = round_widget(REP_UI_LABEL, view, "12:34");
+    label_request.base.x = 60;
+    label_request.base.y = 200;
+    label_request.base.width = 240;
+    label_request.base.height = 60;
+    label_request.options = REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE;
+    assert(roundie_ui_create(generation, &label_request) == 0);
+    label_request.options = REP_UI_OPTION_NO_SECONDS;
+    assert(roundie_ui_create(generation, &label_request) == 0);
+    label_request.options = REP_UI_OPTION_FONT_LARGE;
+    uint32_t label = roundie_ui_create(generation, &label_request);
+    assert(label != 0);
+    assert(roundie_ui_transition(generation, ROUNDIE_UI_SHOW));
+    lv_obj_t *root = lv_screen_active();
+    lv_obj_t *scale = child(root, 0);
+    lv_obj_t *text = child(root, 1);
+    assert(lv_obj_check_type(scale, &lv_scale_class) && lv_obj_get_child_count(scale) == 3);
+    assert(lv_obj_get_style_text_font(text, LV_PART_MAIN) == &lv_font_montserrat_48);
+    shadow(generation, hands, 900, 900, 0);
+
+    /* Minute hand at 15 minutes points right; the hour hand barely moves. */
+    lv_obj_t *minute = child(scale, 1);
+    lv_obj_update_layout(root);
+    const lv_point_precise_t *points = lv_line_get_points(minute);
+    assert(lv_line_get_point_count(minute) == 2);
+    assert(points[1].x - points[0].x > 120 && points[1].y - points[0].y < 5 &&
+           points[1].y - points[0].y > -5);
+    assert(set_value(generation, hands, REP_UI_VALUE, REP_UI_CLOCK_HANDS_PERIOD, NULL) == -1);
+    assert(set_value(generation, hands, REP_UI_VALUE, 2700, NULL) == 0); /* 00:45:00 */
+    assert(set_value(generation, hands, REP_UI_TEXT, 0, "x") == -1);
+    pump();
+    shadow(generation, hands, 2700, 2700, 0);
+    points = lv_line_get_points(minute);
+    assert(points[0].x - points[1].x > 120);
+    unsigned rejected = ui_status().input_rejected;
+    assert(roundie_ui_inject_value(generation, hands, 10));
+    pump();
+    assert(ui_status().input_rejected == rejected + 1);
+    shadow(generation, hands, 2700, 2700, 0); /* display only: no input */
+
+    /* Colors, including the root view; a value above 24 bits is refused. */
+    assert(set_value(generation, view, REP_UI_COLOR, 0x1000000, NULL) == -1);
+    assert(set_value(generation, view, REP_UI_COLOR, 0x021a0c, NULL) == 0);
+    assert(set_value(generation, view, REP_UI_VISIBLE, 0, NULL) == -1);
+    assert(set_value(generation, label, REP_UI_COLOR, 0x1aff80, NULL) == 0);
+    assert(set_value(generation, hands, REP_UI_COLOR, 0x1aff80, NULL) == 0);
+    pump();
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff021a0c);
+    assert(lv_color_to_u32(lv_obj_get_style_text_color(text, LV_PART_MAIN)) == 0xff1aff80);
+    assert(lv_color_to_u32(lv_obj_get_style_line_color(minute, LV_PART_MAIN)) == 0xff1aff80);
+
+    /* The dial passes touches through. */
+    lv_point_t centre = {180, 120};
+    lv_obj_t *found = lv_indev_search_obj(root, &centre);
+    assert(found != scale && found != minute);
+    assert(roundie_ui_destroy(generation, view) == 0);
+    assert(roundie_ui_transition(generation, ROUNDIE_UI_DESTROY));
+    assert(roundie_ui_retire(generation));
+    assert(ui_status().outstanding == 0 && ui_status().realized_objects == 0);
+    puts("Clock hands, styled labels and colors + real LVGL: validation, needles, shadow, pass-through PASS");
+}
+
+static roundie_elf_clock_t test_clock;
+static bool test_clock_valid;
+static unsigned test_clock_reads;
+
+static bool clock_source_mock(roundie_elf_clock_t *out)
+{
+    test_clock_reads++;
+    if (!test_clock_valid) {
+        return false;
+    }
+    *out = test_clock;
+    out->monotonic_us = esp_timer_get_time();
+    return true;
+}
+
+static void step_after(int64_t microseconds)
+{
+    mock_clock += microseconds;
+    roundie_elf_step(esp_timer_get_time());
+    drain();
+}
+
+static void watch_runtime_tests(void)
+{
+    use_watch = true;
+    roundie_elf_set_clock_source(clock_source_mock);
+    test_clock_valid = false;
+    test_clock = (roundie_elf_clock_t){0, 20760, (12U * 3600U + 34U * 60U + 56U) * 1000U, 1};
+    roundie_elf_set_allowed(true);
+    assert(roundie_elf_prepare());
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING && clock_app && round_ui);
+    uint32_t generation = status.instance;
+    roundie_ui_status_t ui = ui_status();
+    assert(ui.widgets == 5 && ui.failed == 0 && ui.foreground);
+    lv_obj_t *root = lv_screen_active();
+    lv_obj_t *date = child(root, 1);
+    lv_obj_t *time_text = child(root, 2);
+    lv_obj_t *edge = child(root, 3);
+    assert(strcmp(lv_label_get_text(time_text), "--:--") == 0);
+    assert(strcmp(lv_label_get_text(date), "Sync time") == 0);
+
+    /* No valid wall time: no clock event, the face waits. */
+    step_after(1100000);
+    assert(strcmp(lv_label_get_text(time_text), "--:--") == 0);
+    unsigned reads = test_clock_reads;
+    roundie_elf_step(esp_timer_get_time());
+    assert(test_clock_reads == reads); /* sampled at most once per second */
+
+    test_clock_valid = true;
+    step_after(1100000);
+    assert(strcmp(lv_label_get_text(time_text), "12:34") == 0);
+    assert(strcmp(lv_label_get_text(date), "TUE 3 NOV") == 0);
+    uint32_t hands = 0;
+    int32_t committed = 0;
+    int32_t requested;
+    uint32_t pending;
+    for (uint32_t handle = 1; handle <= 2000 && hands == 0; handle++) {
+        if (roundie_ui_shadow(generation, handle, &committed, &requested, &pending) &&
+            committed >= 2096 && committed <= 2098) {
+            hands = handle;
+        }
+    }
+    assert(hands != 0); /* 12:34:56 is 2096 s into the 12-hour dial */
+
+    /* The timer advances the hands between minute events. */
+    step_after(2100000);
+    assert(roundie_ui_shadow(generation, hands, &committed, &requested, &pending));
+    assert(committed >= 2098 && committed <= 2101);
+
+    /* A zone change (new revision) is posted at the next check, not a minute later. */
+    test_clock.ms_of_day += 3600000U;
+    test_clock.revision++;
+    step_after(1100000);
+    assert(strcmp(lv_label_get_text(time_text), "13:35") == 0 ||
+           strcmp(lv_label_get_text(time_text), "13:34") == 0);
+
+    /* Queued clock samples coalesce into the newest one. */
+    unsigned count = mailbox.count;
+    assert(post_with_origin(generation, REP3_EVENT_CLOCK, 20761, 0, false, esp_timer_get_time()) == ESP_OK);
+    assert(post_with_origin(generation, REP3_EVENT_CLOCK, 20761, 1000, false, esp_timer_get_time()) == ESP_OK);
+    assert(mailbox.count == count + 1);
+    drain();
+    assert(strcmp(lv_label_get_text(date), "WED 4 NOV") == 0);
+    assert(strcmp(lv_label_get_text(time_text), "00:00") == 0);
+
+    /* The edge button cycles the theme through COLOR updates. */
+    click(edge);
+    drain();
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff0b1220);
+    assert(ui_status().failed == 0 && ui_status().error == 0);
+
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && ui_status().outstanding == 0);
+    assert(lv_screen_active() == home && live_bytes == 0);
+    roundie_elf_set_clock_source(NULL);
+    use_watch = false;
+    puts("Watch example + production runtime: clock events, extrapolation, zone change, coalescing, themes PASS (host C callbacks, mocked loader)");
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -488,6 +682,7 @@ int main(int argc, char **argv)
     roundie_ui_gui_bind();
     current_task = (void *)1;
     bridge_tests();
+    clock_widget_tests();
     FILE *file = fopen(argv[1], "rb");
     assert(file != NULL);
     fixture_size = fread(fixture, 1, sizeof(fixture), file);
@@ -495,6 +690,7 @@ int main(int argc, char **argv)
     roundie_elf_bind_executor((void *)1);
     mode = 0;
     round_runtime_tests();
+    watch_runtime_tests();
     lv_deinit();
     return 0;
 }

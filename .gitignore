@@ -11,6 +11,7 @@ __pycache__/
 /examples/fault_elf/build*/
 /examples/ui_elf/build*/
 /examples/round_elf/build*/
+/examples/watch_elf/build*/
 /examples/usb_mtp_probe/build*/
 /examples/usb_mtp_probe/managed_components/
 /examples/usb_mtp_probe/sdkconfig*

@@ -12,6 +12,7 @@ static struct {
     lv_obj_t *label;
     lv_obj_t *buttons[2];       /* DIALOG: primary, secondary */
     lv_obj_t *button_labels[2];
+    lv_obj_t *needles[3];       /* CLOCK_HANDS: hour, minute, second */
     char text[REP_UI_TEXT_CAPACITY]; /* DIALOG: fields split by NUL */
 } objects[REP_UI_WIDGET_LIMIT];
 
@@ -35,6 +36,15 @@ static struct {
 #define DIALOG_BUTTON_WIDTH 120
 #define DIALOG_BUTTON_HEIGHT 52
 #define TOUCH_ROW 44
+/* CLOCK_HANDS: the ArcSlider's 340 px dial; needle values in tenths of a
+ * degree of a 3600-step scale. */
+#define HANDS_INSET 10
+#define HANDS_SIZE 340
+#define HANDS_STEPS 3600
+#define HOUR_LENGTH 90
+#define MINUTE_LENGTH 135
+#define SECOND_LENGTH 150
+#define SECOND_COLOR 0xff5a36
 static lv_obj_t *root;
 static lv_obj_t *system_screen;
 static uint32_t retained_bytes;
@@ -135,6 +145,129 @@ static lv_obj_t *add_button(lv_obj_t *parent, int32_t x, int32_t y, int32_t widt
     return button;
 }
 
+static void hands_set(unsigned index, int32_t seconds)
+{
+    static const int32_t lengths[3] = {HOUR_LENGTH, MINUTE_LENGTH, SECOND_LENGTH};
+    int32_t values[3] = {
+        seconds / 12,          /* hour hand: 12 h over the scale */
+        seconds % 3600,        /* minute hand: one hour */
+        (seconds % 60) * 60,   /* second hand: one minute */
+    };
+    for (unsigned i = 0; i < 3; i++) {
+        if (objects[index].needles[i] != NULL) {
+            lv_scale_set_line_needle_value(objects[index].object, objects[index].needles[i],
+                                           lengths[i], values[i]);
+        }
+    }
+}
+
+static lv_obj_t *add_needle(lv_obj_t *scale, int32_t width, uint32_t color)
+{
+    lv_obj_t *needle = lv_line_create(scale);
+    if (needle == NULL) {
+        return NULL;
+    }
+    lv_obj_remove_flag(needle, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_line_width(needle, width, 0);
+    lv_obj_set_style_line_rounded(needle, true, 0);
+    lv_obj_set_style_line_color(needle, lv_color_hex(color), 0);
+    return needle;
+}
+
+/* Dial with 60 ticks and hands. Not clickable: touches reach widgets below. */
+static bool create_hands(unsigned index, const rep_ui_widget_v2_t *widget)
+{
+    lv_obj_t *scale = lv_scale_create(root);
+    objects[index].object = scale;
+    if (scale == NULL) {
+        return false;
+    }
+    lv_obj_remove_flag(scale, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(scale, HANDS_INSET, HANDS_INSET);
+    lv_obj_set_size(scale, HANDS_SIZE, HANDS_SIZE);
+    lv_scale_set_mode(scale, LV_SCALE_MODE_ROUND_INNER);
+    lv_scale_set_label_show(scale, false);
+    lv_scale_set_total_tick_count(scale, 61);
+    lv_scale_set_major_tick_every(scale, 5);
+    lv_scale_set_range(scale, 0, HANDS_STEPS);
+    lv_scale_set_angle_range(scale, 360);
+    lv_scale_set_rotation(scale, 270);
+    lv_obj_set_style_arc_width(scale, 0, LV_PART_MAIN);
+    lv_obj_set_style_length(scale, 14, LV_PART_INDICATOR);
+    lv_obj_set_style_line_width(scale, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_length(scale, 6, LV_PART_ITEMS);
+    lv_obj_set_style_line_width(scale, 2, LV_PART_ITEMS);
+    lv_obj_set_style_line_color(scale, lv_color_hex(0xffffff), LV_PART_INDICATOR);
+    lv_obj_set_style_line_color(scale, lv_color_hex(0x7f8c9a), LV_PART_ITEMS);
+    unsigned needles = (widget->options & REP_UI_OPTION_NO_SECONDS) != 0 ? 2 : 3;
+    static const int32_t widths[3] = {8, 5, 2};
+    for (unsigned i = 0; i < needles; i++) {
+        objects[index].needles[i] = add_needle(scale, widths[i], i == 2 ? SECOND_COLOR : 0xffffff);
+        if (objects[index].needles[i] == NULL) {
+            return false;
+        }
+    }
+    hands_set(index, widget->value);
+    return true;
+}
+
+/* REP_UI_COLOR: the widget's one themable color. */
+static void set_color(unsigned index, uint32_t value)
+{
+    lv_color_t color = lv_color_hex(value);
+    lv_obj_t *object = objects[index].object;
+    switch (objects[index].type) {
+    case REP_UI_VIEW:
+        lv_obj_set_style_bg_color(object, color, 0);
+        break;
+    case REP_UI_LABEL:
+        lv_obj_set_style_text_color(object, color, 0);
+        break;
+    case REP_UI_BUTTON:
+    case REP_UI_EDGE_BUTTON:
+        lv_obj_set_style_bg_color(object, color, 0);
+        break;
+    case REP_UI_LIST:
+        lv_obj_set_style_bg_color(object, color, LV_PART_SELECTED);
+        break;
+    case REP_UI_ARC_SLIDER:
+        lv_obj_set_style_arc_color(object, color, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(object, color, LV_PART_KNOB);
+        break;
+    case REP_UI_DIALOG:
+        for (unsigned i = 0; i < 2; i++) {
+            if (objects[index].buttons[i] != NULL) {
+                lv_obj_set_style_bg_color(objects[index].buttons[i], color, 0);
+            }
+        }
+        break;
+    case REP_UI_CLOCK_HANDS:
+        lv_obj_set_style_line_color(object, color, LV_PART_INDICATOR);
+        for (unsigned i = 0; i < 2; i++) {
+            lv_obj_set_style_line_color(objects[index].needles[i], color, 0);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+static const lv_font_t *label_font(uint32_t options)
+{
+#if LV_FONT_MONTSERRAT_48
+    if ((options & REP_UI_OPTION_FONT_LARGE) != 0) {
+        return &lv_font_montserrat_48;
+    }
+#endif
+#if LV_FONT_MONTSERRAT_28
+    if ((options & REP_UI_OPTION_FONT_MEDIUM) != 0) {
+        return &lv_font_montserrat_28;
+    }
+#endif
+    (void)options;
+    return LV_FONT_DEFAULT;
+}
+
 static bool create_round(unsigned index, const rep_ui_widget_v2_t *widget)
 {
     const rep_ui_widget_t *base = &widget->base;
@@ -188,6 +321,11 @@ static bool create_round(unsigned index, const rep_ui_widget_v2_t *widget)
         }
         memcpy(objects[index].text, base->text, sizeof(objects[index].text));
         lv_label_set_text_static(objects[index].label, objects[index].text);
+    } else if (base->type == REP_UI_CLOCK_HANDS) {
+        if (!create_hands(index, widget)) {
+            return false;
+        }
+        object = objects[index].object;
     } else {
         /* DIALOG: an opaque full-panel backdrop absorbs touches below it. */
         object = lv_obj_create(root);
@@ -303,6 +441,9 @@ void roundie_ui_render_metrics(uint32_t *before, uint32_t *free, uint32_t *count
             *count += objects[i].buttons[j] != NULL;
             *count += objects[i].button_labels[j] != NULL;
         }
+        for (unsigned j = 0; j < 3; j++) {
+            *count += objects[i].needles[j] != NULL;
+        }
     }
 }
 
@@ -374,6 +515,12 @@ bool roundie_ui_render(const roundie_ui_command_t *command)
             objects[index].label = label;
             lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
             lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+            if (widget->type == REP_UI_LABEL) {
+                lv_obj_set_style_text_font(label, label_font(command->widget.options), 0);
+                if ((command->widget.options & REP_UI_OPTION_HIDDEN) != 0) {
+                    lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+                }
+            }
             memcpy(objects[index].text, widget->text, sizeof(widget->text));
             lv_label_set_text_static(label, objects[index].text);
         }
@@ -397,6 +544,10 @@ bool roundie_ui_render(const roundie_ui_command_t *command)
             lv_label_set_text_static(objects[index].label, objects[index].text);
         } else if (command->operation == REP_UI_VALUE && type == REP_UI_LIST) {
             lv_roller_set_selected(object, command->value, LV_ANIM_OFF);
+        } else if (command->operation == REP_UI_VALUE && type == REP_UI_CLOCK_HANDS) {
+            hands_set(index, (int32_t)command->value);
+        } else if (command->operation == REP_UI_COLOR) {
+            set_color(index, command->value);
         } else if (command->operation == REP_UI_VALUE && type == REP_UI_ARC_SLIDER) {
             lv_arc_set_value(object, (int32_t)command->value);
         } else if (command->operation == REP_UI_VISIBLE) {

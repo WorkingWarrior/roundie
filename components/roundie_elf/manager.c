@@ -26,6 +26,13 @@ static bool lifecycle_stopped;
 static rep_descriptor_v2_t lifecycle;
 static bool ui_owned;
 static bool round_ui; /* descriptor required REP3_CAP_ROUND_UI */
+/* REP3_CAP_CLOCK: executor-only state; the source is set once before start. */
+static roundie_elf_clock_source_t clock_source;
+static bool clock_app;
+static bool clock_sent;
+static uint32_t clock_revision;
+static int64_t clock_check_us;
+static int64_t clock_due_us;
 static uint32_t timer_serial;
 static uint32_t timer_period_ms;
 static int64_t timer_due_us;
@@ -253,6 +260,9 @@ static int32_t app_ui_update(uint32_t instance, const rep_ui_update_t *update)
         return -1;
     }
     rep_ui_update_t copy = *update;
+    if (copy.property >= REP_UI_VALUE && !round_ui) {
+        return -1; /* VALUE and COLOR belong to the Round UI extension */
+    }
     status.api_calls++;
     return roundie_ui_update(instance, &copy);
 }
@@ -441,7 +451,7 @@ const rep_api_v2_t *rep_abi_v2(uint32_t required_version)
 
 static const rep_api_v3_t api_v3 = {
     REP_ABI_V3, sizeof(rep_api_v3_t), REP_CAP_LOG | REP_CAP_MONOTONIC | REP_CAP_ALLOC |
-        REP2_CAP_TIMER | REP3_CAP_UI | REP3_CAP_ROUND_UI,
+        REP2_CAP_TIMER | REP3_CAP_UI | REP3_CAP_ROUND_UI | REP3_CAP_CLOCK,
     app_log, app_monotonic, app_alloc, app_release, app_timer_start, app_timer_cancel,
     app_ui_create, app_ui_update, app_ui_destroy, app_ui_result,
 };
@@ -638,6 +648,13 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
                 queued->reserved = origin;
                 duplicate = true;
             }
+            if (type == REP3_EVENT_CLOCK && queued->type == type) {
+                /* The newest sample replaces the whole event, with its time. */
+                queued->value = value;
+                queued->reserved = origin;
+                queued->posted_us = (uint64_t)posted_us;
+                duplicate = true;
+            }
         }
         if (duplicate) {
             mailbox.coalesced++;
@@ -653,6 +670,35 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
     }
     portEXIT_CRITICAL(&lock);
     return result;
+}
+
+void roundie_elf_set_clock_source(roundie_elf_clock_source_t source)
+{
+    clock_source = source;
+}
+
+/* Posts local time at start, on each local minute and after a sync or zone
+ * change. The source is sampled at most once per second, outside callbacks. */
+static void clock_step(int64_t now_us)
+{
+    if (!clock_app || clock_source == NULL || now_us < clock_check_us) {
+        return;
+    }
+    clock_check_us = now_us + 1000000;
+    roundie_elf_clock_t clock;
+    if (!clock_source(&clock)) {
+        return;
+    }
+    bool due = !clock_sent || clock.revision != clock_revision || clock.monotonic_us >= clock_due_us;
+    if (due && post_with_origin(status.instance, REP3_EVENT_CLOCK, clock.days, clock.ms_of_day,
+                                false, clock.monotonic_us) == ESP_OK) {
+        clock_sent = true;
+        clock_revision = clock.revision;
+        clock_due_us = clock.monotonic_us + (int64_t)(60000U - clock.ms_of_day % 60000U) * 1000;
+    }
+    if (clock_sent && clock_due_us < clock_check_us) {
+        clock_check_us = clock_due_us;
+    }
 }
 
 static esp_err_t post_event(uint32_t instance, uint32_t type, uint32_t value, int64_t posted_us)
@@ -746,6 +792,7 @@ void roundie_elf_step(int64_t now_us)
         post_event(status.instance, REP2_EVENT_TIMER, status.timer_handle, now_us);
         timer_due_us = now_us + (int64_t)timer_period_ms * 1000;
     }
+    clock_step(now_us);
     rep_event_v2_t event;
     bool dispatch = false;
     portENTER_CRITICAL(&lock);
@@ -863,6 +910,9 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         const rep_descriptor_v2_t *descriptor;
         if (status.abi_version == 3) {
             round_ui = false;
+            clock_app = false;
+            clock_sent = false;
+            clock_check_us = 0;
             ui_owned = roundie_ui_open(status.instance, ui_input);
             if (!ui_owned) {
                 callback_active = false;
@@ -883,6 +933,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
             }
             /* Same callback signatures, with explicit ABI 3 context version. */
             round_ui = (v3->required_capabilities & REP3_CAP_ROUND_UI) != 0;
+            clock_app = (v3->required_capabilities & REP3_CAP_CLOCK) != 0;
             lifecycle = (rep_descriptor_v2_t){3, sizeof(*v3), v3->init, v3->start, v3->on_event,
                 v3->suspend, v3->resume, v3->stop, v3->destroy};
             descriptor = &lifecycle;

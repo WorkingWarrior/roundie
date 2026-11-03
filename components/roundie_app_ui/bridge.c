@@ -131,12 +131,25 @@ bool roundie_ui_box_in_circle(int32_t x, int32_t y, int32_t width, int32_t heigh
 
 static bool round_type(uint32_t type)
 {
-    return type >= REP_UI_LIST && type <= REP_UI_DIALOG;
+    return type >= REP_UI_LIST && type <= REP_UI_CLOCK_HANDS;
 }
 
 static bool interactive(uint32_t type)
 {
-    return type == REP_UI_BUTTON || round_type(type);
+    return type == REP_UI_BUTTON || (type >= REP_UI_LIST && type <= REP_UI_DIALOG);
+}
+
+/* System-placed widgets would overlap: one of each per view. */
+static bool single_per_view(uint32_t type)
+{
+    return type == REP_UI_ARC_SLIDER || type == REP_UI_EDGE_BUTTON || type == REP_UI_DIALOG ||
+        type == REP_UI_CLOCK_HANDS;
+}
+
+/* Widgets with shadow state: realized value, requested value, pending count. */
+static bool value_type(uint32_t type)
+{
+    return type == REP_UI_LIST || type == REP_UI_ARC_SLIDER || type == REP_UI_CLOCK_HANDS;
 }
 
 static bool button_type(uint32_t type)
@@ -154,9 +167,25 @@ static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
 {
     const rep_ui_widget_t *base = &widget->base;
     *items = 0;
-    if (base->version != 2 || base->struct_size != sizeof(*widget) || !round_type(base->type) ||
-        (widget->options & ~REP_UI_OPTION_HIDDEN) != 0 || !text_valid(base->text, base->text_length)) {
+    bool label = base->type == REP_UI_LABEL;
+    uint32_t allowed = REP_UI_OPTION_HIDDEN;
+    if (label) {
+        allowed |= REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE;
+    } else if (base->type == REP_UI_CLOCK_HANDS) {
+        allowed |= REP_UI_OPTION_NO_SECONDS;
+    }
+    if (base->version != 2 || base->struct_size != sizeof(*widget) || (!label && !round_type(base->type)) ||
+        (widget->options & ~allowed) != 0 || !text_valid(base->text, base->text_length)) {
         return false;
+    }
+    if (label) {
+        /* A styled label: version-1 label geometry plus one font size. */
+        uint32_t fonts = widget->options & (REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE);
+        return fonts != (REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE) &&
+            base->x >= 0 && base->x <= 360 && base->y >= 0 && base->y <= 360 &&
+            base->width > 0 && base->width <= 360 - base->x &&
+            base->height > 0 && base->height <= 360 - base->y &&
+            widget->value == 0 && widget->minimum == 0 && widget->maximum == 0;
     }
     if (base->type == REP_UI_LIST) {
         *items = roundie_ui_text_fields(base->text, base->text_length);
@@ -168,6 +197,10 @@ static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
     }
     if (!system_geometry(base)) {
         return false;
+    }
+    if (base->type == REP_UI_CLOCK_HANDS) {
+        return base->text_length == 0 && widget->minimum == 0 && widget->maximum == 0 &&
+            widget->value >= 0 && widget->value < REP_UI_CLOCK_HANDS_PERIOD;
     }
     if (base->type == REP_UI_ARC_SLIDER) {
         return base->text_length == 0 &&
@@ -247,7 +280,7 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
         widget->x == 0 && widget->y == 0 && widget->width == 360 && widget->height == 360 :
         widget->parent != 0 && widget->parent == status.view;
     /* One system-placed ARC_SLIDER, EDGE_BUTTON and DIALOG per view. */
-    if (round && widget->type != REP_UI_LIST) {
+    if (round && single_per_view(widget->type)) {
         for (unsigned i = 0; i < REP_UI_WIDGET_LIMIT; i++) {
             if (slots[i].handle != 0 && slots[i].type == widget->type) {
                 parent = false;
@@ -273,9 +306,12 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
                 slots[i].items = items;
                 slots[i].minimum = request->minimum;
                 slots[i].maximum = request->maximum;
+                if (widget->type == REP_UI_CLOCK_HANDS) {
+                    slots[i].maximum = REP_UI_CLOCK_HANDS_PERIOD - 1;
+                }
                 slots[i].committed = request->value;
                 slots[i].requested = request->value;
-                if (widget->type == REP_UI_LIST || widget->type == REP_UI_ARC_SLIDER) {
+                if (value_type(widget->type)) {
                     slots[i].pending = 1; /* creation not yet applied */
                 }
                 status.widgets++;
@@ -307,19 +343,20 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
     bool format = update->version == 1 && update->struct_size == sizeof(*update) &&
         (update->property == REP_UI_TEXT ? text_valid(update->text, update->value) :
          update->property == REP_UI_VALUE ||
+         (update->property == REP_UI_COLOR && update->value <= UINT32_C(0xffffff)) ||
          ((update->property == REP_UI_VISIBLE || update->property == REP_UI_ENABLED) && update->value <= 1));
     uint32_t fields = update->property == REP_UI_TEXT ? roundie_ui_text_fields(update->text, update->value) : 0;
     int32_t value = (int32_t)update->value;
     portENTER_CRITICAL(&lock);
     int index = find(update->widget);
     bool valid = format && admission(generation) && index >= 0;
-    if (valid) {
+    if (valid && update->property != REP_UI_COLOR) {
         valid = slots[index].type != REP_UI_VIEW; /* root visibility is lifecycle-owned */
     }
     bool value_change = false;
     if (valid && update->property == REP_UI_TEXT) {
         uint32_t type = slots[index].type;
-        if (type == REP_UI_ARC_SLIDER) {
+        if (type == REP_UI_ARC_SLIDER || type == REP_UI_CLOCK_HANDS) {
             valid = false;
         } else if (type == REP_UI_LIST) {
             valid = fields >= 1 && fields <= REP_UI_LIST_ITEM_LIMIT;
@@ -332,7 +369,7 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
     if (valid && update->property == REP_UI_VALUE) {
         if (slots[index].type == REP_UI_LIST) {
             valid = value >= 0 && (uint32_t)value < slots[index].items;
-        } else if (slots[index].type == REP_UI_ARC_SLIDER) {
+        } else if (slots[index].type == REP_UI_ARC_SLIDER || slots[index].type == REP_UI_CLOCK_HANDS) {
             valid = value >= slots[index].minimum && value <= slots[index].maximum;
         } else {
             valid = false;
@@ -455,8 +492,7 @@ bool roundie_ui_shadow(uint32_t generation, uint32_t widget, int32_t *committed,
     portENTER_CRITICAL(&lock);
     int index = find(widget);
     bool valid = generation != 0 && generation == status.generation && index >= 0 &&
-        (slots[index].type == REP_UI_LIST || slots[index].type == REP_UI_ARC_SLIDER ||
-         slots[index].type == REP_UI_DIALOG);
+        (value_type(slots[index].type) || slots[index].type == REP_UI_DIALOG);
     if (valid) {
         *committed = slots[index].committed;
         *requested = slots[index].requested;
@@ -739,7 +775,7 @@ void roundie_ui_gui_pump(void)
                 }
                 bool list = slots[index].type == REP_UI_LIST;
                 bool value_change = command.operation == REP_UI_VALUE ||
-                    (command.operation == 0 && (list || slots[index].type == REP_UI_ARC_SLIDER)) ||
+                    (command.operation == 0 && value_type(slots[index].type)) ||
                     (command.operation == REP_UI_TEXT && list);
                 if (value_change && slots[index].pending != 0) {
                     slots[index].pending--;

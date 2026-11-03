@@ -87,3 +87,16 @@ esp_err_t roundie_elf_post(uint32_t instance, uint32_t value);
 bool roundie_elf_busy(void);
 void roundie_elf_status(roundie_elf_status_t *out);
 void roundie_elf_set_allowed(bool allowed);
+
+/* Local wall time for REP3_CAP_CLOCK applications. The source is sampled by the
+ * executor at most once per second, outside native callbacks; it returns false
+ * while wall time is not valid. revision changes on time sync or zone change. */
+typedef struct {
+    int64_t monotonic_us; /* esp_timer time at which the fields below hold */
+    uint32_t days;        /* local days since 1970-01-01 */
+    uint32_t ms_of_day;   /* local milliseconds since midnight */
+    uint32_t revision;
+} roundie_elf_clock_t;
+typedef bool (*roundie_elf_clock_source_t)(roundie_elf_clock_t *out);
+/* Before the executor starts; NULL disables clock events. */
+void roundie_elf_set_clock_source(roundie_elf_clock_source_t source);

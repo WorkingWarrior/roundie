@@ -20,3 +20,7 @@ CONFIG_ELF_LOADER_LOAD_PSRAM=y
 # PowerManager: screen off, BOOT power menu, light sleep with a safety timer.
 CONFIG_ROUNDIE_POWER=y
 CONFIG_ROUNDIE_DEV_POWER=y
+
+# Watch face and large labels (docs/watch-face.md)
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_48=y

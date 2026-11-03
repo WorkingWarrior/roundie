@@ -53,6 +53,19 @@ const char *roundie_time_parse(const roundie_time_frame_t *frame,
         command->restart = true;
         return "OK";
     }
+    if (strcmp(frame->line + 14, "TZ") == 0) {
+        command->zone = true;
+        return "OK";
+    }
+    if (strncmp(frame->line + 14, "TZ ", 3) == 0) {
+        const char *rule = frame->line + 17;
+        if (!roundie_time_zone_valid(rule)) {
+            return "RANGE";
+        }
+        command->zone = true;
+        strcpy(command->zone_rule, rule);
+        return "OK";
+    }
     if (strncmp(frame->line + 14, "SET ", 4) != 0) {
         return "BAD_COMMAND";
     }
@@ -77,4 +90,37 @@ const char *roundie_time_parse(const roundie_time_frame_t *frame,
     command->set = true;
     command->seconds = seconds;
     return "OK";
+}
+
+bool roundie_time_zone_valid(const char *rule)
+{
+    size_t length = strlen(rule);
+    if (length == 0 || length >= ROUNDIE_TIME_ZONE_CAPACITY) {
+        return false;
+    }
+    char first = rule[0];
+    if (!((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') || first == '<')) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        char c = rule[i];
+        bool letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        bool digit = c >= '0' && c <= '9';
+        if (!letter && !digit && strchr("<>+-,./:", c) == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int64_t roundie_time_days_from_civil(int64_t year, unsigned month, unsigned day)
+{
+    /* Howard Hinnant's days_from_civil, with March-based years. */
+    year -= month <= 2 ? 1 : 0;
+    int64_t era = (year >= 0 ? year : year - 399) / 400;
+    int64_t year_of_era = year - era * 400;
+    int64_t shifted_month = month > 2 ? (int64_t)month - 3 : (int64_t)month + 9;
+    int64_t day_of_year = (153 * shifted_month + 2) / 5 + (int64_t)day - 1;
+    int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    return era * 146097 + day_of_era - 719468;
 }

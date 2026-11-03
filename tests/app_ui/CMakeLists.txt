@@ -26,7 +26,11 @@ add_executable(round_tests ../test_app_round.c
     "${ROOT}/components/roundie_app_ui/bridge.c"
     "${ROOT}/components/roundie_app_ui/render.c"
     "${ROOT}/components/roundie_elf/validate.c"
-    "${ROOT}/examples/round_elf/round.c")
+    "${ROOT}/examples/round_elf/round.c"
+    "${ROOT}/examples/watch_elf/watch.c")
+# Two example applications in one host executable: rename the watch's exports.
+set_source_files_properties("${ROOT}/examples/watch_elf/watch.c" PROPERTIES COMPILE_DEFINITIONS
+    "rep_app_entry_v3=watch_app_entry_v3;rep_abi_metadata=watch_abi_metadata")
 target_compile_options(round_tests PRIVATE -Wall -Wextra -Werror)
 target_include_directories(round_tests PRIVATE ../elf_mocks "${ROOT}/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")

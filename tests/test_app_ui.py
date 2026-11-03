@@ -16,7 +16,7 @@ class AppUiTests(unittest.TestCase):
             env = dict(os.environ, PATH=str(TOOLCHAIN) + os.pathsep + os.environ["PATH"])
             examples = []
             for name, binary in (("hello_elf", "hello"), ("event_elf", "event"), ("ui_elf", "ui"),
-                                 ("round_elf", "round")):
+                                 ("round_elf", "round"), ("watch_elf", "watch")):
                 target = build / name
                 subprocess.run(["cmake", "-S", str(ROOT / "examples" / name), "-B", str(target)],
                                check=True, capture_output=True, env=env)

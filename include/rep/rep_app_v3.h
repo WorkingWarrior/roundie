@@ -103,17 +103,23 @@ typedef struct {
 #define REP_UI_ARC_SLIDER UINT32_C(5)  /* system geometry: right edge arc */
 #define REP_UI_EDGE_BUTTON UINT32_C(6) /* system geometry: bottom edge; BUTTON event */
 #define REP_UI_DIALOG UINT32_C(7)      /* system geometry: modal; text "message\nOK[\nCancel]" */
+#define REP_UI_CLOCK_HANDS UINT32_C(8) /* system geometry: dial ticks and hands; display only */
 #define REP_UI_VALUE UINT32_C(4)       /* update.value: int32 bits */
+#define REP_UI_COLOR UINT32_C(5)       /* update.value: 0xRRGGBB; see docs/watch-face.md */
 #define REP_UI_OPTION_HIDDEN UINT32_C(1)
+#define REP_UI_OPTION_NO_SECONDS UINT32_C(2)  /* CLOCK_HANDS without a second hand */
+#define REP_UI_OPTION_FONT_MEDIUM UINT32_C(4) /* version-2 LABEL, 28 px */
+#define REP_UI_OPTION_FONT_LARGE UINT32_C(8)  /* version-2 LABEL, 48 px */
+#define REP_UI_CLOCK_HANDS_PERIOD INT32_C(43200) /* CLOCK_HANDS value: seconds of 12 h */
 #define REP_UI_LIST_ITEM_LIMIT 16U
 #define REP_UI_SLIDER_RANGE_LIMIT INT32_C(1000000) /* |minimum|, |maximum| */
 
 typedef struct {
-    rep_ui_widget_t base; /* version 2, struct_size 148, type LIST..DIALOG */
-    int32_t value;        /* LIST: initial index; ARC_SLIDER: initial value */
+    rep_ui_widget_t base; /* version 2, struct_size 148, type LABEL or LIST..CLOCK_HANDS */
+    int32_t value;        /* LIST: index; ARC_SLIDER: value; CLOCK_HANDS: seconds of 12 h */
     int32_t minimum;      /* ARC_SLIDER only, otherwise 0 */
     int32_t maximum;      /* ARC_SLIDER only, otherwise 0 */
-    uint32_t options;     /* REP_UI_OPTION_HIDDEN */
+    uint32_t options;     /* REP_UI_OPTION_* */
 } rep_ui_widget_v2_t;
 
 /* Shadow state, owned by the system UI bridge and read without waiting for
@@ -127,6 +133,32 @@ typedef struct {
     int32_t requested;
     uint32_t pending;
 } rep_ui_result_v2_t;
+
+/* Clock extension: local wall time as an event, never a call. Requires
+ * REP3_CAP_CLOCK. value = local days since 1970-01-01, reserved = local
+ * milliseconds since midnight (below 86,401,000), posted_us = the monotonic
+ * microsecond time at which they held. Sent after start, at each local minute,
+ * and after a time sync or time-zone change; never while wall time is invalid.
+ * Between events, extrapolate with the posted_us of later events or monotonic_ms. */
+#define REP3_CAP_CLOCK UINT32_C(64)
+#define REP3_EVENT_CLOCK UINT32_C(5)
+
+/* Proleptic Gregorian date of a day count (Howard Hinnant's civil_from_days).
+ * weekday: 0 = Sunday. Integer arithmetic only. */
+static inline void rep_clock_civil(uint32_t days, uint32_t *year, uint32_t *month, uint32_t *day,
+                                   uint32_t *weekday)
+{
+    uint32_t z = days + 719468U;
+    uint32_t era = z / 146097U;
+    uint32_t day_of_era = z - era * 146097U;
+    uint32_t year_of_era = (day_of_era - day_of_era / 1460U + day_of_era / 36524U - day_of_era / 146096U) / 365U;
+    uint32_t day_of_year = day_of_era - (365U * year_of_era + year_of_era / 4U - year_of_era / 100U);
+    uint32_t shifted_month = (5U * day_of_year + 2U) / 153U;
+    *day = day_of_year - (153U * shifted_month + 2U) / 5U + 1U;
+    *month = shifted_month < 10U ? shifted_month + 3U : shifted_month - 9U;
+    *year = year_of_era + era * 400U + (*month <= 2U ? 1U : 0U);
+    *weekday = (days + 4U) % 7U;
+}
 
 REP2_EXPORT const rep_api_v3_t *rep_abi_v3(uint32_t required_version);
 REP2_EXPORT const rep_descriptor_v3_t *rep_app_entry_v3(const rep_api_v3_t *api);

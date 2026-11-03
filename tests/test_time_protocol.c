@@ -30,6 +30,22 @@ int main(void)
     parse("!RT1 1234abcd RESTART\n", "OK", false, 0);
     parse("!RT1 1234abcd SET 946684800\n", "OK", true, 946684800);
     parse("!RT1 1234abcd SET 4102444799\n", "OK", true, 4102444799);
+    roundie_time_frame_t zone = {.line = "!RT1 1234abcd TZ CET-1CEST,M3.5.0,M10.5.0/3", .used = 43};
+    assert(strcmp(roundie_time_parse(&zone, &parsed), "OK") == 0);
+    assert(parsed.zone && !parsed.set && strcmp(parsed.zone_rule, "CET-1CEST,M3.5.0,M10.5.0/3") == 0);
+    roundie_time_frame_t query = {.line = "!RT1 1234abcd TZ", .used = 16};
+    assert(strcmp(roundie_time_parse(&query, &parsed), "OK") == 0);
+    assert(parsed.zone && parsed.zone_rule[0] == '\0');
+    parse("!RT1 1234abcd TZ <+0530>-5:30\n", "OK", false, 0);
+    parse("!RT1 1234abcd TZ 1CET\n", "RANGE", false, 0);
+    parse("!RT1 1234abcd TZ CET;rm\n", "RANGE", false, 0);
+    parse("!RT1 1234abcd TZ \n", "RANGE", false, 0);
+    assert(roundie_time_zone_valid("UTC0"));
+    assert(!roundie_time_zone_valid("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    assert(roundie_time_days_from_civil(1970, 1, 1) == 0);
+    assert(roundie_time_days_from_civil(2000, 3, 1) == 11017);
+    assert(roundie_time_days_from_civil(2026, 11, 3) == 20760);
+    assert(roundie_time_days_from_civil(1969, 12, 31) == -1);
     const char *bad[] = {
         "", "log line", "!RT2 1234abcd GET", "!RT1 1234ABCD GET",
         "!RT1 1234abcd GET ", "!RT1 1234abcd SET -1", "!RT1 1234abcd SET +946684800",

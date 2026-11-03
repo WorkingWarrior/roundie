@@ -10,4 +10,6 @@
 #define LV_USE_ASSERT_OBJ 1
 #define LV_USE_ASSERT_MEM_INTEGRITY 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
+#define LV_FONT_MONTSERRAT_28 1
+#define LV_FONT_MONTSERRAT_48 1
 #endif

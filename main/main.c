@@ -37,6 +37,7 @@
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #include "power_manager.h"
+#include "local_time.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -102,6 +103,16 @@ static sensor_state_t sensors = {
 /* Startup owns this until board publication, then only system_worker writes. */
 static uint32_t wall_sync_count;
 static int64_t wall_sync_at_us;
+
+/* Local time source: wall time is valid only after an RTC sync this boot. */
+static bool wall_clock_valid(uint32_t *sync_count)
+{
+    portENTER_CRITICAL(&sensors.lock);
+    bool valid = sensors.wall_valid && sensors.board_ready;
+    portEXIT_CRITICAL(&sensors.lock);
+    *sync_count = wall_sync_count;
+    return valid;
+}
 
 static const char *sensor_state_name(roundie_sensor_state_t state)
 {
@@ -205,6 +216,20 @@ static void time_command(sensor_state_t *shared,
         /* Strictly read-only: bypass GET's legacy recovery synchronization,
          * cached status publication, SET, NVS and restart paths. */
         clock_diagnostic(shared, command.id);
+        return;
+    }
+    if (strcmp(result, "OK") == 0 && command.zone) {
+        /* TZ [rule]: set when a rule is given, then report the active rule. */
+        if (command.zone_rule[0] != '\0' && roundie_local_time_set_zone(command.zone_rule) != ESP_OK) {
+            result = "ZONE";
+        }
+        char active[ROUNDIE_TIME_ZONE_CAPACITY];
+        roundie_local_time_zone(active);
+        char reply[96];
+        int length = snprintf(reply, sizeof(reply), "\n!RT1 %s %s zone=%s\n", command.id, result, active);
+        if (length > 0 && (size_t)length < sizeof(reply)) {
+            usb_serial_jtag_write_bytes(reply, (size_t)length, pdMS_TO_TICKS(100));
+        }
         return;
     }
     if (command.restart && !roundie_ota_restart_allowed()) {
@@ -912,6 +937,8 @@ void app_main(void)
     esp_err_t nvs_error = nvs_flash_init();
     ESP_LOGI(TAG, "NVS initialization: %s; no erase fallback", esp_err_to_name(nvs_error));
     roundie_boot_persistence_init(nvs_error == ESP_OK);
+    roundie_local_time_init(nvs_error == ESP_OK, wall_clock_valid);
+    roundie_elf_set_clock_source(roundie_local_time_now);
     roundie_boot_status_t boot;
     roundie_boot_status(&boot);
     ESP_LOGI(TAG, "BootGuard reset=%lu retained=%u failures=%lu safe=%u reason=%s trial=%u fault_remaining=%lu",
