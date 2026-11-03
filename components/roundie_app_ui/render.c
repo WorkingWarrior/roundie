@@ -20,6 +20,7 @@ static struct {
 #define ARC_INSET 10
 #define ARC_SIZE 340
 #define ARC_WIDTH 24
+#define ARC_TOUCH_EXTENSION 10
 #define ARC_START_ANGLE 320 /* LVGL degrees, clockwise from 3 o'clock */
 #define ARC_END_ANGLE 40
 #define EDGE_X 100
@@ -170,6 +171,11 @@ static bool create_round(unsigned index, const rep_ui_widget_v2_t *widget)
         lv_arc_set_value(object, widget->value);
         lv_obj_set_style_arc_width(object, ARC_WIDTH, LV_PART_MAIN);
         lv_obj_set_style_arc_width(object, ARC_WIDTH, LV_PART_INDICATOR);
+        /* Without advanced hit testing the arc claims its whole 340 x 340 box,
+         * above earlier widgets. With it, only the ring within its angles is
+         * hit; the extension makes that band 44 px wide. */
+        lv_obj_add_flag(object, LV_OBJ_FLAG_ADV_HITTEST);
+        lv_obj_set_ext_click_area(object, ARC_TOUCH_EXTENSION);
         if (lv_obj_add_event_cb(object, value_changed, LV_EVENT_VALUE_CHANGED, (void *)(uintptr_t)index) == NULL) {
             return false;
         }

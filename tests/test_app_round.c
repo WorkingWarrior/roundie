@@ -258,6 +258,19 @@ static void bridge_tests(void)
     assert(strcmp(lv_label_get_text(lv_obj_get_child(dialog_object, 0)), "Reset?") == 0);
     assert(strcmp(lv_label_get_text(lv_obj_get_child(primary, 0)), "Yes") == 0);
     assert(strcmp(lv_label_get_text(lv_obj_get_child(secondary, 0)), "No") == 0);
+    /* Touch routing through LVGL hit testing: the full-panel arc object lies
+     * above the list but owns only its ring on the right edge. */
+    lv_obj_update_layout(root);
+    lv_point_t list_centre = {150, 166};
+    lv_point_t list_right = {235, 105};
+    lv_point_t ring = {335, 180};
+    lv_point_t ring_inner = {317, 180};
+    lv_point_t left_ring = {25, 180};
+    assert(lv_indev_search_obj(root, &list_centre) == roller);
+    assert(lv_indev_search_obj(root, &list_right) == roller);
+    assert(lv_indev_search_obj(root, &ring) == arc_object);
+    assert(lv_indev_search_obj(root, &ring_inner) == arc_object);
+    assert(lv_indev_search_obj(root, &left_ring) != arc_object);
     roundie_ui_status_t ui = ui_status();
     assert(ui.error == 0 && ui.lvgl_bytes <= 12288);
     printf("Round widgets retained %" PRIu32 " LVGL bytes in %" PRIu32 " objects\n",
