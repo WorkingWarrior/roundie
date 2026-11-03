@@ -77,3 +77,8 @@ options and changed the system button look (see below).
 
 Evidence is in `roundie-backups/stopwatch-1.0.0-2026-11-03/` and
 `stopwatch-1.1.0-2026-11-03/`, outside Git.
+
+**PENDING, 2026-11-03:** on a user photo of 1.1.0 on 0.3.30, the ring track
+looks bright blue, while the code and the host render use dark grey
+(`0x262d36`). The camera's exposure may cause this; it has not been checked by
+eye.

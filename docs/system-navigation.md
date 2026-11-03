@@ -80,8 +80,9 @@ chose this after the analysis of what to take from Wear OS.
     190 ms from admission to running).
   - Its EXIT showed the list, which stayed (no relaunch after 6 s).
   - SELECT stopwatch, then EXIT: the watch came back (generation 3, 200 ms).
-  - The finger gestures (swipe up, left edge from the list) are PENDING until
-    reported.
+- **User-reported, 2026-11-03 (finger, 0.3.30):** a swipe up from the watch
+  face shows the list, and a swipe from the left edge in the list returns to
+  the watch face. Attempts were not recorded.
 
 The original button, superseded by the swipe: the system owned a 120 × 44 Exit
 button on LVGL's top layer, x=120..239,
