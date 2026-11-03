@@ -112,11 +112,33 @@ last duration, the wake-cause bitmap and the screen-off count.
 - **Target build:** normal `0.3.21` (REP profile) built with the pinned toolchain,
   no new warnings, 784,080 B in a 3,670,016 B slot.
 
+## Device test, 2026-11-03, under XIP
+
+**Authorization:** the user approved the OTA installation of 0.3.21 and the
+unattended tests. The tests ran over USB Serial/JTAG through RW1, RS1 and RP1.
+Nobody touched the panel or BOOT. Evidence is in
+`roundie-backups/power-0.3.21-2026-11-03/`, outside Git.
+
+| Case | Result |
+|---|---|
+| OTA from 0.3.20 (`ota_1`) | 784,080 B, SHA-256 `35511f7d…cd607`; 0.3.21 runs from `ota_0`, VALID, self-test passed; 0.3.20 stays VALID |
+| Automatic screen off | Happened once within the first 30 s after boot; RW1 `SCREEN ON/OFF` switched it on and off again |
+| Timed light sleep, 10 s | 9,991 ms asleep, wake cause timer only (bitmap 16). RW1 answered again 14.5 s after the command, measured on the host |
+| Timed light sleep, 60 s | 60,000 ms asleep, timer wake; no reset, so the 10 s watchdogs did not fire across the sleep. The host waited 68.7 s in total |
+| Ten 3 s sleeps in a row | 10 of 10 entered and woke; no reset, 0 sleep errors, internal free 213,959 B afterwards |
+| Sleep from an active screen | Timer wake left the screen off, as designed |
+| Sleep with Roundie UI loaded | Refused with `app`; the sleep counter did not change |
+| Safe Mode (RS1 `REQUEST`) | PowerManager not bound; RW1 `SLEEP` rejected; REBOOT returned to normal, VALID, bound |
+| Regression after 13 sleeps | 5 hello and native-UI cycles PASS, 0 display errors; full frame 25.0 FPS on the UI and 20.0 on the launcher, both as on 0.3.20; minimum GUI stack 2,368 B |
+
+The figures above are one run of each case. The display results show that LCD
+transfers resume without errors after wake. They are counters, not a view of the
+panel.
+
 ## Pending experiments
 
 | Question | Method | Acceptance |
 |---|---|---|
-| Light-sleep entry and timer wake under XIP | RW1 `SLEEP 10/60` repeated, watchdogs on | Counter advances, USB returns, no reset, display and touch work after wake |
 | Touch wake | Menu Sleep, touch the panel | Wakes within 1 s, screen on, the touch does not act |
 | BOOT wake and strap | Menu Sleep, press BOOT; repeat with BOOT held while waking | Wakes, no menu from that press, no ROM Download |
 | Screen off and BOOT menu | Wait 30 s, touch; press BOOT, try each item | Dark panel, no stray input, Restart and Safe Mode as described |
