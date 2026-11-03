@@ -300,3 +300,12 @@ returned to normal.
 
 **PENDING:** the manual BOOT and USB sequence above has not been repeated under XIP.
 It needs a person at the board.
+
+## BOOT at runtime, 2026-11-03
+
+Since 0.3.21 normal firmware reads GPIO0 as an input with pull-up for the power
+menu and as a light-sleep wake source. It never drives the pin, and Safe Mode does
+not configure it. The user reported that BOOT held while waking from light sleep did
+not enter ROM Download. Light sleep is not a reset, so this says nothing about the
+strap at power-on. The manual route above is unchanged: BOOT held while power or USB
+is applied. See [PowerManager](power-manager.md).

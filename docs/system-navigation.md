@@ -17,6 +17,8 @@ should leave this top central region free of essential content. The installed
 UI example's first label starts at y=64, so its counter, TAP ME and uptime
 remain unobscured. This policy adds no ABI and provides no native memory
 isolation. Ordinary application widget handles cannot address system chrome.
+The BOOT power menu ([PowerManager](power-manager.md)) is a later full-screen
+top-layer object, so it covers the Exit button and the application while open.
 
 The control is visible for ABI 2/3, including suspension, and during loading
 after generation admission. It becomes disabled `Closing...` while an accepted

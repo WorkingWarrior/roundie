@@ -1970,7 +1970,8 @@ Następujące zagadnienia wymagają pomiarów lub osobnego rozstrzygnięcia:
 19. Docelowa konfiguracja buforowania LVGL.
 20. Stabilność MTP w wybranej wersji esp_tinyusb.
 21. Procedura ROM Recovery przy zasilaniu bateryjnym.
-22. Zachowanie BOOT jako źródła wybudzania.
+22. Zachowanie BOOT jako źródła wybudzania: light sleep zweryfikowany 2026-11-03
+    ([PowerManager](power-manager.md)); deep sleep i strapping przy wybudzeniu otwarte.
 23. Dopuszczalne czasy callbacków.
 24. Budżety i polityki kolejek.
 25. Ostateczna polityka Sleep Inhibitors: etap 8 blokuje uśpienie warunkami systemowymi,

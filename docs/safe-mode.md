@@ -75,6 +75,10 @@ ineligible slot selection uses OTA_VALIDATE_FAILED (numeric IDF error values
 on the wire). No error invokes a destructive fallback.
 
 REQUEST persists the latch and acknowledges before a planned software restart.
+Since stage 8 the BOOT power menu's Safe Mode item writes the same request when
+the runtime and OTA are idle. On 2026-11-03 it restarted into Safe Mode with
+reason=request, latch=1, and RS1 REBOOT returned to normal. See
+[PowerManager](power-manager.md).
 It is refused during PENDING_VERIFY or an OTA transaction. CLEAR explicitly
 clears history/latch while retaining the active recovery session. REBOOT
 grants one normal startup trial while keeping a durable latch until stable.

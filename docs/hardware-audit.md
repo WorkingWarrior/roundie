@@ -100,7 +100,7 @@ The manufacturer lists eight v5.5.3 projects: comprehensive demo, LVGL demo, MP3
 | I²C devices | Single new-master scan at conservative bus speed; read non-destructive identity/status registers. | Expected devices ACK with no bus lockups; record actual 7-bit codec addresses and any battery dependence. |
 | LCD and touch | Display solid fields/grid; measure SPI clock and optional TE at GPIO18; touch center/edges and reset cycle. | Stable 360 × 360 output, correct color/rotation and touch coordinates, no failed transfers; TE accepted only if electrically observed. |
 | RTC and gauge | Read RTC time before/after power states; read voltage/status with and without battery. | Separate powered functionality from time retention and gauge calibration; log RTC_INT levels. |
-| Wake candidates | Later power milestone: measure GPIO0/4/6 levels, light/deep sleep wake, current and reset strapping. | No wake-source claim until repeated device tests pass. |
+| Wake candidates | Later power milestone: measure GPIO0/4/6 levels, light/deep sleep wake, current and reset strapping. | No wake-source claim until repeated device tests pass. **2026-11-03:** GPIO4 (touch INT) and GPIO0 light-sleep wake user-verified ([PowerManager](power-manager.md)); GPIO6, deep sleep, current and strapping at deep-sleep wake remain open. |
 
 ## Recommended minimum Milestone 1 — IDF v6.1 bring-up
 

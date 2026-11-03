@@ -135,8 +135,14 @@ Nobody touched the panel or BOOT. Evidence is in
 acting on the UI. BOOT wake worked, including with BOOT held during the wake: no
 ROM Download and no menu from that press. Wake latency was not measured, and
 the number of attempts was not recorded.
-The power menu opened on BOOT and its items worked as described. Afterwards RS1
-reported normal 0.3.21, VALID, with no Safe Mode latch.
+The power menu opened on BOOT and its items worked as described. Safe Mode from the
+menu restarted into Safe Mode with reason=request and latch=1, the same record as RS1
+`REQUEST`. RS1 `REBOOT` then returned to normal 0.3.21 from `ota_0`, VALID, latch 0,
+STABLE and PowerManager bound. 0.3.20 remains VALID in `ota_1`.
+
+**Stage 8 gate (REP §23):** light sleep is verified with touch, BOOT and timer
+wake, so at least one sleep mode wakes reliably. The basic power menu also works.
+Current draw and resume time remain open.
 
 The figures above are one run of each case. The display results show that LCD
 transfers resume without errors after wake. They are counters, not a view of the
