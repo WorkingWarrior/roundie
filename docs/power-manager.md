@@ -135,6 +135,8 @@ Nobody touched the panel or BOOT. Evidence is in
 acting on the UI. BOOT wake worked, including with BOOT held during the wake: no
 ROM Download and no menu from that press. Wake latency was not measured, and
 the number of attempts was not recorded.
+The power menu opened on BOOT and its items worked as described. Afterwards RS1
+reported normal 0.3.21, VALID, with no Safe Mode latch.
 
 The figures above are one run of each case. The display results show that LCD
 transfers resume without errors after wake. They are counters, not a view of the
@@ -144,7 +146,6 @@ panel.
 
 | Question | Method | Acceptance |
 |---|---|---|
-| Screen off and BOOT menu | Wait 30 s, touch; press BOOT, try each item | Dark panel, no stray input, Restart and Safe Mode as described |
 | Current draw | USB power meter, then battery with gauge current | ACTIVE vs SCREEN_OFF vs LIGHT_SLEEP recorded |
 | Resume time | Wake to first frame | Recorded, no budget assumed |
 
