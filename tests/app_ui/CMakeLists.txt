@@ -9,6 +9,11 @@ set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "" FORCE)
 set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 add_subdirectory("${ROOT}/managed_components/lvgl__lvgl" lvgl)
+# LVGL's default font: an object library, so every executable links its objects.
+add_library(roundie_fonts OBJECT "${ROOT}/components/roundie_fonts/roundie_font_14.c"
+    "${ROOT}/components/roundie_fonts/roundie_font_28.c"
+    "${ROOT}/components/roundie_fonts/roundie_font_48.c")
+target_link_libraries(roundie_fonts PRIVATE lvgl)
 add_executable(ui_tests ../test_app_ui.c
     "${ROOT}/components/roundie_app_ui/bridge.c"
     "${ROOT}/components/roundie_app_ui/render.c"
@@ -19,9 +24,10 @@ add_executable(ui_tests ../test_app_ui.c
     "${ROOT}/examples/ui_elf/ui.c")
 target_compile_options(ui_tests PRIVATE -Wall -Wextra -Werror)
 target_include_directories(ui_tests PRIVATE ../elf_mocks "${ROOT}/include"
+    "${ROOT}/components/roundie_fonts/include"
     "${ROOT}/components/roundie_launcher/include" "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")
-target_link_libraries(ui_tests PRIVATE lvgl m pthread)
+target_link_libraries(ui_tests PRIVATE roundie_fonts lvgl m pthread)
 add_executable(round_tests ../test_app_round.c
     "${ROOT}/components/roundie_app_ui/bridge.c"
     "${ROOT}/components/roundie_app_ui/render.c"
@@ -33,8 +39,8 @@ set_source_files_properties("${ROOT}/examples/watch_elf/watch.c" PROPERTIES COMP
     "rep_app_entry_v3=watch_app_entry_v3;rep_abi_metadata=watch_abi_metadata")
 target_compile_options(round_tests PRIVATE -Wall -Wextra -Werror)
 target_include_directories(round_tests PRIVATE ../elf_mocks "${ROOT}/include"
-    "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")
-target_link_libraries(round_tests PRIVATE lvgl m pthread)
+    "${ROOT}/components/roundie_fonts/include" "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")
+target_link_libraries(round_tests PRIVATE roundie_fonts lvgl m pthread)
 add_executable(launcher_tests ../test_launcher.c
     "${ROOT}/main/gui_diagnostics.c"
     "${ROOT}/components/roundie_launcher/launcher.c"
@@ -45,7 +51,7 @@ target_include_directories(launcher_tests PRIVATE ../elf_mocks ../gui_mocks "${R
     "${ROOT}/components/roundie_launcher/include"
     "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")
-target_link_libraries(launcher_tests PRIVATE lvgl m pthread)
+target_link_libraries(launcher_tests PRIVATE roundie_fonts lvgl m pthread)
 add_executable(display_tests ../test_display_render.c)
 target_compile_options(display_tests PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(display_tests PRIVATE lvgl m pthread)
+target_link_libraries(display_tests PRIVATE roundie_fonts lvgl m pthread)

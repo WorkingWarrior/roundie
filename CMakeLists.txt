@@ -31,6 +31,10 @@ else()
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# LVGL's default font is Google Sans Flex Medium with Polish letters
+# (components/roundie_fonts); LVGL's Kconfig cannot name a custom default.
+idf_build_set_property(COMPILE_DEFINITIONS "LV_FONT_CUSTOM_DECLARE=LV_FONT_DECLARE(roundie_font_14)" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "LV_FONT_DEFAULT=&roundie_font_14" APPEND)
 if(NOT DEFINED PROJECT_VER)
     set(PROJECT_VER "0.3.8")
 endif()

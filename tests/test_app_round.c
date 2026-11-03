@@ -6,6 +6,7 @@
 #include "test_elf.c"
 #undef main
 #include "lvgl.h"
+#include "roundie_fonts.h"
 #include "../components/roundie_app_ui/ui_private.h"
 
 static lv_obj_t *home;
@@ -525,7 +526,7 @@ static void clock_widget_tests(void)
     lv_obj_t *scale = child(root, 0);
     lv_obj_t *text = child(root, 1);
     assert(lv_obj_check_type(scale, &lv_scale_class) && lv_obj_get_child_count(scale) == 3);
-    assert(lv_obj_get_style_text_font(text, LV_PART_MAIN) == &lv_font_montserrat_48);
+    assert(lv_obj_get_style_text_font(text, LV_PART_MAIN) == &roundie_font_48);
     shadow(generation, hands, 900, 900, 0);
 
     /* Minute hand at 15 minutes points right; the hour hand barely moves. */
@@ -610,7 +611,7 @@ static void watch_runtime_tests(void)
     lv_obj_t *time_text = child(root, 2);
     lv_obj_t *edge = child(root, 3);
     assert(strcmp(lv_label_get_text(time_text), "--:--") == 0);
-    assert(strcmp(lv_label_get_text(date), "Sync time") == 0);
+    assert(strcmp(lv_label_get_text(date), "Ustaw czas") == 0);
 
     /* No valid wall time: no clock event, the face waits. */
     step_after(1100000);
@@ -622,7 +623,7 @@ static void watch_runtime_tests(void)
     test_clock_valid = true;
     step_after(1100000);
     assert(strcmp(lv_label_get_text(time_text), "12:34") == 0);
-    assert(strcmp(lv_label_get_text(date), "TUE 3 NOV") == 0);
+    assert(strcmp(lv_label_get_text(date), "WT 3 LIS") == 0);
     uint32_t hands = 0;
     int32_t committed = 0;
     int32_t requested;
@@ -653,7 +654,7 @@ static void watch_runtime_tests(void)
     assert(post_with_origin(generation, REP3_EVENT_CLOCK, 20761, 1000, false, esp_timer_get_time()) == ESP_OK);
     assert(mailbox.count == count + 1);
     drain();
-    assert(strcmp(lv_label_get_text(date), "WED 4 NOV") == 0);
+    assert(strcmp(lv_label_get_text(date), "ŚR 4 LIS") == 0);
     assert(strcmp(lv_label_get_text(time_text), "00:00") == 0);
 
     /* The edge button cycles the theme through COLOR updates. */
@@ -670,6 +671,27 @@ static void watch_runtime_tests(void)
     puts("Watch example + production runtime: clock events, extrapolation, zone change, coalescing, themes PASS (host C callbacks, mocked loader)");
 }
 
+/* Every generated font has the Polish letters, ASCII and an LVGL symbol. */
+static void font_tests(void)
+{
+    static const uint32_t letters[] = {
+        0xD3, 0xF3, 0x104, 0x105, 0x106, 0x107, 0x118, 0x119, 0x141,
+        0x142, 0x143, 0x144, 0x15A, 0x15B, 0x179, 0x17A, 0x17B, 0x17C,
+    };
+    const lv_font_t *fonts[] = {&roundie_font_14, &roundie_font_28, &roundie_font_48};
+    assert(LV_FONT_DEFAULT == &roundie_font_14);
+    for (size_t font = 0; font < sizeof(fonts) / sizeof(fonts[0]); font++) {
+        lv_font_glyph_dsc_t glyph;
+        for (size_t letter = 0; letter < sizeof(letters) / sizeof(letters[0]); letter++) {
+            assert(lv_font_get_glyph_dsc(fonts[font], &glyph, letters[letter], 0));
+            assert(glyph.box_w > 0);
+        }
+        assert(lv_font_get_glyph_dsc(fonts[font], &glyph, 'A', 0));
+        assert(lv_font_get_glyph_dsc(fonts[font], &glyph, 0xF00C, 0)); /* LV_SYMBOL_OK */
+        assert(!lv_font_get_glyph_dsc(fonts[font], &glyph, 0x0416, 0)); /* Cyrillic: absent */
+    }
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -681,6 +703,7 @@ int main(int argc, char **argv)
     current_task = (void *)2;
     roundie_ui_gui_bind();
     current_task = (void *)1;
+    font_tests();
     bridge_tests();
     clock_widget_tests();
     FILE *file = fopen(argv[1], "rb");

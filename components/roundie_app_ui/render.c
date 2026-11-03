@@ -1,6 +1,7 @@
 #include "ui_private.h"
 #include <string.h>
 #include "lvgl.h"
+#include "roundie_fonts.h"
 
 /* These records and their text never leave the GUI task. static-text LVGL API
  * retains these SYSTEM buffers, not the transient command or ELF memory. */
@@ -254,18 +255,13 @@ static void set_color(unsigned index, uint32_t value)
 
 static const lv_font_t *label_font(uint32_t options)
 {
-#if LV_FONT_MONTSERRAT_48
     if ((options & REP_UI_OPTION_FONT_LARGE) != 0) {
-        return &lv_font_montserrat_48;
+        return &roundie_font_48;
     }
-#endif
-#if LV_FONT_MONTSERRAT_28
     if ((options & REP_UI_OPTION_FONT_MEDIUM) != 0) {
-        return &lv_font_montserrat_28;
+        return &roundie_font_28;
     }
-#endif
-    (void)options;
-    return LV_FONT_DEFAULT;
+    return &roundie_font_14;
 }
 
 static bool create_round(unsigned index, const rep_ui_widget_v2_t *widget)

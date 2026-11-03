@@ -865,7 +865,7 @@ static void make_screen(gui_state_t *state,
     lv_obj_t *title = make_label(screen, "ROUNDIE", 24, lv_color_hex(0xffffff));
     lv_label_set_text_fmt(title, "ROUNDIE / %s", esp_app_get_description()->version);
     state->ota_label = make_label(screen, "OTA startup", 54, lv_color_hex(0x9eb8d0));
-    lv_obj_set_style_text_font(state->ota_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(state->ota_label, LV_FONT_DEFAULT, 0);
 
     size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     size_t internal_largest =
