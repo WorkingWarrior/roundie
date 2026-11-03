@@ -63,8 +63,8 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
   - The dial is display only: not clickable, so touches reach widgets below, and
     injection is refused. Each view has at most one.
 - **Styled labels.** A version-2 `LABEL` takes `REP_UI_OPTION_FONT_MEDIUM`
-  (Montserrat 28) or `REP_UI_OPTION_FONT_LARGE` (Montserrat 48), plus
-  `REP_UI_OPTION_HIDDEN`. Both fonts are enabled in the REP profile.
+  (28 px) or `REP_UI_OPTION_FONT_LARGE` (48 px), plus `REP_UI_OPTION_HIDDEN`.
+  The fonts are described below.
 - **Colors.** `REP_UI_COLOR` (5) takes a value of `0xRRGGBB` or below:
 
   | Widget | What the color sets |
@@ -80,17 +80,49 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
 - **Capability gate.** `VALUE` and `COLOR` updates are refused for applications
   without `REP3_CAP_ROUND_UI`.
 
+## Fonts with Polish letters, 2026-11-03
+
+LVGL 9.5.0's built-in Montserrat fonts cover ASCII, `°`, `•` and the
+FontAwesome symbols only, so `Ś` or `Ź` did not render. The user asked for a
+Polish watch face and accepted Google Sans instead of Montserrat.
+
+- **Source.** Google Sans Flex, the variable font released by Google Fonts under
+  the SIL Open Font License 1.1, with no Reserved Font Name. The classic Google
+  Sans is not openly licensed and is not used. The source TTF is pinned by
+  SHA-256 in `tools/generate_fonts.py` (google/fonts commit `bd8f81dd`) and is not
+  stored in Git. The license is in `components/roundie_fonts/OFL.txt`. "Google
+  Sans" is a Google trademark, so the derived fonts are named `roundie_font_*`.
+- **Generation.** `tools/generate_fonts.py` makes one static instance per size
+  with fontTools: weight 500, optical size equal to the pixel size, width 100, no
+  rounding or slant. lv_font_conv 1.5.2 then renders it at 4 bpp without
+  compression, with LVGL's own options and FontAwesome symbol list, so
+  `LV_SYMBOL_*` keep working. It is followed by the LVGL 9 post-processing that
+  LVGL applies to its own fonts. The same converter reproduced the bitmaps,
+  glyph table, cmaps and kerning of LVGL's built-in Montserrat 14.
+- **Coverage.** Each font has ASCII, `°`, `•`, all 18 Polish letters
+  (`ĄĆĘŁŃÓŚŹŻąćęłńóśźż`) and the symbols. Other scripts are absent.
+- **Sizes.** 14 px (line height 18) is LVGL's default font in every component.
+  The top-level `CMakeLists.txt` sets `LV_FONT_DEFAULT` and
+  `LV_FONT_CUSTOM_DECLARE` as global compile definitions, because LVGL's Kconfig
+  cannot name a custom default. 28 px (line 34) and 48 px (line 58) serve the
+  styled labels. Montserrat 28 and 48 are no longer enabled. List rows stay 44 px,
+  because their spacing is computed from the line height.
+- **Cost.** The three fonts take 164,037 B of Flash (linker map, 0.3.25). Firmware
+  0.3.25 is 17,376 B larger than 0.3.24, which had Montserrat 14, 28 and 48.
+
 ## The example: `examples/watch_elf`
 
-- **Widgets:** a view, the dial, a 28 px date (`TUE 3 NOV`), a 48 px 24-hour time
-  and a **Style** edge button. Five widgets in all.
+- **Widgets:** a view, the dial, a 28 px date in Polish (`WT 3 LIS`), a 48 px
+  24-hour time and a **Styl** edge button. Five widgets in all.
+- **Language:** Polish weekday abbreviations (`ND PN WT ŚR CZW PT SOB`) and
+  months (`STY LUT MAR KWI MAJ CZE LIP SIE WRZ PAŹ LIS GRU`), stored as UTF-8.
 - **Updates:** a one-second timer moves the hands with one `VALUE` per second.
   The time and date text change only when the minute or the day changes.
 - **No time yet:** before the first clock event, it shows `--:--` and
-  `Sync time`.
-- **Themes:** **Style** cycles terminal green, blue and amber through `COLOR`
+  `Ustaw czas`.
+- **Themes:** **Styl** cycles terminal green, blue and amber through `COLOR`
   updates.
-- **Size:** 4,588 B. It imports only `rep_abi_v3`, with the same relocation types
+- **Size:** 4,584 B (1.1.0, Polish). It imports only `rep_abi_v3`, with the same relocation types
   as the other examples.
 
 ## Verification
@@ -104,12 +136,15 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
   - **Runtime with the watch example's C callbacks:**
     - no event while the source is invalid;
     - sampling at most once per second;
-    - first event text `12:34` / `TUE 3 NOV`, with the hands at 2096 s;
+    - first event text `12:34` / `WT 3 LIS`, with the hands at 2096 s;
     - timer extrapolation;
     - a zone revision posted promptly;
     - coalescing to the newest sample across midnight;
     - the theme button;
     - clean unload.
+  - **Fonts, 0.3.25:** the Polish letters, ASCII and `LV_SYMBOL_OK` exist in all
+    three fonts, Cyrillic does not, and the default font is `roundie_font_14`.
+    All 85 host tests passed.
 - **Target build.** 0.3.24 (REP profile) is 934,336 B, SHA-256 `919dce1b…3d7d48`.
   The two fonts add about 145 KB. There are no project warnings.
 - **Device, 2026-11-03.**
@@ -125,7 +160,17 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
 - **User-reported, 0.3.24:** the face shows the correct local time and date and
   looks right. The Style button was not reported separately, and the number of
   checks was not recorded.
-- **Not tested:** RTC loss with the time zone kept across a restart, and a DST
-  transition on the device.
+- **Device, 0.3.25 (Polish fonts), 2026-11-03.**
+  - **Firmware:** 951,712 B, SHA-256 `2fb253ed…ff82d722`, no project warnings.
+    The image contains `roundie_font_14/28/48` and no Montserrat font.
+  - **Install:** OTA after leaving the watch. 0.3.25 runs from `ota_0`, VALID,
+    self-test passed; 0.3.24 stays VALID in `ota_1`.
+  - **Time zone:** the rule and a valid RTC (OS=0) survived the OTA restart.
+  - **Watch:** `org.roundie.watch` 1.1.0 (SHA-256 `2d4430db…a76199f`) was
+    installed while the old watch was closed. It launched with 5 widgets,
+    18 updates applied in 4 s, 0 failures and 9 objects.
+  - **PENDING:** the user's visual check of the Polish text on the panel.
+- **Not tested:** RTC loss with the time zone kept, and a DST transition on the
+  device.
 
 Evidence is in `roundie-backups/watch-0.3.24-2026-11-03/`, outside Git.

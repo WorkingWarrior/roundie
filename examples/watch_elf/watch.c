@@ -20,9 +20,10 @@ static const theme_t themes[THEME_COUNT] = {
     {0x0b1220, 0x3d9cff, 0xffffff},
     {0x000000, 0xffb000, 0xffd480},
 };
-static const char *const weekdays[7] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+/* Polish abbreviations in UTF-8; weekday 0 is Sunday. */
+static const char *const weekdays[7] = {"ND", "PN", "WT", "ŚR", "CZW", "PT", "SOB"};
 static const char *const months[12] = {
-    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    "STY", "LUT", "MAR", "KWI", "MAJ", "CZE", "LIP", "SIE", "WRZ", "PAŹ", "LIS", "GRU",
 };
 
 static const rep_api_v3_t *api;
@@ -50,7 +51,7 @@ static rep_ui_widget_v2_t time_widget = {
     {2, sizeof(rep_ui_widget_v2_t), REP_UI_LABEL, 0, 60, 204, 240, 60, 5, "--:--"},
     0, 0, 0, REP_UI_OPTION_FONT_LARGE};
 static rep_ui_widget_v2_t edge_widget = {
-    {2, sizeof(rep_ui_widget_v2_t), REP_UI_EDGE_BUTTON, 0, 0, 0, 0, 0, 5, "Style"}, 0, 0, 0, 0};
+    {2, sizeof(rep_ui_widget_v2_t), REP_UI_EDGE_BUTTON, 0, 0, 0, 0, 0, 4, "Styl"}, 0, 0, 0, 0};
 
 static uint32_t append(uint32_t length, const char *text)
 {
@@ -173,7 +174,7 @@ static int32_t initialize(const rep_context_v3_t *context)
     if (hands == 0 || date_label == 0 || time_label == 0 || edge == 0) {
         return -12;
     }
-    if (set_text(instance, date_label, append(0, "Sync time")) != 0) {
+    if (set_text(instance, date_label, append(0, "Ustaw czas")) != 0) {
         return -13;
     }
     return apply_theme(instance);
