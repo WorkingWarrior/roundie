@@ -37,6 +37,11 @@ bit already express. Layouts are fixed by `_Static_assert`s in
   None of them reaches into the top 60-pixel navigation area of the
   [Exit chrome](system-navigation.md), and all touch targets are at least 44 px.
 - **List rows.** List rows are 44 px tall: font line height plus line spacing.
+- **Slider hit area.** The slider uses LVGL advanced hit testing plus a 10 px
+  click extension. It therefore owns only a 44 px band of its ring within its
+  angles, not its 340 × 340 box. Without this, the box lay above the earlier
+  list and took every touch on it. The user reported that on 0.3.22, and
+  0.3.23 fixes it.
 - **Initial visibility.** `options` bit `REP_UI_OPTION_HIDDEN` creates any round
   widget hidden. The example uses it for its dialog.
 - **Updates.**
@@ -131,6 +136,13 @@ and the tool accepts both the old and the new length.
     primary. All 4 inputs were accepted and delivered, with 5 resulting
     application updates applied. Slider 500 (out of range) was rejected. Maximum
     input latency 9.3 ms, GUI error 0.
+  - **User, 0.3.22:** the list neither scrolled nor reacted to taps, because the
+    slider's box captured them (above). The host test now routes points through
+    `lv_indev_search_obj`. It failed on the old code and passes with the fix.
+  - **0.3.23:** OTA after exiting the application (OTA is refused while an
+    application holds the Flash exclusion). It runs from `ota_0`, VALID, with
+    SHA-256 `ca41cb3b…f4eb0`; 0.3.22 stays VALID in `ota_1`. The application
+    relaunched with 7 widgets and 0 failures, and a list injection was delivered.
   - **Pending, user:** finger drag on the arc and the list, the visual layout on the
     round panel, and dialog taps. Injection does not prove CST816S touch.
 
