@@ -3,57 +3,76 @@
 ## Decisions, 2026-11-03
 
 After the watch face, the user chose a stopwatch as the next application. It is
-a second SDK example built only from existing ABI 3 and Round UI facilities, so
-there is no ABI or firmware change.
+built only from ABI 3 and Round UI facilities. Version 1.1 added two dial
+options and changed the system button look (see below).
 
-- **Time source.** Elapsed time is `monotonic_ms`, not wall time, so an RTC sync
-  or a time-zone change does not move it. It is kept as 32-bit milliseconds, so it
-  wraps after about 49 days. All arithmetic is 32-bit after one 64-bit
-  subtraction, so the ELF imports only `rep_abi_v3`.
-- **Updates.** A 100 ms timer runs only while the stopwatch runs. Each tick
-  updates the time text. The dial gets one `VALUE` per new second. Stop cancels
-  the timer, so a stopped stopwatch sends nothing.
+- **Time source.** Elapsed time comes from `monotonic_ms`, not wall time, so an RTC sync or
+  time-zone change does not move it.
+  - It is kept as 32-bit milliseconds, which wrap after about 49 days.
+  - All arithmetic is 32-bit after one 64-bit subtraction, so the ELF imports
+    only `rep_abi_v3`.
+- **Updates.**
+  - A 100 ms timer runs only while the stopwatch runs.
+  - Each tick updates the time text, and each new second updates the dial's
+    ring. Stop cancels the timer.
+- **Controls, chosen by the user after 1.0.**
+  - A **tap anywhere on the face** starts and stops.
+  - The lap button stays at the top, above the time, so the lap list below can
+    grow without being covered.
 - **Language.** Polish, like the watch face.
 
-## Layout
+## Layout (1.1.0)
 
 | Widget | Geometry | Behavior |
 |---|---|---|
-| Dial (`CLOCK_HANDS`) | System | Chronograph: the hands show elapsed seconds, minutes and hours |
-| Time (48 px label) | 40, 150, 280 × 60 | `MM:SS.d`, or `H:MM:SS.d` from one hour on |
-| Laps (14 px label) | 70, 214, 220 × 58 | The last three laps, newest first: `3.  00:12.4` |
-| Top button | 110, 76, 140 × 48 | **Okrążenie** while running, **Zeruj** when stopped with time, disabled at zero |
-| Edge button | System | **Start** (green) / **Stop** (red) |
+| Dial (`CLOCK_HANDS`, `SECOND_RING` and `TAP`) | System | Ring fills in orange to the current second. A tap starts or stops |
+| Time (48 px label) | 40, 136, 280 × 60 | `MM:SS.d`, or `H:MM:SS.d` from one hour on. Amber while stopped with time on it |
+| Laps (14 px label, gray) | 70, 204, 220 × 96 | Last five laps, newest first: `6.  00:12.4`. At zero: `Dotknij, aby uruchomić` |
+| Lap button | 110, 72, 140 × 48 | **Okrążenie** while running, **Zeruj** (red) when stopped with time, disabled at zero |
 
-Six widgets including the view. Resume uses **Start**. A lap is the time since the
-previous lap. The lap count keeps growing, and only the last three are shown.
+- **Widgets and background.** Five widgets including the view, on a black
+  background.
+- **Laps.** A lap is the time since the previous lap.
+- **Startup.** Startup queues 5 creations and 6 updates, within the 12-entry UI
+  queue. An earlier draft with 13 failed to start in the host test.
+- **History.** 1.0.0 had a Start/Stop edge button, the lap button on top and
+  hour/minute/second hands. The user said the buttons were ugly.
 
 ## Verification
 
 - **Host, 2026-11-03.** `stopwatch_runtime_tests` in `tests/test_app_round.c`
   runs the example's C callbacks with the production manager, bridge and LVGL
   9.5.0. It covers:
-  - the initial state;
-  - start with the timer and colors;
-  - time advancing;
-  - two laps in order;
-  - stop cancelling the timer and holding the time;
+  - the initial state and the hint;
+  - hit testing: points over the time and laps reach the dial, while the
+    button keeps its own area;
+  - a long press does nothing;
+  - a tap starts the timer;
+  - the ring value;
+  - six laps with five shown;
+  - a tap stops (amber time, `Zeruj`, timer cancelled, time held);
   - reset;
-  - the hour format and the dial value past one hour;
+  - the hour format;
+  - an injected dial tap;
   - clean unload.
 
-  All 85 host tests passed.
-- **Target build.** 4,540 B with GCC 15.2.0. It imports only `rep_abi_v3`
-  (one `JMP_SLOT`; otherwise `RELATIVE` and `RTLD` relocations).
-- **Device, 0.3.26.** Package `org.roundie.stopwatch` 1.0.0 (SHA-256
-  `d6402807…fe18af0f`) installed and launched: 6 widgets, 11 objects, 0
-  failures.
-  - Injected start, lap and stop were all accepted.
-  - While running, updates were applied at about 11 per second. The longest
-    single update was 745 µs, and the longest queue latency 11.3 ms.
-  - After stop the applied count held.
-  - The deepest queue was 10 of 12, during creation.
-- **User-reported, 2026-11-03:** the stopwatch works with a finger and looks
-  right. Individual controls and the number of attempts were not recorded.
+  The dial tests also refuse `TAP` with `LONG_PRESS` and `SECOND_RING` with
+  `NO_SECONDS`. All 85 host tests passed.
+- **Target build.** 4,448 B. It imports only `rep_abi_v3`.
+- **Device, 0.3.28** (`ota_1`, VALID, SHA-256 `4611fce5…c748a38`).
+  - **Install:** `org.roundie.stopwatch` 1.1.0 (SHA-256 `a267eb8c…286a3ee6`), 5
+    widgets, 7 objects, 0 failures.
+  - **Injection:** a dial tap, a lap, then a tap to stop were accepted with 0
+    rejected.
+  - **Running:** each 0.1 s frame rendered 27,104 px in about 15 ms; second
+    changes took 18 ms. The longest queue latency was 11.9 ms, and input
+    latency 9.3 ms.
+  - **Superseded measurement.** 0.3.27 used scale-section ticks and measured
+    42 ms and 187 ms.
+  - **Development package.** A temporary measurement package
+    (`org.roundie.swexp`) was installed and removed.
+- **Device, 1.0.0 on 0.3.26.** The user confirmed it worked.
+- **PENDING:** the user's finger and visual check of 1.1.0.
 
-Evidence is in `roundie-backups/stopwatch-1.0.0-2026-11-03/`, outside Git.
+Evidence is in `roundie-backups/stopwatch-1.0.0-2026-11-03/` and
+`stopwatch-1.1.0-2026-11-03/`, outside Git.

@@ -17,7 +17,7 @@ static struct {
     bool ready;
     bool visible;
     bool enabled;
-    bool long_press; /* CLOCK_HANDS with REP_UI_OPTION_LONG_PRESS: BUTTON input */
+    bool dial_input; /* CLOCK_HANDS with LONG_PRESS or TAP: BUTTON input */
     uint32_t items; /* LIST items or DIALOG fields of the newest accepted text */
     int32_t minimum;
     int32_t maximum;
@@ -173,7 +173,8 @@ static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
     if (label) {
         allowed |= REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE;
     } else if (base->type == REP_UI_CLOCK_HANDS) {
-        allowed |= REP_UI_OPTION_NO_SECONDS | REP_UI_OPTION_LONG_PRESS;
+        allowed |= REP_UI_OPTION_NO_SECONDS | REP_UI_OPTION_LONG_PRESS | REP_UI_OPTION_SECOND_RING |
+            REP_UI_OPTION_TAP;
     }
     if (base->version != 2 || base->struct_size != sizeof(*widget) || (!label && !round_type(base->type)) ||
         (widget->options & ~allowed) != 0 || !text_valid(base->text, base->text_length)) {
@@ -200,7 +201,10 @@ static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
         return false;
     }
     if (base->type == REP_UI_CLOCK_HANDS) {
-        return base->text_length == 0 && widget->minimum == 0 && widget->maximum == 0 &&
+        uint32_t ring = REP_UI_OPTION_NO_SECONDS | REP_UI_OPTION_SECOND_RING;
+        uint32_t input = REP_UI_OPTION_LONG_PRESS | REP_UI_OPTION_TAP;
+        return base->text_length == 0 && (widget->options & ring) != ring &&
+            (widget->options & input) != input && widget->minimum == 0 && widget->maximum == 0 &&
             widget->value >= 0 && widget->value < REP_UI_CLOCK_HANDS_PERIOD;
     }
     if (base->type == REP_UI_ARC_SLIDER) {
@@ -309,7 +313,8 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
                 slots[i].maximum = request->maximum;
                 if (widget->type == REP_UI_CLOCK_HANDS) {
                     slots[i].maximum = REP_UI_CLOCK_HANDS_PERIOD - 1;
-                    slots[i].long_press = (request->options & REP_UI_OPTION_LONG_PRESS) != 0;
+                    slots[i].dial_input =
+                        (request->options & (REP_UI_OPTION_LONG_PRESS | REP_UI_OPTION_TAP)) != 0;
                 }
                 slots[i].committed = request->value;
                 slots[i].requested = request->value;
@@ -324,7 +329,7 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
                 if (button_type(widget->type)) {
                     status.button = result;
                 }
-                if (interactive(widget->type) || slots[i].long_press) {
+                if (interactive(widget->type) || slots[i].dial_input) {
                     status.acquired++; /* input registration */
                 }
             }
@@ -514,7 +519,7 @@ static bool target_valid(uint32_t generation, int index)
 static bool input_valid(uint32_t generation, uint32_t widget)
 {
     int index = find(widget);
-    return target_valid(generation, index) && (button_type(slots[index].type) || slots[index].long_press);
+    return target_valid(generation, index) && (button_type(slots[index].type) || slots[index].dial_input);
 }
 
 static bool value_valid(int index, int32_t value)
@@ -528,8 +533,8 @@ static bool value_valid(int index, int32_t value)
     if (slots[index].type == REP_UI_DIALOG) {
         return value >= 1 && (uint32_t)value < slots[index].items;
     }
-    if (slots[index].long_press) {
-        return value == 0; /* an injected long press on the dial */
+    if (slots[index].dial_input) {
+        return value == 0; /* an injected long press or tap on the dial */
     }
     return false;
 }
@@ -732,7 +737,7 @@ void roundie_ui_gui_pump(void)
                 for (unsigned i = 0; i < REP_UI_WIDGET_LIMIT; i++) {
                     status.released += slots[i].handle != 0;
                     status.released += slots[i].handle != 0 &&
-                        (interactive(slots[i].type) || slots[i].long_press);
+                        (interactive(slots[i].type) || slots[i].dial_input);
                 }
                 injection.pending = false;
                 memset(slots, 0, sizeof(slots));

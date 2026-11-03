@@ -12,4 +12,5 @@
 /* As in the firmware: the generated fonts with Polish letters. */
 #define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(roundie_font_14)
 #define LV_FONT_DEFAULT &roundie_font_14
+#define LV_USE_SNAPSHOT 1 /* tests/test_app_round.c previews */
 #endif

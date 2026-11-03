@@ -55,6 +55,25 @@ bit already express. Layouts are fixed by `_Static_assert`s in
 - **Dialog choice.** A choice hides the dialog in the GUI task. The application
   shows it again with `VISIBLE 1`.
 
+## Button look, 2026-11-03
+
+The user found the original buttons ugly: flat saturated blocks with 14 px text,
+and a disabled state that looked like the enabled one. They were redesigned
+after host previews (below).
+
+- **Shape and text.** `BUTTON`, `EDGE_BUTTON` and dialog buttons are pills
+  (radius half the height) with 20 px white text on a dark `0x2a3441` fill.
+- **States.** The whole button drops to 60 % opacity while pressed and 40 % when
+  disabled.
+- **Color.** `REP_UI_COLOR` now *tints* a button: the color at 30 % opacity as
+  the fill, and the text in the color itself. Before, it set an opaque fill. Apps
+  see no ABI change; only the look of colored buttons differs.
+
+**Host previews.** With `ROUNDIE_UI_PREVIEW=<dir>`, `round_tests` writes the
+active screen at chosen points as 360 × 360 PPM, masked to the round panel. The
+frames are rendered by the pinned LVGL and fonts. They are a design aid, not
+evidence of the device's pixels or timing.
+
 ## Events
 
 `REP3_EVENT_VALUE` (4) carries `value` = widget handle and `reserved` = the

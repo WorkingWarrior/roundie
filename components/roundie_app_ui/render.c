@@ -14,6 +14,7 @@ static struct {
     lv_obj_t *buttons[2];       /* DIALOG: primary, secondary */
     lv_obj_t *button_labels[2];
     lv_obj_t *needles[3];       /* CLOCK_HANDS: hour, minute, second */
+    lv_obj_t *ring;             /* CLOCK_HANDS with SECOND_RING: the arc */
     char text[REP_UI_TEXT_CAPACITY]; /* DIALOG: fields split by NUL */
 } objects[REP_UI_WIDGET_LIMIT];
 
@@ -46,6 +47,11 @@ static struct {
 #define MINUTE_LENGTH 135
 #define SECOND_LENGTH 150
 #define SECOND_COLOR 0xff5a36
+#define RING_DIM 0x262d36
+#define RING_LIT 0xffffff
+#define RING_WIDTH 6
+/* Buttons: a dark pill; REP_UI_COLOR tints it (see style_button). */
+#define BUTTON_FILL 0x2a3441
 static lv_obj_t *root;
 static lv_obj_t *system_screen;
 static uint32_t retained_bytes;
@@ -68,7 +74,8 @@ static void button_clicked(lv_event_t *event)
     }
 }
 
-static void dial_long_pressed(lv_event_t *event)
+/* LONG_PRESSED or CLICKED, whichever the dial's option registered. */
+static void dial_pressed(lv_event_t *event)
 {
     unsigned index = (unsigned)(uintptr_t)lv_event_get_user_data(event);
     if (index < REP_UI_WIDGET_LIMIT) {
@@ -128,6 +135,29 @@ static void dialog_text(unsigned index, const char *text)
     }
 }
 
+/* System button look: a pill with 20 px text, dimmed while pressed and when
+ * disabled. REP_UI_COLOR replaces the dark fill with a tint of the color at
+ * low opacity and draws the text in the color itself. */
+static void style_button(lv_obj_t *button, lv_obj_t *label, int32_t height)
+{
+    lv_obj_set_style_radius(button, height / 2, 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(BUTTON_FILL), 0);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(button, LV_OPA_60, LV_STATE_PRESSED);
+    lv_obj_set_style_opa(button, LV_OPA_40, LV_STATE_DISABLED);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(label, &roundie_font_20, 0);
+}
+
+static void tint_button(lv_obj_t *button, lv_obj_t *label, lv_color_t color)
+{
+    lv_obj_set_style_bg_color(button, color, 0);
+    lv_obj_set_style_bg_opa(button, LV_OPA_30, 0);
+    if (label != NULL) {
+        lv_obj_set_style_text_color(label, color, 0);
+    }
+}
+
 static lv_obj_t *add_button(lv_obj_t *parent, int32_t x, int32_t y, int32_t width, int32_t height,
                             lv_event_cb_t callback, uintptr_t data, lv_obj_t **label)
 {
@@ -139,14 +169,12 @@ static lv_obj_t *add_button(lv_obj_t *parent, int32_t x, int32_t y, int32_t widt
     lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(button, x, y);
     lv_obj_set_size(button, width, height);
-    lv_obj_set_style_bg_color(button, lv_color_hex(0x176b91), 0);
-    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(button, height / 2, 0);
     *label = lv_label_create(button);
     if (*label == NULL || lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, (void *)data) == NULL) {
         return NULL;
     }
     lv_obj_remove_style_all(*label);
+    style_button(button, *label, height);
     lv_obj_set_width(*label, width - 8);
     lv_obj_center(*label);
     lv_label_set_long_mode(*label, LV_LABEL_LONG_CLIP);
@@ -156,6 +184,11 @@ static lv_obj_t *add_button(lv_obj_t *parent, int32_t x, int32_t y, int32_t widt
 
 static void hands_set(unsigned index, int32_t seconds)
 {
+    if (objects[index].ring != NULL) {
+        /* From 12 o'clock up to the current second of the minute. */
+        lv_arc_set_value(objects[index].ring, seconds % 60);
+        return;
+    }
     static const int32_t lengths[3] = {HOUR_LENGTH, MINUTE_LENGTH, SECOND_LENGTH};
     int32_t values[3] = {
         seconds / 12,          /* hour hand: 12 h over the scale */
@@ -183,24 +216,60 @@ static lv_obj_t *add_needle(lv_obj_t *scale, int32_t width, uint32_t color)
     return needle;
 }
 
-/* Dial with 60 ticks and hands. Display only, so touches reach widgets below,
- * unless REP_UI_OPTION_LONG_PRESS makes its 340 px box report long presses. */
-static bool create_hands(unsigned index, const rep_ui_widget_v2_t *widget)
+/* SECOND_RING: a thin arc around the face fills to the current second of the
+ * minute. Unlike scale sections, an arc value change invalidates only the
+ * changed part of the ring, so a stopwatch does not redraw the whole face. */
+static bool create_ring(unsigned index, lv_obj_t *frame, const rep_ui_widget_v2_t *widget)
 {
-    lv_obj_t *scale = lv_scale_create(root);
-    objects[index].object = scale;
-    if (scale == NULL) {
+    lv_obj_t *arc = lv_arc_create(frame);
+    objects[index].ring = arc;
+    if (arc == NULL) {
         return false;
     }
-    lv_obj_remove_flag(scale, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    if ((widget->options & REP_UI_OPTION_LONG_PRESS) != 0) {
-        lv_obj_add_flag(scale, LV_OBJ_FLAG_CLICKABLE);
-        if (lv_obj_add_event_cb(scale, dial_long_pressed, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)index) == NULL) {
+    lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(arc, 0, LV_PART_MAIN);
+    lv_obj_set_size(arc, HANDS_SIZE, HANDS_SIZE);
+    lv_arc_set_rotation(arc, 270);
+    lv_arc_set_bg_angles(arc, 0, 360);
+    lv_arc_set_range(arc, 0, 60);
+    for (unsigned i = 0; i < 2; i++) {
+        lv_part_t part = i == 0 ? LV_PART_MAIN : LV_PART_INDICATOR;
+        lv_obj_set_style_arc_width(arc, RING_WIDTH, part);
+        lv_obj_set_style_arc_color(arc, lv_color_hex(i == 0 ? RING_DIM : RING_LIT), part);
+    }
+    hands_set(index, widget->value);
+    return true;
+}
+
+/* Dial with 60 ticks and hands, or with SECOND_RING a ring and no hands.
+ * Display only, so touches reach widgets below, unless REP_UI_OPTION_LONG_PRESS
+ * or REP_UI_OPTION_TAP makes its 340 px box report long presses or taps. */
+static bool create_hands(unsigned index, const rep_ui_widget_v2_t *widget)
+{
+    bool ring = (widget->options & REP_UI_OPTION_SECOND_RING) != 0;
+    lv_obj_t *dial = ring ? lv_obj_create(root) : lv_scale_create(root);
+    objects[index].object = dial;
+    if (dial == NULL) {
+        return false;
+    }
+    if (ring) {
+        lv_obj_remove_style_all(dial);
+    }
+    lv_obj_remove_flag(dial, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    if ((widget->options & (REP_UI_OPTION_LONG_PRESS | REP_UI_OPTION_TAP)) != 0) {
+        lv_event_code_t code = (widget->options & REP_UI_OPTION_TAP) != 0 ? LV_EVENT_CLICKED : LV_EVENT_LONG_PRESSED;
+        lv_obj_add_flag(dial, LV_OBJ_FLAG_CLICKABLE);
+        if (lv_obj_add_event_cb(dial, dial_pressed, code, (void *)(uintptr_t)index) == NULL) {
             return false;
         }
     }
-    lv_obj_set_pos(scale, HANDS_INSET, HANDS_INSET);
-    lv_obj_set_size(scale, HANDS_SIZE, HANDS_SIZE);
+    lv_obj_set_pos(dial, HANDS_INSET, HANDS_INSET);
+    lv_obj_set_size(dial, HANDS_SIZE, HANDS_SIZE);
+    if (ring) {
+        return create_ring(index, dial, widget);
+    }
+    lv_obj_t *scale = dial;
     lv_scale_set_mode(scale, LV_SCALE_MODE_ROUND_INNER);
     lv_scale_set_label_show(scale, false);
     lv_scale_set_total_tick_count(scale, 61);
@@ -241,7 +310,7 @@ static void set_color(unsigned index, uint32_t value)
         break;
     case REP_UI_BUTTON:
     case REP_UI_EDGE_BUTTON:
-        lv_obj_set_style_bg_color(object, color, 0);
+        tint_button(object, objects[index].label, color);
         break;
     case REP_UI_LIST:
         lv_obj_set_style_bg_color(object, color, LV_PART_SELECTED);
@@ -253,11 +322,15 @@ static void set_color(unsigned index, uint32_t value)
     case REP_UI_DIALOG:
         for (unsigned i = 0; i < 2; i++) {
             if (objects[index].buttons[i] != NULL) {
-                lv_obj_set_style_bg_color(objects[index].buttons[i], color, 0);
+                tint_button(objects[index].buttons[i], objects[index].button_labels[i], color);
             }
         }
         break;
     case REP_UI_CLOCK_HANDS:
+        if (objects[index].ring != NULL) {
+            lv_obj_set_style_arc_color(objects[index].ring, color, LV_PART_INDICATOR);
+            break;
+        }
         lv_obj_set_style_line_color(object, color, LV_PART_INDICATOR);
         for (unsigned i = 0; i < 2; i++) {
             lv_obj_set_style_line_color(objects[index].needles[i], color, 0);
@@ -393,7 +466,7 @@ bool roundie_ui_render_inject(uint32_t generation, uint32_t handle, int32_t valu
             choose(i, value, REP3_ORIGIN_INJECTED);
             return true;
         } else if (objects[i].type == REP_UI_CLOCK_HANDS) {
-            /* A long press; the bridge refuses a dial without the option. */
+            /* A long press or tap; the bridge refuses a dial without either option. */
             return roundie_ui_input(generation, handle, REP3_ORIGIN_INJECTED);
         } else {
             return false;
@@ -458,6 +531,7 @@ void roundie_ui_render_metrics(uint32_t *before, uint32_t *free, uint32_t *count
         for (unsigned j = 0; j < 3; j++) {
             *count += objects[i].needles[j] != NULL;
         }
+        *count += objects[i].ring != NULL;
     }
 }
 
@@ -512,15 +586,13 @@ bool roundie_ui_render(const roundie_ui_command_t *command)
         } else {
             lv_obj_t *label = object;
             if (widget->type == REP_UI_BUTTON) {
-                lv_obj_set_style_bg_color(object, lv_color_hex(0x176b91), 0);
-                lv_obj_set_style_bg_opa(object, LV_OPA_COVER, 0);
-                lv_obj_set_style_radius(object, 18, 0);
                 label = lv_label_create(object);
                 if (label == NULL || lv_obj_add_event_cb(object, button_clicked, LV_EVENT_CLICKED,
                                                         (void *)(uintptr_t)index) == NULL) {
                     return false;
                 }
                 lv_obj_remove_style_all(label);
+                style_button(object, label, widget->height);
                 lv_obj_set_width(label, widget->width - 8);
                 lv_obj_center(label);
             } else {

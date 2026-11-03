@@ -390,6 +390,8 @@ static void drain(void)
     pump();
 }
 
+static void preview(const char *name);
+
 static void round_runtime_tests(void)
 {
     roundie_elf_set_allowed(true);
@@ -399,6 +401,7 @@ static void round_runtime_tests(void)
     uint32_t generation = status.instance;
     roundie_ui_status_t ui = ui_status();
     assert(ui.widgets == 7 && ui.applied == 7 && ui.rejected == 2 && ui.foreground);
+    preview("round");
     lv_obj_t *root = lv_screen_active();
     lv_obj_t *color = lv_obj_get_child(root, 0);
     lv_obj_t *level = lv_obj_get_child(root, 1);
@@ -516,6 +519,10 @@ static void clock_widget_tests(void)
     assert(roundie_ui_create(generation, &invalid) == 0);
     invalid = hands_request;
     invalid.options = REP_UI_OPTION_FONT_LARGE;
+    assert(roundie_ui_create(generation, &invalid) == 0);
+    invalid.options = REP_UI_OPTION_TAP | REP_UI_OPTION_LONG_PRESS;
+    assert(roundie_ui_create(generation, &invalid) == 0);
+    invalid.options = REP_UI_OPTION_SECOND_RING | REP_UI_OPTION_NO_SECONDS;
     assert(roundie_ui_create(generation, &invalid) == 0);
     uint32_t hands = roundie_ui_create(generation, &hands_request);
     assert(hands != 0 && roundie_ui_create(generation, &hands_request) == 0);
@@ -702,6 +709,42 @@ static void watch_runtime_tests(void)
     puts("Watch example + production runtime: clock events, extrapolation, zone change, coalescing, themes PASS (host C callbacks, mocked loader)");
 }
 
+/* With ROUNDIE_UI_PREVIEW=<dir>, writes the active screen as <dir>/<name>.ppm,
+ * masked to the round panel: a host preview of what the device shows. */
+static void preview(const char *name)
+{
+    const char *directory = getenv("ROUNDIE_UI_PREVIEW");
+    if (directory == NULL) {
+        return;
+    }
+    /* Outside the 64 KiB LVGL pool, which cannot hold a full frame. */
+    LV_DRAW_BUF_DEFINE_STATIC(snapshot, 360, 360, LV_COLOR_FORMAT_RGB888);
+    LV_DRAW_BUF_INIT_STATIC(snapshot);
+    lv_draw_buf_t *frame = &snapshot;
+    assert(lv_snapshot_take_to_draw_buf(lv_screen_active(), LV_COLOR_FORMAT_RGB888, frame) == LV_RESULT_OK);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s.ppm", directory, name);
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    fprintf(file, "P6\n360 360\n255\n");
+    for (int32_t y = 0; y < 360; y++) {
+        const uint8_t *row = frame->data + y * frame->header.stride;
+        for (int32_t x = 0; x < 360; x++) {
+            int32_t dx = 2 * x + 1 - 360;
+            int32_t dy = 2 * y + 1 - 360;
+            bool inside = dx * dx + dy * dy <= 360 * 360;
+            uint8_t pixel[3] = {0, 0, 0};
+            if (inside) {
+                pixel[0] = row[3 * x + 2]; /* LVGL RGB888 is B, G, R */
+                pixel[1] = row[3 * x + 1];
+                pixel[2] = row[3 * x];
+            }
+            assert(fwrite(pixel, 1, 3, file) == 3);
+        }
+    }
+    assert(fclose(file) == 0);
+}
+
 static const char *button_text(lv_obj_t *button)
 {
     return lv_label_get_text(lv_obj_get_child(button, 0));
@@ -721,27 +764,42 @@ static void stopwatch_runtime_tests(void)
     assert(status.state == ROUNDIE_ELF_RUNNING && round_ui);
     uint32_t generation = status.instance;
     roundie_ui_status_t ui = ui_status();
-    assert(ui.widgets == 6 && ui.failed == 0 && ui.foreground);
+    assert(ui.widgets == 5 && ui.failed == 0 && ui.foreground);
     lv_obj_t *root = lv_screen_active();
+    lv_obj_t *dial = child(root, 0);
     lv_obj_t *time_text = child(root, 1);
     lv_obj_t *laps_text = child(root, 2);
     lv_obj_t *lap = child(root, 3);
-    lv_obj_t *edge = child(root, 4);
+    assert(lv_obj_get_child_count(root) == 4); /* no edge button */
     assert(strcmp(lv_label_get_text(time_text), "00:00.0") == 0);
-    assert(strcmp(lv_label_get_text(laps_text), "") == 0);
-    assert(strcmp(button_text(edge), "Start") == 0 && strcmp(button_text(lap), "Okrążenie") == 0);
+    assert(strcmp(lv_label_get_text(laps_text), "Dotknij, aby uruchomić") == 0);
+    assert(strcmp(button_text(lap), "Okrążenie") == 0);
     assert(lv_obj_has_state(lap, LV_STATE_DISABLED) && status.timer_handle == 0);
+    /* Taps anywhere on the face reach the dial, except on the lap button. */
+    lv_obj_update_layout(root);
+    lv_point_t over_time = {180, 166};
+    lv_point_t over_laps = {180, 250};
+    lv_point_t on_button = {180, 96};
+    assert(lv_indev_search_obj(root, &over_time) == dial);
+    assert(lv_indev_search_obj(root, &over_laps) == dial);
+    assert(lv_indev_search_obj(root, &on_button) == lap);
+    preview("stopwatch-zero");
 
-    /* Start: the 100 ms timer runs and the time advances. */
-    click(edge);
+    /* A long press does nothing; a tap starts: the 100 ms timer runs. */
+    send_input(dial, LV_EVENT_LONG_PRESSED);
     drain();
-    assert(strcmp(button_text(edge), "Stop") == 0 && !lv_obj_has_state(lap, LV_STATE_DISABLED));
-    assert(lv_color_to_u32(lv_obj_get_style_bg_color(edge, LV_PART_MAIN)) == 0xffc0392b);
-    assert(status.timer_handle != 0);
+    assert(status.timer_handle == 0);
+    click(dial);
+    drain();
+    assert(status.timer_handle != 0 && !lv_obj_has_state(lap, LV_STATE_DISABLED));
+    assert(strcmp(lv_label_get_text(laps_text), "") == 0);
     step_after(1250000);
     assert(starts_with(lv_label_get_text(time_text), "00:01."));
+    lv_obj_t *ring = lv_obj_get_child(dial, 0);
+    assert(lv_obj_check_type(ring, &lv_arc_class) && lv_arc_get_value(ring) == 1);
+    assert(!lv_obj_has_flag(ring, LV_OBJ_FLAG_CLICKABLE)); /* taps go to the dial */
 
-    /* Laps, newest first. */
+    /* Laps, newest first; five shown. */
     click(lap);
     drain();
     assert(starts_with(lv_label_get_text(laps_text), "1.  00:01."));
@@ -750,45 +808,62 @@ static void stopwatch_runtime_tests(void)
     drain();
     const char *laps = lv_label_get_text(laps_text);
     assert(starts_with(laps, "2.  00:02.") && strstr(laps, "\n1.  00:01.") != NULL);
+    for (unsigned i = 0; i < 4; i++) {
+        step_after(300000);
+        click(lap);
+        drain();
+    }
+    laps = lv_label_get_text(laps_text);
+    assert(starts_with(laps, "6.  00:00.") && strstr(laps, "\n2.  00:02.") != NULL &&
+           strstr(laps, "1.  ") == NULL);
+    preview("stopwatch-running");
 
-    /* Stop: the timer is cancelled, time holds, the top button resets. */
-    click(edge);
+    /* A tap stops: the timer is cancelled, time holds and turns amber, the
+     * button resets. */
+    click(dial);
     drain();
-    assert(strcmp(button_text(edge), "Start") == 0 && strcmp(button_text(lap), "Zeruj") == 0);
-    assert(status.timer_handle == 0);
+    assert(strcmp(button_text(lap), "Zeruj") == 0 && status.timer_handle == 0);
+    assert(lv_color_to_u32(lv_obj_get_style_text_color(time_text, LV_PART_MAIN)) == 0xffff9f0a);
     char held[16];
     snprintf(held, sizeof(held), "%s", lv_label_get_text(time_text));
-    assert(starts_with(held, "00:03."));
+    assert(starts_with(held, "00:04."));
     step_after(2000000);
     assert(strcmp(lv_label_get_text(time_text), held) == 0);
+    preview("stopwatch-stopped");
     click(lap);
     drain();
     assert(strcmp(lv_label_get_text(time_text), "00:00.0") == 0);
-    assert(strcmp(lv_label_get_text(laps_text), "") == 0);
+    assert(strcmp(lv_label_get_text(laps_text), "Dotknij, aby uruchomić") == 0);
     assert(lv_obj_has_state(lap, LV_STATE_DISABLED) && strcmp(button_text(lap), "Okrążenie") == 0);
+    assert(lv_color_to_u32(lv_obj_get_style_text_color(time_text, LV_PART_MAIN)) == 0xffffffff);
 
-    /* Past an hour: "H:MM:SS.d", and the dial shows the elapsed seconds. */
-    click(edge);
+    /* Past an hour: "H:MM:SS.d"; the dial's value is the elapsed seconds. An
+     * RP1 injection on the dial is a tap: it stops the stopwatch. */
+    click(dial);
     drain();
     step_after(INT64_C(3601000000));
     assert(starts_with(lv_label_get_text(time_text), "1:00:0"));
-    uint32_t dial = 0;
+    uint32_t handle = 0;
     int32_t committed = 0;
     int32_t requested;
     uint32_t pending;
-    for (uint32_t handle = 1; handle <= 3000 && dial == 0; handle++) {
-        if (roundie_ui_shadow(generation, handle, &committed, &requested, &pending) && committed >= 3600) {
-            dial = handle;
+    for (uint32_t candidate = 1; candidate <= 3000 && handle == 0; candidate++) {
+        if (roundie_ui_shadow(generation, candidate, &committed, &requested, &pending) && committed >= 3600) {
+            handle = candidate;
         }
     }
-    assert(dial != 0 && committed >= 3600 && committed <= 3610);
+    assert(handle != 0 && committed >= 3600 && committed <= 3610);
+    assert(roundie_ui_inject_value(generation, handle, 0));
+    pump();
+    drain();
+    assert(status.timer_handle == 0 && strcmp(button_text(lap), "Zeruj") == 0);
     assert(ui_status().failed == 0 && ui_status().error == 0);
 
     control_step(ROUNDIE_ELF_UNLOAD);
     assert(status.state == ROUNDIE_ELF_UNLOADED && ui_status().outstanding == 0);
     assert(lv_screen_active() == home && live_bytes == 0);
     use_stopwatch = false;
-    puts("Stopwatch example + production runtime: start, laps, stop, reset, hour format, dial PASS (host C callbacks, mocked loader)");
+    puts("Stopwatch example + production runtime: tap start/stop, laps, reset, hour format, dial PASS (host C callbacks, mocked loader)");
 }
 
 /* Every generated font has the Polish letters, ASCII and an LVGL symbol. */

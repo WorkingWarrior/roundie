@@ -1,15 +1,21 @@
-/* Stopwatch: start/stop on the edge button, laps and reset on the top button.
- * Elapsed time comes from monotonic_ms, so wall-clock changes do not affect it.
- * The system dial works as a chronograph: the second hand sweeps the seconds.
- * A 100 ms timer runs only while the stopwatch runs. No LVGL access. */
+/* Stopwatch: a tap on the dial starts and stops; the button at the top records
+ * a lap while running and resets when stopped. It sits above the time, so the
+ * lap list below can grow without being covered. Elapsed time comes from monotonic_ms,
+ * so wall-clock changes do not affect it. The system dial's second ring lights
+ * its ticks up to the current second. A 100 ms timer runs only while the
+ * stopwatch runs. No LVGL access. */
 #include "rep/rep_app_v3.h"
 #include <stdbool.h>
 REP3_APP_METADATA;
 
 #define TICK_MS 100U
-#define LAPS_SHOWN 3U
-#define START_COLOR 0x1f9d55
-#define STOP_COLOR 0xc0392b
+#define LAPS_SHOWN 5U
+#define RING_COLOR 0xff9f0a
+#define TEXT_COLOR 0xffffff
+#define PAUSED_COLOR 0xff9f0a /* the time while stopped with time on it */
+#define LAPS_COLOR 0x9aa5b1
+#define LAP_COLOR 0xd1d5db
+#define RESET_COLOR 0xff453a
 
 static const rep_api_v3_t *api;
 static uint32_t view;
@@ -17,7 +23,6 @@ static uint32_t dial;
 static uint32_t time_label;
 static uint32_t laps_label;
 static uint32_t lap_button;
-static uint32_t edge;
 static uint32_t timer;
 /* Elapsed milliseconds (uint32: about 49 days) = base_ms, plus the time since
  * start_ms while running. */
@@ -30,16 +35,18 @@ static uint32_t lap_ms[LAPS_SHOWN]; /* newest first */
 static uint32_t shown_seconds;
 static rep_ui_update_t update = {1, sizeof(update), 0, REP_UI_TEXT, 0, ""};
 static rep_ui_widget_t view_widget = {1, sizeof(rep_ui_widget_t), REP_UI_VIEW, 0, 0, 0, 360, 360, 0, ""};
+/* The dial covers the face; widgets created after it (the lap button) stay
+ * above it, and the labels pass touches through to it. */
 static rep_ui_widget_v2_t dial_widget = {
-    {2, sizeof(rep_ui_widget_v2_t), REP_UI_CLOCK_HANDS, 0, 0, 0, 0, 0, 0, ""}, 0, 0, 0, 0};
+    {2, sizeof(rep_ui_widget_v2_t), REP_UI_CLOCK_HANDS, 0, 0, 0, 0, 0, 0, ""},
+    0, 0, 0, REP_UI_OPTION_SECOND_RING | REP_UI_OPTION_TAP};
 static rep_ui_widget_v2_t time_widget = {
-    {2, sizeof(rep_ui_widget_v2_t), REP_UI_LABEL, 0, 40, 150, 280, 60, 7, "00:00.0"},
+    {2, sizeof(rep_ui_widget_v2_t), REP_UI_LABEL, 0, 40, 136, 280, 60, 7, "00:00.0"},
     0, 0, 0, REP_UI_OPTION_FONT_LARGE};
-static rep_ui_widget_t laps_widget = {1, sizeof(rep_ui_widget_t), REP_UI_LABEL, 0, 70, 214, 220, 58, 0, ""};
+/* Five lines of 18 px; every corner stays inside the round panel. */
+static rep_ui_widget_t laps_widget = {1, sizeof(rep_ui_widget_t), REP_UI_LABEL, 0, 70, 204, 220, 96, 0, ""};
 static rep_ui_widget_t lap_widget = {
-    1, sizeof(rep_ui_widget_t), REP_UI_BUTTON, 0, 110, 76, 140, 48, 11, "Okrążenie"};
-static rep_ui_widget_v2_t edge_widget = {
-    {2, sizeof(rep_ui_widget_v2_t), REP_UI_EDGE_BUTTON, 0, 0, 0, 0, 0, 5, "Start"}, 0, 0, 0, 0};
+    1, sizeof(rep_ui_widget_t), REP_UI_BUTTON, 0, 110, 72, 140, 48, 11, "Okrążenie"};
 
 static uint32_t append(uint32_t length, const char *text)
 {
@@ -122,10 +129,13 @@ static int32_t show_time(uint32_t instance, uint32_t milliseconds)
     return 0;
 }
 
-/* Newest lap first: "3.  00:12.4". */
+/* Newest lap first: "3.  00:12.4". At zero, a hint instead. */
 static int32_t show_laps(uint32_t instance)
 {
     uint32_t length = 0;
+    if (!running && base_ms == 0U) {
+        length = append(0, "Dotknij, aby uruchomić");
+    }
     for (uint32_t i = 0; i < LAPS_SHOWN && i < laps; i++) {
         if (i != 0U) {
             length = append(length, "\n");
@@ -137,25 +147,24 @@ static int32_t show_laps(uint32_t instance)
     return set_text(instance, laps_label, length) == 0 ? 0 : -23;
 }
 
-/* Start/Stop and its color; Lap while running, Reset when stopped with time,
- * disabled at zero. */
-static int32_t show_controls(uint32_t instance)
+/* The lap button: Lap while running, Reset when stopped with time, disabled
+ * at zero. The time turns amber while stopped with time on it. */
+static int32_t show_state(uint32_t instance)
 {
-    uint32_t length = append(0, running ? "Stop" : "Start");
-    if (set_text(instance, edge, length) != 0 ||
-        set(instance, edge, REP_UI_COLOR, running ? STOP_COLOR : START_COLOR) != 0) {
-        return -24;
-    }
-    length = append(0, running || base_ms == 0U ? "Okrążenie" : "Zeruj");
+    bool reset = !running && base_ms != 0U;
+    uint32_t length = append(0, reset ? "Zeruj" : "Okrążenie");
     if (set_text(instance, lap_button, length) != 0 ||
-        set(instance, lap_button, REP_UI_ENABLED, running || base_ms != 0U) != 0) {
-        return -25;
+        set(instance, lap_button, REP_UI_COLOR, reset ? RESET_COLOR : LAP_COLOR) != 0 ||
+        set(instance, lap_button, REP_UI_ENABLED, running || reset) != 0 ||
+        set(instance, time_label, REP_UI_COLOR, reset ? PAUSED_COLOR : TEXT_COLOR) != 0) {
+        return -24;
     }
     return 0;
 }
 
 static int32_t start_or_stop(uint32_t instance)
 {
+    bool was_zero = base_ms == 0U;
     if (running) {
         base_ms = elapsed(instance);
         running = false;
@@ -172,7 +181,10 @@ static int32_t start_or_stop(uint32_t instance)
         }
     }
     int32_t result = show_time(instance, base_ms); /* exact on stop; the start point on start */
-    return result != 0 ? result : show_controls(instance);
+    if (result == 0 && was_zero) {
+        result = show_laps(instance); /* removes the hint */
+    }
+    return result != 0 ? result : show_state(instance);
 }
 
 static int32_t lap_or_reset(uint32_t instance)
@@ -194,7 +206,7 @@ static int32_t lap_or_reset(uint32_t instance)
     if (result == 0) {
         result = show_laps(instance);
     }
-    return result != 0 ? result : show_controls(instance);
+    return result != 0 ? result : show_state(instance);
 }
 
 static int32_t initialize(const rep_context_v3_t *context)
@@ -214,16 +226,22 @@ static int32_t initialize(const rep_context_v3_t *context)
     time_widget.base.parent = view;
     laps_widget.parent = view;
     lap_widget.parent = view;
-    edge_widget.base.parent = view;
     dial = api->ui_create(instance, &dial_widget.base);
     time_label = api->ui_create(instance, &time_widget.base);
     laps_label = api->ui_create(instance, &laps_widget);
     lap_button = api->ui_create(instance, &lap_widget);
-    edge = api->ui_create(instance, &edge_widget.base);
-    if (dial == 0 || time_label == 0 || laps_label == 0 || lap_button == 0 || edge == 0) {
+    if (dial == 0 || time_label == 0 || laps_label == 0 || lap_button == 0) {
         return -12;
     }
-    return show_controls(instance);
+    /* Five creations plus six updates: within the system's 12-entry UI queue. */
+    if (set(instance, view, REP_UI_COLOR, 0x000000) != 0 ||
+        set(instance, dial, REP_UI_COLOR, RING_COLOR) != 0 ||
+        set(instance, laps_label, REP_UI_COLOR, LAPS_COLOR) != 0 ||
+        set(instance, lap_button, REP_UI_COLOR, LAP_COLOR) != 0 ||
+        set(instance, lap_button, REP_UI_ENABLED, 0) != 0) {
+        return -13;
+    }
+    return show_laps(instance);
 }
 
 static int32_t event(const rep_context_v3_t *context, const rep_event_v3_t *event)
@@ -232,7 +250,7 @@ static int32_t event(const rep_context_v3_t *context, const rep_event_v3_t *even
     if (event->type == REP2_EVENT_TIMER && running && event->value == timer) {
         return show_time(instance, elapsed(instance));
     }
-    if (event->type == REP3_EVENT_BUTTON && event->value == edge) {
+    if (event->type == REP3_EVENT_BUTTON && event->value == dial) { /* tap */
         return start_or_stop(instance);
     }
     if (event->type == REP3_EVENT_BUTTON && event->value == lap_button) {
