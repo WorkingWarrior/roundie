@@ -199,10 +199,42 @@ def restart_verify(path):
     raise TransportError(f"reconnect deadline expired after restart: {last_error}")
 
 
+ZONE_RULE = re.compile(r"[A-Za-z<][A-Za-z0-9<>+\-,./:]{0,46}")
+
+
+def host_zone_rule(path="/etc/localtime"):
+    """POSIX TZ rule from the footer of a TZif version 2+ file (RFC 8536 §3.3)."""
+    with open(path, "rb") as source:
+        data = source.read()
+    if not data.startswith(b"TZif") or data[4:5] not in (b"2", b"3", b"4") or not data.endswith(b"\n"):
+        raise DeviceError(f"{path} has no TZif v2+ footer")
+    rule = data[data.rindex(b"\n", 0, len(data) - 1) + 1:-1].decode("ascii")
+    if ZONE_RULE.fullmatch(rule) is None:
+        raise DeviceError(f"unsupported host time-zone rule {rule!r}")
+    return rule
+
+
+def zone_request(port, rule=None, timeout=5.0):
+    """RT1 TZ: set the rule when given, then return the device's active rule."""
+    request_id = secrets.token_hex(4)
+    write_command(port, f"!RT1 {request_id} TZ" + (f" {rule}" if rule else ""))
+    prefix = f"!RT1 {request_id} ".encode("ascii")
+    line = read_serial_reply(port, prefix, time.monotonic() + timeout, MAX_REPLY)
+    match = re.fullmatch(rb"!RT1 [0-9a-f]{8} ([A-Z_]+) zone=([ -~]{1,47})\r?\n", line)
+    if match is None:
+        raise TransportError("invalid TZ reply")
+    code, active = match.group(1).decode(), match.group(2).decode()
+    if code != "OK" or (rule is not None and active != rule):
+        raise DeviceError(f"time zone not applied ({code}); active {active}")
+    return active
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="serial path, preferably /dev/serial/by-id/…")
-    parser.add_argument("command", choices=("status", "sync", "verify"))
+    parser.add_argument("command", choices=("status", "sync", "verify", "tz"))
+    parser.add_argument("--rule", help="with tz: POSIX TZ rule; default: this host's /etc/localtime")
+    parser.add_argument("--query", action="store_true", help="with tz: only report the active rule")
     parser.add_argument("--restart", action="store_true",
                         help="with verify, explicitly request software restart and check RTC retention")
     args = parser.parse_args(argv)
@@ -211,6 +243,13 @@ def main(argv=None):
     try:
         if args.restart:
             restart_verify(args.port)
+            return 0
+        if args.command == "tz":
+            rule = None if args.query else (args.rule or host_zone_rule())
+            if rule is not None and ZONE_RULE.fullmatch(rule) is None:
+                parser.error("invalid POSIX TZ rule")
+            with open_serial(args.port) as port:
+                print(f"Device time zone: {zone_request(port, rule)}")
             return 0
         with open_serial(args.port) as port:
             status = request(port, "SET" if args.command == "sync" else "GET")
