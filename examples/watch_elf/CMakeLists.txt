@@ -20,5 +20,5 @@ add_custom_command(OUTPUT watch.app.elf
         --remove-section=.xt.lit --remove-section=.xt.prop
         --remove-section=.xtensa.info watch.app.elf
     DEPENDS watch.c ../hello_elf/text-padding.ld ../../include/rep/rep_app_v3.h
-        ../../include/rep/rep_app_v2.h VERBATIM)
+        ../../include/rep/rep_app_v2.h ../../include/rep/rep_storage_v1.h VERBATIM)
 add_custom_target(elf ALL DEPENDS watch.app.elf)

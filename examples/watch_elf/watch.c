@@ -1,7 +1,9 @@
 /* Watch face: analog dial with hands, large digital time and date, driven by
  * REP3_EVENT_CLOCK and a one-second timer. A long press on the dial cycles
- * themes. No LVGL access; the system draws the dial. */
+ * themes; the theme is kept in app storage. No LVGL access; the system draws
+ * the dial. */
 #include "rep/rep_app_v3.h"
+#include "rep/rep_storage_v1.h"
 #include <stdbool.h>
 REP3_APP_METADATA;
 
@@ -27,6 +29,9 @@ static const char *const months[12] = {
 };
 
 static const rep_api_v3_t *api;
+static const rep_storage_v1_t *storage; /* NULL without app storage */
+/* Stored settings: format version 1, then the theme index. */
+static uint8_t settings[2];
 static uint32_t view;
 static uint32_t hands;
 static uint32_t date_label;
@@ -153,6 +158,11 @@ static int32_t initialize(const rep_context_v3_t *context)
     uint32_t instance = context->instance;
     have_clock = false;
     theme = 0;
+    storage = rep_storage_v1(REP_STORAGE_V1);
+    if (storage != NULL && storage->read(instance, settings, sizeof(settings)) == (int32_t)sizeof(settings) &&
+        settings[0] == 1U && settings[1] < THEME_COUNT) {
+        theme = settings[1];
+    }
     shown_minute = UINT32_MAX;
     shown_days = UINT32_MAX;
     view = api->ui_create(instance, &view_widget);
@@ -194,6 +204,11 @@ static int32_t event(const rep_context_v3_t *context, const rep_event_v3_t *even
     }
     if (event->type == REP3_EVENT_BUTTON && event->value == hands) { /* long press */
         theme = (theme + 1U) % THEME_COUNT;
+        settings[0] = 1U;
+        settings[1] = (uint8_t)theme;
+        if (storage != NULL && storage->write(instance, settings, sizeof(settings)) != 0) {
+            return -15;
+        }
         return apply_theme(instance);
     }
     return 0;

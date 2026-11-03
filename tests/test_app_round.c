@@ -704,9 +704,54 @@ static void watch_runtime_tests(void)
     control_step(ROUNDIE_ELF_UNLOAD);
     assert(status.state == ROUNDIE_ELF_UNLOADED && ui_status().outstanding == 0);
     assert(lv_screen_active() == home && live_bytes == 0);
+    /* Launched without storage: rep_storage_v1 was NULL, nothing to save. */
+    uint8_t saved[REP_STORAGE_CAPACITY];
+    size_t saved_length;
+    assert(!roundie_elf_storage_take(saved, &saved_length));
+
+    /* With storage: the stored theme (blue) is applied at start; a long press
+     * stores the next one, kept in RAM until the worker takes it after unload. */
+    assert(roundie_elf_storage_set("\x01\x01", 2));
+    assert(roundie_elf_prepare());
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING);
+    generation = status.instance;
+    root = lv_screen_active();
+    dial = child(root, 0);
+    pump();
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff0b1220);
+    assert(rep_storage_v1(REP_STORAGE_V1) == NULL); /* outside a callback */
+    assert(!roundie_elf_storage_set("", 0) && !roundie_elf_storage_take(saved, &saved_length));
+    send_input(dial, LV_EVENT_LONG_PRESSED);
+    drain();
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff000000);
+    /* Argument checks, as from inside a native callback. */
+    static uint8_t app_buffer[REP_STORAGE_CAPACITY + 1];
+    uint8_t stack_buffer[4];
+    callback_active = true;
+    const rep_storage_v1_t *store = rep_storage_v1(REP_STORAGE_V1);
+    assert(store != NULL && store->capacity == REP_STORAGE_CAPACITY && rep_storage_v1(2) == NULL);
+    assert(store->read(generation, app_buffer, 1) == -1);             /* below the stored length */
+    assert(store->read(generation, stack_buffer, sizeof(stack_buffer)) == -1); /* not app memory */
+    assert(store->read(generation + 1, app_buffer, sizeof(app_buffer)) == -1);
+    assert(store->read(generation, app_buffer, sizeof(app_buffer)) == 2 &&
+           app_buffer[0] == 1 && app_buffer[1] == 2);
+    assert(store->write(generation, app_buffer, REP_STORAGE_CAPACITY + 1) == -1);
+    assert(store->write(generation, stack_buffer, 1) == -1);
+    callback_active = false;
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && !storage.available);
+    assert(!roundie_elf_storage_set("\x01\x00", 2)); /* the written blob is not taken yet */
+    assert(roundie_elf_storage_take(saved, &saved_length) && saved_length == 2 &&
+           saved[0] == 1 && saved[1] == 2);
+    assert(!roundie_elf_storage_take(saved, &saved_length));
+    /* A failed submission withdraws the blob from later instances. */
+    assert(roundie_elf_storage_set("\x01\x00", 2));
+    roundie_elf_storage_clear();
+    assert(!storage.available);
     roundie_elf_set_clock_source(NULL);
     use_watch = false;
-    puts("Watch example + production runtime: clock events, extrapolation, zone change, coalescing, themes PASS (host C callbacks, mocked loader)");
+    puts("Watch example + production runtime: clock events, extrapolation, zone change, coalescing, themes, stored theme PASS (host C callbacks, mocked loader)");
 }
 
 /* With ROUNDIE_UI_PREVIEW=<dir>, writes the active screen as <dir>/<name>.ppm,
