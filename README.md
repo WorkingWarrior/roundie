@@ -9,15 +9,18 @@ Use the pinned ESP-IDF v6.1 checkout:
 cd /mnt/Dane/Development/roundie
 . /home/solve/.espressif/v6.1/esp-idf/export.sh
 # Installed REP development device:
-idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.1 build
+idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.21 build
 # Historical manufacturer-layout diagnostic image, build only:
 idf.py -B build -DROUNDIE_PROFILE=legacy build
 ```
 
-**Current bounded 3A checkpoint:** B 0.3.1 VALID/running and normal/STABLE;
-A 0.2.5 VALID/fallback. A standalone native ELF passed real execution from
-PSRAM, ABI 1 services, repeated cleanup, negative candidates and Safe Mode
-refusal. See [ELF evidence and limitations](docs/elf-loader.md).
+**Current checkpoint, 2026-11-03:** normal 0.3.21 runs from `ota_0`, VALID and
+STABLE under XIP from PSRAM; normal 0.3.20 is the VALID fallback in `ota_1`.
+REP stages 0–4 are done. Stage 5 has the launcher and a minimal UI, without the
+round widgets. Stage 6 has packages without an SDK calculator example. Stage 7 USB
+MTP is NO-GO; Roundie Manager over Web Serial is used instead. Stage 8 has screen
+off, the BOOT power menu and light sleep, verified on the device. Its current
+measurements and deep sleep remain open. See [PowerManager](docs/power-manager.md).
 
 The connected board was migrated to REP v1 in Milestone 2B. The default build
 profile remains `legacy`, so select `rep` explicitly. The approved Milestone
@@ -43,3 +46,9 @@ The historical bring-up updater rejects the physical REP table.
 - [Hardware audit](docs/hardware-audit.md)
 - [Bring-up evidence and remaining Milestone 1 checks](docs/bringup.md)
 - [Physically verified ROM recovery route](docs/rom-recovery.md)
+- [BootGuard, native fault and watchdog tests](docs/boot-guard.md)
+- [Safe Mode and RS1 recovery commands](docs/safe-mode.md)
+- [Application lifecycle and repeated-cycle tests](docs/app-lifecycle.md)
+- [Launcher and system navigation](docs/system-navigation.md)
+- [Packages](docs/package-manager.md)
+- [PowerManager: screen off, power menu, light sleep](docs/power-manager.md)
