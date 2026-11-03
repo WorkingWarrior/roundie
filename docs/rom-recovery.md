@@ -294,6 +294,9 @@ ROM Download through its host reset (`--before default-reset --after hard-reset
 --no-stub flash-id`). It identified the chip and Flash (manufacturer 20, device 4018,
 16 MB) without writing, and the firmware restarted with reset class USB, normal and
 STABLE. This host reset depends on a responding USB Serial/JTAG peripheral.
+On 2026-11-03 the same command worked from Safe Mode, reason=core: the firmware
+restarted with reset class USB and stayed in Safe Mode, and a following REBOOT
+returned to normal.
 
 **PENDING:** the manual BOOT and USB sequence above has not been repeated under XIP.
 It needs a person at the board.

@@ -300,6 +300,15 @@ an uploaded but unselected image must be uploaded/verified again before activati
 After activation, reset before confirmation may roll back. Flash-selection
 errors require reinspection; no app erase or metadata repair is attempted.
 
+**Device test, 2026-11-03, normal 0.3.20 under XIP:** a host process killed at 75,776
+bytes left RECEIVING, and the session expired after 15.2 s. A chip reset over USB
+at 328,192 bytes rebooted into the running image, normal and STABLE, with phase
+IDLE. In both cases the running slot stayed VALID. The inactive slot became
+NO_METADATA as soon as the upload began, so **an interrupted upload leaves no
+fallback** until a later upload completes and is booted. RS1 SELECT of that slot
+was refused. Power removal during the write remains PENDING. Evidence is in
+`roundie-backups/interrupt-2026-11-03/`.
+
 Only the intended inactive app sector envelope and `otadata` may change during
 an approved OTA sequence. LittleFS, NVS, PHY, partition table, bootloader and
 coredump are not OTA targets. No `erase-flash`, auto-format, NVS erase or raw IDF

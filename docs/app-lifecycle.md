@@ -375,3 +375,16 @@ Flash/cache/PSRAM execution, physical overload/latency worst cases, long enduran
 power interruption and battery-dependent recovery. RTC clock discipline and
 battery calibration remain separate earlier limitations. No Milestone 3C,
 package installation, network, MTP, peripheral leasing or GUI SDK work was begun.
+
+## Repeated load and unload, 2026-11-03
+
+**Device test, normal 0.3.20 under XIP:** 100 consecutive cycles in 357 s. Each cycle
+ran the persistent `org.roundie.hello` package to its result and back, then the native
+UI through a button, a timer and a cooperative Exit; input was INJECTED over USB. At
+the first cycle, every tenth and the end: runtime idle, all SDK-managed resources
+released, launcher LIST, 0 display errors and no Safe Mode. Heap after the runtime
+was identical every time: internal 204,099 B free (131,072 B largest block), PSRAM
+7,670,864 B free. Lowest GUI stack margin 2,352 B. This shows no growing leak of
+SDK-managed resources over 100 cycles; it is not a test of hours of uptime. Evidence
+is in `roundie-backups/endurance-0.3.20-2026-11-03/`.
+

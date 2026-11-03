@@ -102,8 +102,12 @@ same trap with 0.3.19 and earlier needs another VALID image or power removal. No
 0.3.20 passed five application cycles with 0 display errors, 25.0 FPS on the UI
 and 20.0 on the launcher.
 
-This is one pass of each case. Brownout, power interruption, the panel during a
-stall and a worker stall while an application is rendering remain PENDING.
+On 2026-11-03 a worker hang during a 300-frame benchmark of the native UI, 24 frames in,
+also reset after 10 s, naming `system_worker`, and gave Safe Mode reason=core with
+`fault_app=org.roundie.ui`.
+
+This is one pass of each case. Brownout, power interruption and the panel during a
+stall remain PENDING.
 
 Failure after a completed stable normal boot is not itself a startup loop.
 Failure during an explicit normal trial returns directly to Safe Mode on the

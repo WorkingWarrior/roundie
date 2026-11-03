@@ -136,6 +136,13 @@ integrity/preflight and runtime admission; existing RE1 `load_us`, `init_us`,
 `execute_us`, `shutdown_us` and `unload_us` describe later executor work.
 These are bounded samples, not worst-case guarantees.
 
+**Device test, 2026-11-03, normal 0.3.20:** a chip reset over USB after the first
+DATA, and another with a validated READY package, both returned with phase IDLE,
+the same two packages and 0 orphans. A READY file left by a reset uses one LittleFS
+block (57,344 to 61,440 bytes used) until the next BEGIN removes it, as designed.
+Afterwards the same package uploaded, installed and was removed normally, and usage
+returned to 57,344 bytes. Power removal during a write remains PENDING.
+
 ## Flash, Safe Mode and rollback
 
 All package writes require normal/STABLE BootGuard, self-tested VALID current
