@@ -143,7 +143,12 @@ and the tool accepts both the old and the new length.
     application holds the Flash exclusion). It runs from `ota_0`, VALID, with
     SHA-256 `ca41cb3b…f4eb0`; 0.3.22 stays VALID in `ota_1`. The application
     relaunched with 7 widgets and 0 failures, and a list injection was delivered.
-  - **Pending, user:** finger drag on the arc and the list, the visual layout on the
-    round panel, and dialog taps. Injection does not prove CST816S touch.
+  - **User-reported, 0.3.23:** finger touch on the list, slider, edge button and
+    dialog works, and the layout is acceptable on the round panel. The number of
+    attempts was not recorded, and touch latency was not measured.
+
+**Stage 5 gate (REP §23):** a native ELF builds and operates a round UI (list,
+slider, edge button, dialog, shadow state) without LVGL access. This was
+verified on the device by injection and by user touch.
 
 Evidence is in `roundie-backups/round-ui-0.3.22-2026-11-03/`, outside Git.

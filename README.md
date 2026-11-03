@@ -18,8 +18,7 @@ idf.py -B build -DROUNDIE_PROFILE=legacy build
 under XIP from PSRAM; normal 0.3.22 is the VALID fallback in `ota_1`.
 REP stages 0–4 are done. Stage 5 has the launcher and the
 [Round UI widgets](docs/round-ui.md) (RoundList, ArcSlider, EdgeButton,
-RoundDialog, shadow state), verified by injection on the device; finger touch
-on them is pending. Stage 6 has packages without an SDK calculator example. Stage 7 USB
+RoundDialog, shadow state), verified on the device by injection and user touch. Stage 6 has packages without an SDK calculator example. Stage 7 USB
 MTP is NO-GO; Roundie Manager over Web Serial is used instead. Stage 8 has screen
 off, the BOOT power menu and light sleep, verified on the device. Its current
 measurements and deep sleep remain open. See [PowerManager](docs/power-manager.md).
