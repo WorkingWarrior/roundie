@@ -20,7 +20,7 @@ REP stages 0–4 are done. Stage 5 has the launcher and the
 [Round UI widgets](docs/round-ui.md) (RoundList, ArcSlider, EdgeButton,
 RoundDialog, shadow state), verified on the device by injection and user touch. Stage 6's example is a
 [watch face](docs/watch-face.md) with local time, a time zone and clock hands
-instead of the calculator. Stage 6 has packages without an SDK calculator example. Stage 7 USB
+instead of the calculator, plus a [stopwatch](docs/stopwatch.md). Stage 6 has packages without an SDK calculator example. Stage 7 USB
 MTP is NO-GO; Roundie Manager over Web Serial is used instead. Stage 8 has screen
 off, the BOOT power menu and light sleep, verified on the device. Its current
 measurements and deep sleep remain open. See [PowerManager](docs/power-manager.md).
@@ -57,3 +57,4 @@ The historical bring-up updater rejects the physical REP table.
 - [PowerManager: screen off, power menu, light sleep](docs/power-manager.md)
 - [Round UI widgets and shadow state](docs/round-ui.md)
 - [Watch face: local time, time zone, clock hands](docs/watch-face.md)
+- [Stopwatch example](docs/stopwatch.md)
