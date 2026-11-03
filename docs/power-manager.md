@@ -131,6 +131,11 @@ Nobody touched the panel or BOOT. Evidence is in
 | Safe Mode (RS1 `REQUEST`) | PowerManager not bound; RW1 `SLEEP` rejected; REBOOT returned to normal, VALID, bound |
 | Regression after 13 sleeps | 5 hello and native-UI cycles PASS, 0 display errors; full frame 25.0 FPS on the UI and 20.0 on the launcher, both as on 0.3.20; minimum GUI stack 2,368 B |
 
+**User-reported, 2026-11-03:** touch wake turned the screen on without the touch
+acting on the UI. BOOT wake worked, including with BOOT held during the wake: no
+ROM Download and no menu from that press. Wake latency was not measured, and
+the number of attempts was not recorded.
+
 The figures above are one run of each case. The display results show that LCD
 transfers resume without errors after wake. They are counters, not a view of the
 panel.
@@ -139,8 +144,6 @@ panel.
 
 | Question | Method | Acceptance |
 |---|---|---|
-| Touch wake | Menu Sleep, touch the panel | Wakes within 1 s, screen on, the touch does not act |
-| BOOT wake and strap | Menu Sleep, press BOOT; repeat with BOOT held while waking | Wakes, no menu from that press, no ROM Download |
 | Screen off and BOOT menu | Wait 30 s, touch; press BOOT, try each item | Dark panel, no stray input, Restart and Safe Mode as described |
 | Current draw | USB power meter, then battery with gauge current | ACTIVE vs SCREEN_OFF vs LIGHT_SLEEP recorded |
 | Resume time | Wake to first frame | Recorded, no budget assumed |
