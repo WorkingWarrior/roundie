@@ -1,7 +1,7 @@
 # App storage (rep_storage_v1)
 
-Status: implemented in firmware 0.3.29 and host-tested. Device check is
-PENDING (see the end of this document).
+Status: implemented in firmware 0.3.29, host-tested, and user-verified on the
+device (see the end of this document).
 
 ## Decision
 
@@ -84,7 +84,11 @@ and writes them on each long-press theme change.
 - **Not host-tested:** the glue in `main/app_runtime.c`
   (`persist_storage`, the load in `roundie_packages_execute`). It is compiled
   out in the host harnesses.
-- **Device check (PENDING until reported):**
+- **Device, 0.3.29 with watch 1.3.0:** OTA VALID; theme changed by RP1
+  injection, then exit and relaunch without UI errors. LittleFS usage did not
+  change, which is consistent with, but does not prove, a small inline file.
+- **User-reported, 2026-11-03:** "Works". The theme is kept after exit and
+  after a reboot. Attempts were not recorded. Procedure:
   1. Change the watch theme.
   2. Exit with the edge swipe.
   3. Relaunch: the theme is kept.
