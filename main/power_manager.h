@@ -1,0 +1,26 @@
+#pragma once
+#include <stdbool.h>
+#include <stdint.h>
+#include "roundie_board.h"
+#include "sdkconfig.h"
+
+/* REP §17 PowerManager glue. The GUI task owns the policy, panel and menu;
+ * the system worker owns restart, Safe Mode requests and light sleep. Safe
+ * Mode never binds it: its display stays on and has no power menu. */
+
+/* GUI task, normal mode only. brightness_percent stays owned by the caller. */
+void roundie_power_gui_bind(roundie_board_t *board, const uint8_t *brightness_percent,
+    int64_t now_us);
+/* Touch read callback: whether LVGL may receive this sample. */
+bool roundie_power_gui_touch(int64_t now_us, bool pressed);
+/* Once per GUI iteration, before LVGL work. dma_idle: every submitted LCD
+ * transfer has completed. Returns false while parked for light sleep; the
+ * caller then skips LVGL and only feeds its watchdog. */
+bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display);
+
+/* Existing system worker loop. */
+void roundie_power_worker_poll(int64_t now_us);
+#if CONFIG_ROUNDIE_DEV_POWER
+/* Same bounded framer as RS1; replies before any sleep starts. */
+void roundie_power_command(char *line, bool discard);
+#endif

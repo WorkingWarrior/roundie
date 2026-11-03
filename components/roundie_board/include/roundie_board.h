@@ -77,6 +77,17 @@ esp_lcd_panel_io_handle_t roundie_board_panel_io(roundie_board_t *board);
 esp_err_t roundie_board_touch_read(roundie_board_t *board, bool *pressed,
                                    uint16_t *x, uint16_t *y);
 esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent);
+/* GUI task only: ST77916 DISPOFF/DISPON. Backlight is separate. */
+esp_err_t roundie_board_display_power(roundie_board_t *board, bool on);
+/* Normal start only; GPIO0 is configured as an input and never driven. */
+bool roundie_board_boot_pressed(roundie_board_t *board);
+
+/* Light-sleep wake on touch INT (GPIO4) or BOOT (GPIO0), both low level.
+ * Only while the GUI task is parked and does not read touch. Disarm restores
+ * the touch edge interrupt and requests one touch read if INT is low. */
+bool roundie_board_wake_source_active(roundie_board_t *board);
+esp_err_t roundie_board_wake_arm(roundie_board_t *board);
+void roundie_board_wake_disarm(roundie_board_t *board);
 
 /* Sensor calls use the board's shared master and bounded 100 ms transactions.
  * The sensor worker serializes RTC reads and sets after startup. Set verifies

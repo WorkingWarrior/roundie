@@ -8,6 +8,33 @@ config ROUNDIE_APP_RUNTIME
         Application Executor, package registry and launcher. Independent of
         the development USB transports. Requires the REP partition layout.
 
+config ROUNDIE_POWER
+    bool "Enable screen off, the BOOT power menu and light sleep"
+    default n
+    help
+        REP Section 17 PowerManager in normal mode. BOOT (GPIO0, input only)
+        opens a menu with Sleep, Screen off, Restart, Safe Mode and Cancel.
+        Light sleep wakes on touch INT or BOOT; USB Serial/JTAG disconnects
+        while asleep. Safe Mode does not use it. No software power-off.
+
+config ROUNDIE_POWER_SCREEN_TIMEOUT_SECONDS
+    int "Seconds without touch or BOOT before the screen turns off"
+    range 0 600
+    default 30
+    depends on ROUNDIE_POWER
+    help
+        0 disables automatic screen off. Rendering continues while dark.
+
+config ROUNDIE_POWER_SLEEP_SAFETY_SECONDS
+    int "Light-sleep safety timer in seconds"
+    range 0 86400
+    default 300
+    depends on ROUNDIE_POWER
+    help
+        A timer wake after this long returns USB recovery with the screen off.
+        Keeps a development board reachable if touch and BOOT wake fail.
+        0 sleeps until touch or BOOT.
+
 endmenu
 
 menu "Roundie development diagnostics"
@@ -66,6 +93,14 @@ config ROUNDIE_BOOT_GUARD_TEST
         worker until its task watchdog panics, in any boot state including
         Safe Mode. Must use a version ending in -boot-test.
         Disable in normal firmware; never causes a fault merely by booting.
+
+config ROUNDIE_DEV_POWER
+    bool "Enable development USB Serial/JTAG power commands"
+    default n
+    depends on ROUNDIE_POWER && ROUNDIE_RECOVERY_USB
+    help
+        RW1 status, screen off/on and timed light sleep (1 to 3600 s).
+        Unauthenticated; disable for production.
 
 config ROUNDIE_DEV_PACKAGES
     bool "Enable trusted development RPK1 package management"

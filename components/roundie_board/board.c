@@ -15,6 +15,7 @@
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_log.h"
 #include "esp_clk_tree.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -27,6 +28,9 @@
 #define LCD_HEIGHT ROUNDIE_LCD_HEIGHT
 #define LCD_TRANSFER_BYTES ROUNDIE_LCD_TRANSFER_BYTES
 #define I2C_TIMEOUT_MS 100
+/* Rev1.1: BOOT pulls GPIO0 low and CST816S drives INT low. Both are RTC GPIOs. */
+#define BOOT_BUTTON_GPIO GPIO_NUM_0
+#define TOUCH_INT_GPIO GPIO_NUM_4
 
 static const char *TAG = "roundie_board";
 
@@ -50,6 +54,8 @@ struct roundie_board {
     bool lcd_reset_owned;
     bool spi_started;
     bool backlight_started;
+    bool boot_button_ready;
+    bool wake_armed;
 };
 
 static esp_err_t read_register(i2c_master_dev_handle_t device, uint8_t address,
@@ -131,7 +137,7 @@ static esp_err_t start_touch(roundie_board_t *board)
         .x_max = LCD_WIDTH,
         .y_max = LCD_HEIGHT,
         .rst_gpio_num = GPIO_NUM_1,
-        .int_gpio_num = GPIO_NUM_4,
+        .int_gpio_num = TOUCH_INT_GPIO,
         .levels = {
             .reset = 0,
             .interrupt = 0,
@@ -368,6 +374,19 @@ static esp_err_t start_board(roundie_board_t **out_board,
         /* CST816S can remain in reset until the driver toggles GPIO1. */
         status->touch = start_touch(board);
         ESP_LOGI(TAG, "CST816S driver: %s", esp_err_to_name(status->touch));
+        /* Input only, never driven: GPIO0 stays the ROM Download strap. */
+        const gpio_config_t button_config = {
+            .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        esp_err_t button_error = gpio_config(&button_config);
+        board->boot_button_ready = button_error == ESP_OK;
+        if (button_error != ESP_OK) {
+            ESP_LOGE(TAG, "BOOT button input: %s", esp_err_to_name(button_error));
+        }
     }
 
     esp_err_t error = start_lcd(board, status);
@@ -493,6 +512,91 @@ esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent)
         return error;
     }
     return ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
+esp_err_t roundie_board_display_power(roundie_board_t *board, bool on)
+{
+    if (board == NULL || board->panel == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* DISPOFF/DISPON only: panel memory and memory writes remain valid. */
+    return esp_lcd_panel_disp_on_off(board->panel, on);
+}
+
+bool roundie_board_boot_pressed(roundie_board_t *board)
+{
+    if (board == NULL || !board->boot_button_ready) {
+        return false;
+    }
+    return gpio_get_level(BOOT_BUTTON_GPIO) == 0;
+}
+
+bool roundie_board_wake_source_active(roundie_board_t *board)
+{
+    if (board == NULL) {
+        return false;
+    }
+    bool touch_low = board->touch != NULL && gpio_get_level(TOUCH_INT_GPIO) == 0;
+    return touch_low || roundie_board_boot_pressed(board);
+}
+
+esp_err_t roundie_board_wake_arm(roundie_board_t *board)
+{
+    if (board == NULL || board->wake_armed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (board->touch == NULL && !board->boot_button_ready) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    esp_err_t error = ESP_OK;
+    board->wake_armed = true;
+    if (board->touch != NULL) {
+        /* Level wake replaces the edge type; keep the CPU interrupt off so a
+         * held touch cannot retrigger it until roundie_board_wake_disarm(). */
+        error = gpio_intr_disable(TOUCH_INT_GPIO);
+        if (error == ESP_OK) {
+            error = gpio_wakeup_enable(TOUCH_INT_GPIO, GPIO_INTR_LOW_LEVEL);
+        }
+    }
+    if (error == ESP_OK && board->boot_button_ready) {
+        error = gpio_wakeup_enable(BOOT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+    }
+    if (error == ESP_OK) {
+        error = esp_sleep_enable_gpio_wakeup();
+    }
+    if (error != ESP_OK) {
+        roundie_board_wake_disarm(board);
+    }
+    return error;
+}
+
+void roundie_board_wake_disarm(roundie_board_t *board)
+{
+    if (board == NULL || !board->wake_armed) {
+        return;
+    }
+    log_cleanup_error("GPIO wake source",
+                      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO));
+    if (board->boot_button_ready) {
+        log_cleanup_error("BOOT wake", gpio_wakeup_disable(BOOT_BUTTON_GPIO));
+        log_cleanup_error("BOOT interrupt type",
+                          gpio_set_intr_type(BOOT_BUTTON_GPIO, GPIO_INTR_DISABLE));
+    }
+    if (board->touch != NULL) {
+        /* Sample before restoring: low means CST816S is reporting a touch
+         * and answers I2C. A read after a BOOT or timer wake could find it
+         * in auto-sleep and fail into the 5 s touch retry backoff. */
+        bool touch_low = gpio_get_level(TOUCH_INT_GPIO) == 0;
+        log_cleanup_error("touch wake", gpio_wakeup_disable(TOUCH_INT_GPIO));
+        log_cleanup_error("touch interrupt type",
+                          gpio_set_intr_type(TOUCH_INT_GPIO, GPIO_INTR_NEGEDGE));
+        log_cleanup_error("touch interrupt", gpio_intr_enable(TOUCH_INT_GPIO));
+        /* The waking edge happened while the interrupt was off. */
+        if (touch_low) {
+            board->touch_irq_pending = true;
+        }
+    }
+    board->wake_armed = false;
 }
 
 static roundie_sensor_state_t sensor_error(roundie_board_t *board,

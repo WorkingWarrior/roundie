@@ -36,6 +36,7 @@
 #include "gui_diagnostics.h"
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
+#include "power_manager.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -334,6 +335,11 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
                     roundie_recovery_command(frame->line, frame->discard);
                 } else
 #endif
+#if CONFIG_ROUNDIE_DEV_POWER
+                if (strncmp(frame->line, "!RW1 ", 5) == 0) {
+                    roundie_power_command(frame->line, frame->discard);
+                } else
+#endif
 #if CONFIG_ROUNDIE_DEV_OTA
                 if (strncmp(frame->line, "!RO1 ", 5) == 0) {
                     roundie_ota_command(frame->line, frame->discard);
@@ -422,6 +428,11 @@ static void sensor_worker(void *argument)
 #if CONFIG_ROUNDIE_APP_RUNTIME
         roundie_app_runtime_poll(esp_timer_get_time());
         roundie_launcher_poll(roundie_app_runtime_allowed(), roundie_app_runtime_upload_busy());
+#endif
+#if CONFIG_ROUNDIE_POWER
+        /* May sleep this worker; it owns every Flash writer, so none is
+         * in progress. Returns after wake with the watchdog restarted. */
+        roundie_power_worker_poll(esp_timer_get_time());
 #endif
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
         if (serial_fd >= 0) {
@@ -706,6 +717,13 @@ static void read_touch(lv_indev_t *device, lv_indev_data_t *data)
     } else if (error == ESP_OK) {
         state->touch_error_logged = false;
     }
+#if CONFIG_ROUNDIE_POWER
+    /* Touches that turn the screen on, or arrive while it is off, never
+     * reach applications or the launcher. */
+    if (!roundie_power_gui_touch(esp_timer_get_time(), pressed)) {
+        pressed = false;
+    }
+#endif
     if (pressed) {
         state->last_x = x;
         state->last_y = y;
@@ -1053,6 +1071,11 @@ void app_main(void)
     if (!recovery_screen) {
         update_sensor_labels(&state);
     }
+#if CONFIG_ROUNDIE_POWER
+    if (!recovery_screen) {
+        roundie_power_gui_bind(board, &state.brightness_percent, esp_timer_get_time());
+    }
+#endif
 
     error = roundie_board_backlight_set(board, 60);
     if (error != ESP_OK) {
@@ -1079,6 +1102,23 @@ void app_main(void)
         int64_t iteration_at = esp_timer_get_time();
         uint32_t wake_us = expected_wake_us > 0 && iteration_at > expected_wake_us ?
             (uint32_t)(iteration_at - expected_wake_us) : 0;
+#if CONFIG_ROUNDIE_POWER
+        portENTER_CRITICAL(&state.dma_lock);
+        bool dma_idle = state.dma_completions == (uint32_t)state.transfer_id;
+        portEXIT_CRITICAL(&state.dma_lock);
+        if (!roundie_power_gui_poll(iteration_at, dma_idle, roundie_gui_bench_due())) {
+            /* Parked for light sleep: no LVGL or LCD work until resumed. */
+            error = esp_task_wdt_reset();
+            if (error != ESP_OK) {
+                ESP_LOGE(TAG, "GUI watchdog feed: %s", esp_err_to_name(error));
+                esp_restart();
+                abort();
+            }
+            vTaskDelay(pdMS_TO_TICKS(GUI_DELAY_MAX_MS));
+            expected_wake_us = 0;
+            continue;
+        }
+#endif
         memset(&state.work, 0, sizeof(state.work));
         state.iteration_id++;
         if (state.display_fault) {
