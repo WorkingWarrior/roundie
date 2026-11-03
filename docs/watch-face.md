@@ -122,8 +122,9 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
     installed and launched with 5 widgets, 0 failures, 2,448 B in LVGL and 9
     objects. Over 10 s, 10 more updates were applied, with 0 failures, 0 pending
     and a maximum single update of 842 µs.
-- **Pending, user:** that the displayed local time and date are correct, how the
-  face looks, and the Style button by touch.
+- **User-reported, 0.3.24:** the face shows the correct local time and date and
+  looks right. The Style button was not reported separately, and the number of
+  checks was not recorded.
 - **Not tested:** RTC loss with the time zone kept across a restart, and a DST
   transition on the device.
 
