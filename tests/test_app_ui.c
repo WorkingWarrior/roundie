@@ -161,13 +161,24 @@ static void clean(uint32_t generation)
     assert(lv_screen_active() == home);
 }
 
-static bool sink(uint32_t generation, uint32_t widget, uint32_t origin, int64_t time)
+static bool sink(uint32_t generation, uint32_t type, uint32_t widget, uint32_t origin,
+                 bool coalesce, int64_t time)
 {
     (void)generation;
+    (void)type;
     (void)widget;
     (void)origin;
+    (void)coalesce;
     (void)time;
     return fault != 3;
+}
+
+/* Version-1 requests, widened as the runtime does. */
+static uint32_t create(uint32_t generation, const rep_ui_widget_t *widget)
+{
+    rep_ui_widget_v2_t copy = {0};
+    copy.base = *widget;
+    return roundie_ui_create(generation, &copy);
 }
 
 static void bridge_tests(void)
@@ -177,33 +188,33 @@ static void bridge_tests(void)
     rep_ui_widget_t widget = {1, sizeof(widget), REP_UI_VIEW, 0, 0, 0, 360, 360, 0, ""};
     rep_ui_widget_t invalid = widget;
     invalid.type = 99;
-    assert(roundie_ui_create(generation, &invalid) == 0);
+    assert(create(generation, &invalid) == 0);
     invalid = widget;
     invalid.width = INT32_MAX;
-    assert(roundie_ui_create(generation, &invalid) == 0);
+    assert(create(generation, &invalid) == 0);
     invalid = widget;
     invalid.x = -1;
-    assert(roundie_ui_create(generation, &invalid) == 0);
-    uint32_t view = roundie_ui_create(generation, &widget);
-    assert(view != 0 && roundie_ui_create(generation, &widget) == 0);
+    assert(create(generation, &invalid) == 0);
+    uint32_t view = create(generation, &widget);
+    assert(view != 0 && create(generation, &widget) == 0);
     widget = (rep_ui_widget_t){1, sizeof(widget), REP_UI_BUTTON, view, 100, 160, 160, 50, 3, "tap"};
     invalid = widget;
     invalid.parent++;
-    assert(roundie_ui_create(generation, &invalid) == 0);
+    assert(create(generation, &invalid) == 0);
     invalid = widget;
     invalid.text_length = REP_UI_TEXT_CAPACITY;
-    assert(roundie_ui_create(generation, &invalid) == 0);
+    assert(create(generation, &invalid) == 0);
     invalid = widget;
     invalid.width = 1;
-    assert(roundie_ui_create(generation, &invalid) == 0);
+    assert(create(generation, &invalid) == 0);
     invalid = widget;
     invalid.text[3] = 'x';
-    assert(roundie_ui_create(generation, &invalid) == 0);
+    assert(create(generation, &invalid) == 0);
     invalid = widget;
     invalid.text[0] = (char)0xc0;
-    assert(roundie_ui_create(generation, &invalid) == 0);
-    assert(roundie_ui_create(generation + 1, &widget) == 0);
-    uint32_t button = roundie_ui_create(generation, &widget);
+    assert(create(generation, &invalid) == 0);
+    assert(create(generation + 1, &widget) == 0);
+    uint32_t button = create(generation, &widget);
     widget.text[0] = 'X'; /* copied payload */
     current_task = (void *)1;
     roundie_ui_gui_pump();
@@ -218,9 +229,9 @@ static void bridge_tests(void)
     fault = 0;
     assert(ui_status().input_dropped == 1);
     for (unsigned i = 2; i < REP_UI_WIDGET_LIMIT; i++) {
-        assert(roundie_ui_create(generation, &widget) != 0);
+        assert(create(generation, &widget) != 0);
     }
-    assert(roundie_ui_create(generation, &widget) == 0);
+    assert(create(generation, &widget) == 0);
     pump();
     pump();
     rep_ui_update_t update = {1, sizeof(update), button, REP_UI_TEXT, 1, "A"};

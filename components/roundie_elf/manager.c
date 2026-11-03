@@ -25,6 +25,7 @@ static bool lifecycle_started;
 static bool lifecycle_stopped;
 static rep_descriptor_v2_t lifecycle;
 static bool ui_owned;
+static bool round_ui; /* descriptor required REP3_CAP_ROUND_UI */
 static uint32_t timer_serial;
 static uint32_t timer_period_ms;
 static int64_t timer_due_us;
@@ -227,12 +228,21 @@ static bool ui_argument(uint32_t instance, const void *pointer, uint32_t bytes)
         (loaded_range(pointer, bytes, false) || owned_range(pointer, bytes));
 }
 
+/* Version 2 extends version 1 by trailing fields; the prefix is checked first. */
 static uint32_t app_ui_create(uint32_t instance, const rep_ui_widget_t *widget)
 {
     if (!ui_argument(instance, widget, sizeof(*widget))) {
         return 0;
     }
-    rep_ui_widget_t copy = *widget;
+    rep_ui_widget_v2_t copy = {0};
+    if (widget->version == 2) {
+        if (!round_ui || !ui_argument(instance, widget, sizeof(copy))) {
+            return 0;
+        }
+        memcpy(&copy, widget, sizeof(copy));
+    } else {
+        copy.base = *widget;
+    }
     status.api_calls++;
     return roundie_ui_create(instance, &copy);
 }
@@ -263,10 +273,34 @@ static int32_t app_ui_result(uint32_t instance, rep_ui_result_t *result)
         ((uintptr_t)result & 3U) != 0 || !writable_range(result, sizeof(*result))) {
         return -1;
     }
+    /* Version 2 additionally reads one widget's shadow state. */
+    bool shadow = result->version == 2;
+    uint32_t widget = 0;
+    int32_t committed = 0;
+    int32_t requested = 0;
+    uint32_t pending = 0;
+    if (shadow) {
+        rep_ui_result_v2_t *extended = (rep_ui_result_v2_t *)result;
+        if (!round_ui || result->struct_size != sizeof(*extended) ||
+            !writable_range(result, sizeof(*extended))) {
+            return -1;
+        }
+        widget = extended->widget;
+        if (widget != 0 && !roundie_ui_shadow(instance, widget, &committed, &requested, &pending)) {
+            return -1;
+        }
+    }
     roundie_ui_status_t ui;
     roundie_ui_status(&ui);
-    *result = (rep_ui_result_t){1, sizeof(*result), ui.submitted, ui.applied, ui.failed,
-        ui.pending, ui.error, ui.view};
+    *result = (rep_ui_result_t){shadow ? 2 : 1, shadow ? sizeof(rep_ui_result_v2_t) : sizeof(*result),
+        ui.submitted, ui.applied, ui.failed, ui.pending, ui.error, ui.view};
+    if (shadow) {
+        rep_ui_result_v2_t *extended = (rep_ui_result_v2_t *)result;
+        extended->widget = widget;
+        extended->committed = committed;
+        extended->requested = requested;
+        extended->pending = pending;
+    }
     return 0;
 }
 
@@ -407,7 +441,7 @@ const rep_api_v2_t *rep_abi_v2(uint32_t required_version)
 
 static const rep_api_v3_t api_v3 = {
     REP_ABI_V3, sizeof(rep_api_v3_t), REP_CAP_LOG | REP_CAP_MONOTONIC | REP_CAP_ALLOC |
-        REP2_CAP_TIMER | REP3_CAP_UI,
+        REP2_CAP_TIMER | REP3_CAP_UI | REP3_CAP_ROUND_UI,
     app_log, app_monotonic, app_alloc, app_release, app_timer_start, app_timer_cancel,
     app_ui_create, app_ui_update, app_ui_destroy, app_ui_result,
 };
@@ -582,8 +616,10 @@ esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation
 
 /* A single copied 32-bit payload. Generation is checked under the same lock as
  * admission; queue contents can only belong to the current loaded instance. */
+/* coalesce: an undelivered VALUE event of the same widget takes the newer
+ * payload in place; it keeps its queue position and original post time. */
 static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t value,
-                                  uint32_t origin, int64_t posted_us)
+                                  uint32_t origin, bool coalesce, int64_t posted_us)
 {
     esp_err_t result = ESP_OK;
     portENTER_CRITICAL(&lock);
@@ -594,8 +630,12 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
     } else {
         bool duplicate = false;
         for (uint32_t i = 0; i < mailbox.count; i++) {
-            if (type == REP2_EVENT_TIMER &&
-                mailbox.events[(mailbox.head + i) % ROUNDIE_ELF_EVENT_CAPACITY].type == type) {
+            rep_event_v2_t *queued = &mailbox.events[(mailbox.head + i) % ROUNDIE_ELF_EVENT_CAPACITY];
+            if (type == REP2_EVENT_TIMER && queued->type == type) {
+                duplicate = true;
+            }
+            if (coalesce && type == REP3_EVENT_VALUE && queued->type == type && queued->value == value) {
+                queued->reserved = origin;
                 duplicate = true;
             }
         }
@@ -617,12 +657,13 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
 
 static esp_err_t post_event(uint32_t instance, uint32_t type, uint32_t value, int64_t posted_us)
 {
-    return post_with_origin(instance, type, value, 0, posted_us);
+    return post_with_origin(instance, type, value, 0, false, posted_us);
 }
 
-static bool ui_input(uint32_t instance, uint32_t widget, uint32_t origin, int64_t posted_us)
+static bool ui_input(uint32_t instance, uint32_t type, uint32_t widget, uint32_t payload,
+                     bool coalesce, int64_t posted_us)
 {
-    return post_with_origin(instance, REP3_EVENT_BUTTON, widget, origin, posted_us) == ESP_OK;
+    return post_with_origin(instance, type, widget, payload, coalesce, posted_us) == ESP_OK;
 }
 
 esp_err_t roundie_elf_post(uint32_t instance, uint32_t value)
@@ -718,7 +759,8 @@ void roundie_elf_step(int64_t now_us)
     }
     portEXIT_CRITICAL(&lock);
     if (dispatch) {
-        if (event.type == REP3_EVENT_BUTTON && !roundie_ui_event_valid(status.instance, event.value)) {
+        bool ui_event = event.type == REP3_EVENT_BUTTON || event.type == REP3_EVENT_VALUE;
+        if (ui_event && !roundie_ui_event_valid(status.instance, event.type, event.value, event.reserved)) {
             portENTER_CRITICAL(&lock);
             mailbox.rejected++;
             portEXIT_CRITICAL(&lock);
@@ -736,7 +778,7 @@ void roundie_elf_step(int64_t now_us)
         status.events_delivered++;
         status.timers_delivered += event.type == REP2_EVENT_TIMER;
         status.users_delivered += event.type == REP2_EVENT_USER;
-        if (event.type == REP3_EVENT_BUTTON) {
+        if (ui_event) {
             roundie_ui_delivered(status.instance, latency);
             status.ui_delivered++;
         }
@@ -820,6 +862,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         callback_active = true;
         const rep_descriptor_v2_t *descriptor;
         if (status.abi_version == 3) {
+            round_ui = false;
             ui_owned = roundie_ui_open(status.instance, ui_input);
             if (!ui_owned) {
                 callback_active = false;
@@ -839,6 +882,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
                 goto cleanup;
             }
             /* Same callback signatures, with explicit ABI 3 context version. */
+            round_ui = (v3->required_capabilities & REP3_CAP_ROUND_UI) != 0;
             lifecycle = (rep_descriptor_v2_t){3, sizeof(*v3), v3->init, v3->start, v3->on_event,
                 v3->suspend, v3->resume, v3->stop, v3->destroy};
             descriptor = &lifecycle;

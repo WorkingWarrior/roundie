@@ -5,8 +5,10 @@
 
 #define ROUNDIE_UI_QUEUE_CAPACITY 12U
 #define ROUNDIE_UI_BATCH 4U
-typedef bool (*roundie_ui_event_sink_t)(uint32_t generation, uint32_t widget,
-                                      uint32_t origin, int64_t posted_us);
+/* BUTTON: payload = origin. VALUE: payload = committed int32 bits; coalesce
+ * permits replacing an undelivered VALUE event of the same widget. */
+typedef bool (*roundie_ui_event_sink_t)(uint32_t generation, uint32_t type, uint32_t widget,
+                                      uint32_t payload, bool coalesce, int64_t posted_us);
 typedef enum {
     ROUNDIE_UI_SHOW = 1, ROUNDIE_UI_HIDE, ROUNDIE_UI_DESTROY,
 } roundie_ui_transition_t;
@@ -27,6 +29,7 @@ typedef struct {
     uint32_t input_rejected;
     uint32_t physical;
     uint32_t injected;
+    uint32_t values;
     uint32_t delivered;
     uint32_t latency_max_us;
     uint32_t enqueue_max_us;
@@ -53,7 +56,9 @@ typedef struct {
 
 /* Executor methods; pointers are validated/copied by ABI before entry. */
 bool roundie_ui_open(uint32_t generation, roundie_ui_event_sink_t sink);
-uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_t *widget);
+/* Version-1 requests arrive widened, with zero round fields. The caller gates
+ * version 2, REP_UI_VALUE and shadow reads on REP3_CAP_ROUND_UI. */
+uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *widget);
 int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update);
 int32_t roundie_ui_destroy(uint32_t generation, uint32_t view);
 void roundie_ui_close_admission(uint32_t generation);
@@ -62,8 +67,15 @@ void roundie_ui_close_admission(uint32_t generation);
 bool roundie_ui_transition(uint32_t generation, roundie_ui_transition_t operation);
 bool roundie_ui_retire(uint32_t generation);
 void roundie_ui_status(roundie_ui_status_t *out);
+/* Shadow state copy under the bridge lock; never waits for the GUI. */
+bool roundie_ui_shadow(uint32_t generation, uint32_t widget, int32_t *committed,
+                       int32_t *requested, uint32_t *pending);
 bool roundie_ui_input(uint32_t generation, uint32_t widget, uint32_t origin);
-bool roundie_ui_event_valid(uint32_t generation, uint32_t widget);
+/* GUI task only: a round widget's committed value changed by input. */
+bool roundie_ui_value_input(uint32_t generation, uint32_t widget, int32_t value, uint32_t origin);
+/* Diagnostics: one pending injected value, applied by the GUI as if touched. */
+bool roundie_ui_inject_value(uint32_t generation, uint32_t widget, int32_t value);
+bool roundie_ui_event_valid(uint32_t generation, uint32_t type, uint32_t widget, uint32_t payload);
 void roundie_ui_delivered(uint32_t generation, uint32_t latency_us);
 
 /* Bind once from existing GUI task, then pump once per GUI iteration. No ELF

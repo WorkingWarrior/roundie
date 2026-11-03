@@ -22,6 +22,15 @@ target_include_directories(ui_tests PRIVATE ../elf_mocks "${ROOT}/include"
     "${ROOT}/components/roundie_launcher/include" "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")
 target_link_libraries(ui_tests PRIVATE lvgl m pthread)
+add_executable(round_tests ../test_app_round.c
+    "${ROOT}/components/roundie_app_ui/bridge.c"
+    "${ROOT}/components/roundie_app_ui/render.c"
+    "${ROOT}/components/roundie_elf/validate.c"
+    "${ROOT}/examples/round_elf/round.c")
+target_compile_options(round_tests PRIVATE -Wall -Wextra -Werror)
+target_include_directories(round_tests PRIVATE ../elf_mocks "${ROOT}/include"
+    "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include")
+target_link_libraries(round_tests PRIVATE lvgl m pthread)
 add_executable(launcher_tests ../test_launcher.c
     "${ROOT}/main/gui_diagnostics.c"
     "${ROOT}/components/roundie_launcher/launcher.c"

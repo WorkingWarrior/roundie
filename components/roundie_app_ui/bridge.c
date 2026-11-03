@@ -9,13 +9,27 @@ static TaskHandle_t gui;
 static roundie_ui_status_t status;
 static roundie_ui_event_sink_t event_sink;
 static uint32_t handle_serial;
+/* Shadow state (REP section 12.6) lives here, in GUI order: committed changes
+ * when the GUI applies a request or reports input; requested at acceptance. */
 static struct {
     uint32_t handle;
     uint32_t type;
     bool ready;
     bool visible;
     bool enabled;
+    uint32_t items; /* LIST items or DIALOG fields of the newest accepted text */
+    int32_t minimum;
+    int32_t maximum;
+    int32_t committed;
+    int32_t requested;
+    uint32_t pending; /* accepted value-changing commands not yet applied */
 } slots[REP_UI_WIDGET_LIMIT];
+static struct {
+    bool pending;
+    uint32_t generation;
+    uint32_t widget;
+    int32_t value;
+} injection;
 static roundie_ui_command_t commands[ROUNDIE_UI_QUEUE_CAPACITY];
 static uint32_t head;
 static uint32_t count;
@@ -77,6 +91,100 @@ static bool text_valid(const char *text, uint32_t length)
     return true;
 }
 
+uint32_t roundie_ui_text_fields(const char *text, uint32_t length)
+{
+    uint32_t fields = 1;
+    uint32_t field_length = 0;
+    for (uint32_t i = 0; i < length; i++) {
+        if (text[i] == '\n') {
+            if (field_length == 0) {
+                return 0;
+            }
+            fields++;
+            field_length = 0;
+        } else {
+            field_length++;
+        }
+    }
+    return field_length == 0 ? 0 : fields;
+}
+
+bool roundie_ui_box_in_circle(int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 || width > 360 - x || height > 360 - y) {
+        return false;
+    }
+    /* Every corner within radius 176 of the panel centre (180, 180). */
+    int32_t xs[2] = {x, x + width};
+    int32_t ys[2] = {y, y + height};
+    for (unsigned i = 0; i < 2; i++) {
+        for (unsigned j = 0; j < 2; j++) {
+            int32_t dx = xs[i] - 180;
+            int32_t dy = ys[j] - 180;
+            if (dx * dx + dy * dy > 176 * 176) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool round_type(uint32_t type)
+{
+    return type >= REP_UI_LIST && type <= REP_UI_DIALOG;
+}
+
+static bool interactive(uint32_t type)
+{
+    return type == REP_UI_BUTTON || round_type(type);
+}
+
+static bool button_type(uint32_t type)
+{
+    return type == REP_UI_BUTTON || type == REP_UI_EDGE_BUTTON;
+}
+
+static bool system_geometry(const rep_ui_widget_t *base)
+{
+    return base->x == 0 && base->y == 0 && base->width == 0 && base->height == 0;
+}
+
+/* Format of a version-2 request, independent of other widgets. */
+static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
+{
+    const rep_ui_widget_t *base = &widget->base;
+    *items = 0;
+    if (base->version != 2 || base->struct_size != sizeof(*widget) || !round_type(base->type) ||
+        (widget->options & ~REP_UI_OPTION_HIDDEN) != 0 || !text_valid(base->text, base->text_length)) {
+        return false;
+    }
+    if (base->type == REP_UI_LIST) {
+        *items = roundie_ui_text_fields(base->text, base->text_length);
+        return roundie_ui_box_in_circle(base->x, base->y, base->width, base->height) &&
+            base->width >= 44 && base->height >= 44 &&
+            *items >= 1 && *items <= REP_UI_LIST_ITEM_LIMIT &&
+            widget->value >= 0 && (uint32_t)widget->value < *items &&
+            widget->minimum == 0 && widget->maximum == 0;
+    }
+    if (!system_geometry(base)) {
+        return false;
+    }
+    if (base->type == REP_UI_ARC_SLIDER) {
+        return base->text_length == 0 &&
+            widget->minimum >= -REP_UI_SLIDER_RANGE_LIMIT && widget->maximum <= REP_UI_SLIDER_RANGE_LIMIT &&
+            widget->minimum < widget->maximum &&
+            widget->value >= widget->minimum && widget->value <= widget->maximum;
+    }
+    if (widget->value != 0 || widget->minimum != 0 || widget->maximum != 0) {
+        return false;
+    }
+    if (base->type == REP_UI_DIALOG) {
+        *items = roundie_ui_text_fields(base->text, base->text_length);
+        return *items == 2 || *items == 3;
+    }
+    return true; /* EDGE_BUTTON */
+}
+
 static bool admission(uint32_t generation)
 {
     return generation != 0 && generation == status.generation && status.admitting &&
@@ -119,10 +227,14 @@ bool roundie_ui_open(uint32_t generation, roundie_ui_event_sink_t sink)
     return valid;
 }
 
-uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_t *widget)
+uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *request)
 {
     int64_t started = esp_timer_get_time();
-    bool format = widget->version == 1 && widget->struct_size == sizeof(*widget) &&
+    const rep_ui_widget_t *widget = &request->base;
+    uint32_t items = 0;
+    bool round = widget->version == 2;
+    bool format = round ? round_format(request, &items) :
+        widget->version == 1 && widget->struct_size == sizeof(*widget) &&
         widget->type >= REP_UI_VIEW && widget->type <= REP_UI_BUTTON &&
         widget->x >= 0 && widget->x <= 360 && widget->y >= 0 && widget->y <= 360 &&
         widget->width > 0 && widget->width <= 360 - widget->x &&
@@ -134,6 +246,14 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_t *widget)
     bool parent = root ? widget->parent == 0 && status.view == 0 &&
         widget->x == 0 && widget->y == 0 && widget->width == 360 && widget->height == 360 :
         widget->parent != 0 && widget->parent == status.view;
+    /* One system-placed ARC_SLIDER, EDGE_BUTTON and DIALOG per view. */
+    if (round && widget->type != REP_UI_LIST) {
+        for (unsigned i = 0; i < REP_UI_WIDGET_LIMIT; i++) {
+            if (slots[i].handle != 0 && slots[i].type == widget->type) {
+                parent = false;
+            }
+        }
+    }
     uint32_t result = 0;
     if (format && parent && admission(generation) && handle_serial != UINT32_MAX) {
         for (unsigned i = 0; i < REP_UI_WIDGET_LIMIT; i++) {
@@ -141,21 +261,32 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_t *widget)
                 continue;
             }
             roundie_ui_command_t command = {
-                .generation = generation, .handle = handle_serial + 1, .widget = *widget,
+                .generation = generation, .handle = handle_serial + 1, .widget = *request,
             };
             if (enqueue(&command)) {
                 result = ++handle_serial;
+                memset(&slots[i], 0, sizeof(slots[i]));
                 slots[i].handle = result;
                 slots[i].type = widget->type;
-                slots[i].visible = true;
+                slots[i].visible = (request->options & REP_UI_OPTION_HIDDEN) == 0;
                 slots[i].enabled = true;
+                slots[i].items = items;
+                slots[i].minimum = request->minimum;
+                slots[i].maximum = request->maximum;
+                slots[i].committed = request->value;
+                slots[i].requested = request->value;
+                if (widget->type == REP_UI_LIST || widget->type == REP_UI_ARC_SLIDER) {
+                    slots[i].pending = 1; /* creation not yet applied */
+                }
                 status.widgets++;
                 status.acquired++; /* logical widget */
                 if (root) {
                     status.view = result;
                 }
-                if (widget->type == REP_UI_BUTTON) {
+                if (button_type(widget->type)) {
                     status.button = result;
+                }
+                if (interactive(widget->type)) {
                     status.acquired++; /* input registration */
                 }
             }
@@ -175,20 +306,53 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
     int64_t started = esp_timer_get_time();
     bool format = update->version == 1 && update->struct_size == sizeof(*update) &&
         (update->property == REP_UI_TEXT ? text_valid(update->text, update->value) :
-         (update->property == REP_UI_VISIBLE || update->property == REP_UI_ENABLED) && update->value <= 1);
+         update->property == REP_UI_VALUE ||
+         ((update->property == REP_UI_VISIBLE || update->property == REP_UI_ENABLED) && update->value <= 1));
+    uint32_t fields = update->property == REP_UI_TEXT ? roundie_ui_text_fields(update->text, update->value) : 0;
+    int32_t value = (int32_t)update->value;
     portENTER_CRITICAL(&lock);
     int index = find(update->widget);
     bool valid = format && admission(generation) && index >= 0;
     if (valid) {
         valid = slots[index].type != REP_UI_VIEW; /* root visibility is lifecycle-owned */
     }
+    bool value_change = false;
+    if (valid && update->property == REP_UI_TEXT) {
+        uint32_t type = slots[index].type;
+        if (type == REP_UI_ARC_SLIDER) {
+            valid = false;
+        } else if (type == REP_UI_LIST) {
+            valid = fields >= 1 && fields <= REP_UI_LIST_ITEM_LIMIT;
+            value_change = true;
+            value = 0; /* new items select the first */
+        } else if (type == REP_UI_DIALOG) {
+            valid = fields == slots[index].items;
+        }
+    }
+    if (valid && update->property == REP_UI_VALUE) {
+        if (slots[index].type == REP_UI_LIST) {
+            valid = value >= 0 && (uint32_t)value < slots[index].items;
+        } else if (slots[index].type == REP_UI_ARC_SLIDER) {
+            valid = value >= slots[index].minimum && value <= slots[index].maximum;
+        } else {
+            valid = false;
+        }
+        value_change = true;
+    }
     if (valid) {
         roundie_ui_command_t command = {
             .generation = generation, .handle = update->widget,
             .operation = update->property, .value = update->value,
         };
-        memcpy(command.widget.text, update->text, sizeof(update->text));
+        memcpy(command.widget.base.text, update->text, sizeof(update->text));
         valid = enqueue(&command);
+    }
+    if (valid && value_change) {
+        slots[index].requested = value;
+        slots[index].pending++;
+        if (slots[index].type == REP_UI_LIST && update->property == REP_UI_TEXT) {
+            slots[index].items = fields;
+        }
     }
     if (!valid) {
         status.rejected++;
@@ -285,18 +449,69 @@ void roundie_ui_status(roundie_ui_status_t *out)
     portEXIT_CRITICAL(&lock);
 }
 
+bool roundie_ui_shadow(uint32_t generation, uint32_t widget, int32_t *committed,
+                       int32_t *requested, uint32_t *pending)
+{
+    portENTER_CRITICAL(&lock);
+    int index = find(widget);
+    bool valid = generation != 0 && generation == status.generation && index >= 0 &&
+        (slots[index].type == REP_UI_LIST || slots[index].type == REP_UI_ARC_SLIDER ||
+         slots[index].type == REP_UI_DIALOG);
+    if (valid) {
+        *committed = slots[index].committed;
+        *requested = slots[index].requested;
+        *pending = slots[index].pending != 0;
+    }
+    portEXIT_CRITICAL(&lock);
+    return valid;
+}
+
+/* Interactive, realized, visible and enabled in the foreground. */
+static bool target_valid(uint32_t generation, int index)
+{
+    return admission(generation) && status.foreground && index >= 0 &&
+        slots[index].ready && slots[index].visible && slots[index].enabled;
+}
+
 static bool input_valid(uint32_t generation, uint32_t widget)
 {
     int index = find(widget);
-    return admission(generation) && status.foreground && index >= 0 &&
-        slots[index].type == REP_UI_BUTTON && slots[index].ready &&
-        slots[index].visible && slots[index].enabled;
+    return target_valid(generation, index) && button_type(slots[index].type);
 }
 
-bool roundie_ui_event_valid(uint32_t generation, uint32_t widget)
+static bool value_valid(int index, int32_t value)
+{
+    if (slots[index].type == REP_UI_LIST) {
+        return value >= 0 && (uint32_t)value < slots[index].items;
+    }
+    if (slots[index].type == REP_UI_ARC_SLIDER) {
+        return value >= slots[index].minimum && value <= slots[index].maximum;
+    }
+    if (slots[index].type == REP_UI_DIALOG) {
+        return value >= 1 && (uint32_t)value < slots[index].items;
+    }
+    return false;
+}
+
+/* At delivery. LIST/ARC_SLIDER events describe state: one superseded by a later
+ * commit (input or applied request) is stale. A DIALOG choice is an action and
+ * the dialog hides itself, so it stays valid while the widget is enabled. */
+bool roundie_ui_event_valid(uint32_t generation, uint32_t type, uint32_t widget, uint32_t payload)
 {
     portENTER_CRITICAL(&lock);
-    bool valid = input_valid(generation, widget);
+    bool valid = false;
+    if (type == REP3_EVENT_BUTTON) {
+        valid = input_valid(generation, widget);
+    } else if (type == REP3_EVENT_VALUE) {
+        int index = find(widget);
+        if (index >= 0 && slots[index].type == REP_UI_DIALOG) {
+            valid = admission(generation) && status.foreground && slots[index].ready &&
+                slots[index].enabled && (int32_t)payload == slots[index].committed;
+        } else {
+            valid = target_valid(generation, index) && round_type(slots[index].type) &&
+                (int32_t)payload == slots[index].committed;
+        }
+    }
     portEXIT_CRITICAL(&lock);
     return valid;
 }
@@ -314,7 +529,7 @@ bool roundie_ui_input(uint32_t generation, uint32_t widget, uint32_t origin)
     if (!valid) {
         return false;
     }
-    bool accepted = sink(generation, widget, origin, esp_timer_get_time());
+    bool accepted = sink(generation, REP3_EVENT_BUTTON, widget, origin, false, esp_timer_get_time());
     portENTER_CRITICAL(&lock);
     if (accepted) {
         status.input_accepted++;
@@ -325,6 +540,65 @@ bool roundie_ui_input(uint32_t generation, uint32_t widget, uint32_t origin)
     }
     portEXIT_CRITICAL(&lock);
     return accepted;
+}
+
+bool roundie_ui_value_input(uint32_t generation, uint32_t widget, int32_t value, uint32_t origin)
+{
+    portENTER_CRITICAL(&lock);
+    int index = find(widget);
+    bool valid = target_valid(generation, index) && event_sink != NULL && value_valid(index, value) &&
+        (origin == REP3_ORIGIN_TOUCH || origin == REP3_ORIGIN_INJECTED);
+    bool dialog = valid && slots[index].type == REP_UI_DIALOG;
+    if (valid && !dialog) {
+        /* LVGL already shows this value; a pending app request will replace it. */
+        slots[index].committed = value;
+        if (slots[index].pending == 0) {
+            slots[index].requested = value;
+        }
+    }
+    roundie_ui_event_sink_t sink = event_sink;
+    if (!valid) {
+        status.input_rejected++;
+    }
+    portEXIT_CRITICAL(&lock);
+    if (!valid) {
+        return false;
+    }
+    bool accepted = sink(generation, REP3_EVENT_VALUE, widget, (uint32_t)value, !dialog, esp_timer_get_time());
+    portENTER_CRITICAL(&lock);
+    index = find(widget);
+    if (accepted) {
+        status.input_accepted++;
+        status.values++;
+        status.physical += origin == REP3_ORIGIN_TOUCH;
+        status.injected += origin == REP3_ORIGIN_INJECTED;
+        if (dialog && index >= 0) {
+            /* The renderer hides the dialog after an accepted choice. */
+            slots[index].committed = value;
+            slots[index].requested = value;
+            slots[index].visible = false;
+        }
+    } else {
+        status.input_dropped++;
+    }
+    portEXIT_CRITICAL(&lock);
+    return accepted;
+}
+
+bool roundie_ui_inject_value(uint32_t generation, uint32_t widget, int32_t value)
+{
+    portENTER_CRITICAL(&lock);
+    bool valid = admission(generation) && find(widget) >= 0 && !injection.pending;
+    if (valid) {
+        injection.pending = true;
+        injection.generation = generation;
+        injection.widget = widget;
+        injection.value = value;
+    } else {
+        status.input_rejected++;
+    }
+    portEXIT_CRITICAL(&lock);
+    return valid;
 }
 
 void roundie_ui_delivered(uint32_t generation, uint32_t latency_us)
@@ -359,6 +633,24 @@ void roundie_ui_gui_pump(void)
 {
     if (gui == NULL || gui != xTaskGetCurrentTaskHandle()) {
         return;
+    }
+    portENTER_CRITICAL(&lock);
+    bool inject = injection.pending;
+    uint32_t inject_generation = injection.generation;
+    uint32_t inject_widget = injection.widget;
+    int32_t inject_value = injection.value;
+    injection.pending = false;
+    int inject_index = find(inject_widget);
+    if (inject) {
+        /* Check before LVGL changes, so the shadow never diverges from it. */
+        inject = target_valid(inject_generation, inject_index) && value_valid(inject_index, inject_value);
+        if (!inject) {
+            status.input_rejected++;
+        }
+    }
+    portEXIT_CRITICAL(&lock);
+    if (inject) {
+        roundie_ui_render_inject(inject_generation, inject_widget, inject_value);
     }
     for (unsigned n = 0; n < batch_limit; n++) {
         portENTER_CRITICAL(&lock);
@@ -398,8 +690,9 @@ void roundie_ui_gui_pump(void)
             if (destroy) {
                 for (unsigned i = 0; i < REP_UI_WIDGET_LIMIT; i++) {
                     status.released += slots[i].handle != 0;
-                    status.released += slots[i].handle != 0 && slots[i].type == REP_UI_BUTTON;
+                    status.released += slots[i].handle != 0 && interactive(slots[i].type);
                 }
+                injection.pending = false;
                 memset(slots, 0, sizeof(slots));
                 status.widgets = 0;
                 status.view = 0;
@@ -444,11 +737,26 @@ void roundie_ui_gui_pump(void)
                 if (command.operation == REP_UI_ENABLED) {
                     slots[index].enabled = command.value != 0;
                 }
+                bool list = slots[index].type == REP_UI_LIST;
+                bool value_change = command.operation == REP_UI_VALUE ||
+                    (command.operation == 0 && (list || slots[index].type == REP_UI_ARC_SLIDER)) ||
+                    (command.operation == REP_UI_TEXT && list);
+                if (value_change && slots[index].pending != 0) {
+                    slots[index].pending--;
+                    if (command.operation == REP_UI_VALUE) {
+                        slots[index].committed = (int32_t)command.value;
+                    } else if (command.operation == REP_UI_TEXT) {
+                        slots[index].committed = 0;
+                    }
+                    if (slots[index].pending == 0) {
+                        slots[index].requested = slots[index].committed;
+                    }
+                }
             }
             status.last_widget = command.handle;
             if (command.operation == REP_UI_TEXT || command.operation == 0) {
                 uint32_t hash = UINT32_C(2166136261);
-                const unsigned char *text = (const unsigned char *)command.widget.text;
+                const unsigned char *text = (const unsigned char *)command.widget.base.text;
                 while (*text != 0) {
                     hash = (hash ^ *text++) * UINT32_C(16777619);
                 }

@@ -15,7 +15,8 @@ class AppUiTests(unittest.TestCase):
             build = Path(temporary)
             env = dict(os.environ, PATH=str(TOOLCHAIN) + os.pathsep + os.environ["PATH"])
             examples = []
-            for name, binary in (("hello_elf", "hello"), ("event_elf", "event"), ("ui_elf", "ui")):
+            for name, binary in (("hello_elf", "hello"), ("event_elf", "event"), ("ui_elf", "ui"),
+                                 ("round_elf", "round")):
                 target = build / name
                 subprocess.run(["cmake", "-S", str(ROOT / "examples" / name), "-B", str(target)],
                                check=True, capture_output=True, env=env)
@@ -25,7 +26,8 @@ class AppUiTests(unittest.TestCase):
                             "-G", "Ninja"], check=True, capture_output=True)
             subprocess.run(["cmake", "--build", str(build / "host"), "-j", "8"],
                            check=True, capture_output=True)
-            subprocess.run([str(build / "host/ui_tests"), *examples], check=True, timeout=20)
+            subprocess.run([str(build / "host/ui_tests"), *examples[:3]], check=True, timeout=20)
+            subprocess.run([str(build / "host/round_tests"), examples[3]], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests")], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests"), "low-memory"], check=True, timeout=20)
             subprocess.run([str(build / "host/display_tests")], check=True, timeout=20)

@@ -273,6 +273,32 @@ static esp_err_t ui_command(const char *operation)
         return permitted && roundie_ui_input(generation, widget, REP3_ORIGIN_INJECTED) ?
             ESP_OK : ESP_ERR_INVALID_STATE;
     }
+    /* UI VALUE <generation> <widget> <[-]value>: the GUI applies it as a touch. */
+    if (strncmp(operation, "UI VALUE ", 9) == 0) {
+        const char *argument = operation + 9;
+        uint32_t generation;
+        uint32_t widget;
+        uint32_t magnitude;
+        if (!decimal(&argument, &generation) || *argument != ' ') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        argument++;
+        if (!decimal(&argument, &widget) || *argument != ' ') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        argument++;
+        bool negative = *argument == '-';
+        if (negative) {
+            argument++;
+        }
+        if (!decimal(&argument, &magnitude) || *argument != '\0' ||
+            magnitude > (uint32_t)REP_UI_SLIDER_RANGE_LIMIT) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        int32_t value = negative ? -(int32_t)magnitude : (int32_t)magnitude;
+        return permitted && roundie_ui_inject_value(generation, widget, value) ?
+            ESP_OK : ESP_ERR_INVALID_STATE;
+    }
     return ESP_ERR_INVALID_ARG;
 }
 
@@ -287,7 +313,7 @@ static void ui_reply(const char *id, esp_err_t error)
         ui.latency_max_us, ui.enqueue_max_us, ui.create_max_us, ui.update_max_us,
         ui.teardown_us, ui.input_latency_max_us, ui.acquired, ui.released, ui.outstanding,
         ui.lvgl_bytes, ui.lvgl_peak, ui.flushes, ui.flush_errors, ui.last_widget, ui.text_hash,
-        ui.foreground, ui.admitting, ui.pool_before, ui.pool_free, ui.realized_objects};
+        ui.foreground, ui.admitting, ui.pool_before, ui.pool_free, ui.realized_objects, ui.values};
     char response[768];
     int length = snprintf(response, sizeof(response), "\n!RE1 %s %d {\"ui\":[", id, (int)error);
     for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++) {

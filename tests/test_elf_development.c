@@ -24,6 +24,8 @@ static size_t fixture_size;
 void roundie_ui_status(roundie_ui_status_t *out) { memset(out, 0, sizeof(*out)); }
 bool roundie_ui_input(uint32_t generation, uint32_t widget, uint32_t origin)
 { (void)generation; (void)widget; (void)origin; return false; }
+bool roundie_ui_inject_value(uint32_t generation, uint32_t widget, int32_t value)
+{ (void)generation; (void)widget; (void)value; return false; }
 static char digest_hex[65];
 
 int64_t esp_timer_get_time(void) { return clock_us; }

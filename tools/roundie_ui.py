@@ -11,11 +11,12 @@ FIELDS = ("generation view button widgets pending max_depth submitted applied fa
           "input_accepted input_dropped input_rejected physical injected delivered latency_max_us "
           "enqueue_max_us create_max_us update_max_us teardown_us input_latency_max_us acquired "
           "released outstanding lvgl_bytes lvgl_peak flushes flush_errors last_widget text_hash "
-          "foreground admitting pool_before pool_free realized_objects").split()
+          "foreground admitting pool_before pool_free realized_objects values").split()
+OPERATION = re.compile(r"PRESS [1-9][0-9]{0,9} [1-9][0-9]{0,9}|VALUE [1-9][0-9]{0,9} [1-9][0-9]{0,9} -?[0-9]{1,7}")
 
 
 def request(port, operation="STATUS", timeout=4):
-    if operation != "STATUS" and re.fullmatch(r"PRESS [1-9][0-9]{0,9} [1-9][0-9]{0,9}", operation) is None:
+    if operation != "STATUS" and OPERATION.fullmatch(operation) is None:
         raise DeviceError("invalid bounded UI diagnostic")
     identity = secrets.token_hex(4)
     prefix = f"!RE1 {identity} ".encode()
@@ -27,7 +28,8 @@ def request(port, operation="STATUS", timeout=4):
             raise ValueError("code")
         result = json.loads(payload)
         values = result["ui"]
-        if len(values) != len(FIELDS) or any(type(v) is not int or not 0 <= v <= 0xffffffff for v in values):
+        # Firmware before Round UI reports every field except the last.
+        if len(values) not in (len(FIELDS) - 1, len(FIELDS)) or any(type(v) is not int or not 0 <= v <= 0xffffffff for v in values):
             raise ValueError("counters")
         result = dict(zip(FIELDS, values), error=result["error"])
         if (type(result["error"]) is not int or result["widgets"] > 8 or result["pending"] > 12 or
@@ -49,8 +51,17 @@ def main():
     press = sub.add_parser("press", help="development injection; does not prove CST816S touch")
     press.add_argument("generation", type=int)
     press.add_argument("widget", type=int)
+    value = sub.add_parser("value", help="development injection of a round widget value, applied by the GUI")
+    value.add_argument("generation", type=int)
+    value.add_argument("widget", type=int)
+    value.add_argument("value", type=int)
     args = parser.parse_args()
-    operation = "STATUS" if args.command == "status" else f"PRESS {args.generation} {args.widget}"
+    if args.command == "status":
+        operation = "STATUS"
+    elif args.command == "press":
+        operation = f"PRESS {args.generation} {args.widget}"
+    else:
+        operation = f"VALUE {args.generation} {args.widget} {args.value}"
     with open_serial(args.port) as port:
         print(json.dumps(request(port, operation), indent=2))
 

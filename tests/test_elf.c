@@ -20,14 +20,17 @@ bool roundie_ui_open(uint32_t generation, roundie_ui_event_sink_t sink)
 bool roundie_ui_transition(uint32_t generation, roundie_ui_transition_t operation)
 { (void)generation; (void)operation; return false; }
 bool roundie_ui_retire(uint32_t generation) { (void)generation; return false; }
-uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_t *widget)
+uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *widget)
 { (void)generation; (void)widget; return 0; }
+bool roundie_ui_shadow(uint32_t generation, uint32_t widget, int32_t *committed,
+                       int32_t *requested, uint32_t *pending)
+{ (void)generation; (void)widget; (void)committed; (void)requested; (void)pending; return false; }
 int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
 { (void)generation; (void)update; return -1; }
 int32_t roundie_ui_destroy(uint32_t generation, uint32_t view)
 { (void)generation; (void)view; return -1; }
-bool roundie_ui_event_valid(uint32_t generation, uint32_t widget)
-{ (void)generation; (void)widget; return false; }
+bool roundie_ui_event_valid(uint32_t generation, uint32_t type, uint32_t widget, uint32_t payload)
+{ (void)generation; (void)type; (void)widget; (void)payload; return false; }
 void roundie_ui_delivered(uint32_t generation, uint32_t latency_us)
 { (void)generation; (void)latency_us; }
 #endif
