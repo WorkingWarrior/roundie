@@ -169,7 +169,8 @@ Polish watch face and accepted Google Sans instead of Montserrat.
   - **Watch:** `org.roundie.watch` 1.1.0 (SHA-256 `2d4430db…a76199f`) was
     installed while the old watch was closed. It launched with 5 widgets,
     18 updates applied in 4 s, 0 failures and 9 objects.
-  - **PENDING:** the user's visual check of the Polish text on the panel.
+  - **User-reported, 0.3.25:** the Polish text and the new font look good on
+    the panel. Individual letters were not checked one by one.
 - **Not tested:** RTC loss with the time zone kept, and a DST transition on the
   device.
 
