@@ -1973,7 +1973,8 @@ Następujące zagadnienia wymagają pomiarów lub osobnego rozstrzygnięcia:
 22. Zachowanie BOOT jako źródła wybudzania.
 23. Dopuszczalne czasy callbacków.
 24. Budżety i polityki kolejek.
-25. Ostateczna polityka Sleep Inhibitors.
+25. Ostateczna polityka Sleep Inhibitors: etap 8 blokuje uśpienie warunkami systemowymi,
+    bez uchwytów aplikacyjnych i bez zmiany ABI ([PowerManager](power-manager.md)); otwarte.
 
 Nie należy uznawać tych decyzji za rozstrzygnięte wyłącznie na podstawie dokumentacji, jeżeli można je zweryfikować prostym eksperymentem na urządzeniu.
 
