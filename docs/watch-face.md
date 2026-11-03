@@ -186,7 +186,8 @@ Polish watch face and accepted Google Sans instead of Montserrat.
     7 objects and 0 failures.
   - **Long press, injected:** on the dial it was accepted and the theme updates
     applied with 0 failures. On the time label it was rejected.
-  - **PENDING:** a finger long press and the edge swipe on the panel.
+  - **User-reported, 0.3.26:** a finger long press cycles the theme and the
+    edge swipe closes the watch. The number of attempts was not recorded.
   - **Host:** a long press cycles the theme; a short tap does not; points over
     both labels reach the dial; a dial without the option and a label with it
     are refused. All 85 host tests passed.

@@ -32,7 +32,8 @@ described in the rest of this section; the exit sequence behind it is unchanged.
 - **Verification.** Host: `tests/test_launcher.c` drives a real LVGL pointer
   through short, steep, outside-strip, safe-area, returned and valid swipes, and
   checks the pill. Device (0.3.26): firmware runs and RP1 EXIT closes the
-  application. A finger swipe on the panel is PENDING for the user.
+  application. User-reported: a finger swipe on the panel closes the watch
+  (attempts not recorded).
 
 The original button, superseded by the swipe: the system owned a 120 × 44 Exit
 button on LVGL's top layer, x=120..239,
