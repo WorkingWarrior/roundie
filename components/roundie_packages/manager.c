@@ -513,7 +513,7 @@ esp_err_t roundie_packages_remove(const char *id)
     int64_t started = roundie_packages_clock();
     /* Unlink active first: this is the logical removal commit. An interrupted
      * cleanup leaves only unselected artifacts, never a new active version. */
-    static const char *const names[] = {"active", "active.tmp", "0.rpk", "1.rpk"};
+    static const char *const names[] = {"active", "active.tmp", "0.rpk", "1.rpk", "data", "data.tmp"};
     char path[PATH_SIZE];
     for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         path_for(path, id, names[i]);
@@ -530,4 +530,84 @@ esp_err_t roundie_packages_remove(const char *id)
     status.removal_us = (uint32_t)(roundie_packages_clock() - started);
     status.error[0] = '\0';
     return roundie_packages_scan();
+}
+
+/* App storage file: "RPD1", little-endian length, SHA-256 of the data, data. */
+#define DATA_HEADER 40U
+
+esp_err_t roundie_packages_data_read(const char *id, void *buffer, size_t capacity, size_t *length)
+{
+    *length = 0;
+    char path[PATH_SIZE];
+    if (!roundie_packages_allowed() || !path_for(path, id, "data")) {
+        return failed(ESP_ERR_INVALID_STATE, "data-admission");
+    }
+    int file = open(path, O_RDONLY);
+    if (file < 0) {
+        return errno == ENOENT ? ESP_OK : failed(ESP_FAIL, "data-open");
+    }
+    uint8_t header[DATA_HEADER];
+    struct stat info;
+    bool valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= (off_t)DATA_HEADER &&
+        (size_t)info.st_size - DATA_HEADER <= capacity && read_exact(file, header, sizeof(header));
+    uint32_t size = 0;
+    if (valid) {
+        size = (uint32_t)header[4] | (uint32_t)header[5] << 8 | (uint32_t)header[6] << 16 |
+            (uint32_t)header[7] << 24;
+        valid = memcmp(header, "RPD1", 4) == 0 && size == (size_t)info.st_size - DATA_HEADER &&
+            read_exact(file, buffer, size);
+    }
+    int closed = close(file);
+    uint8_t actual[32];
+    size_t digest_length = 0;
+    if (valid) {
+        valid = psa_hash_compute(PSA_ALG_SHA_256, buffer, size, actual, sizeof(actual), &digest_length) ==
+            PSA_SUCCESS && digest_length == 32 && memcmp(actual, header + 8, 32) == 0;
+    }
+    /* Never repaired or deleted here: the app starts empty, and its next
+     * write replaces the file. */
+    if (!valid || closed != 0) {
+        return failed(ESP_ERR_INVALID_CRC, "data-corrupt");
+    }
+    *length = size;
+    return ESP_OK;
+}
+
+esp_err_t roundie_packages_data_write(const char *id, const void *data, size_t length)
+{
+    char path[PATH_SIZE];
+    char temporary[PATH_SIZE];
+    struct stat info;
+    if (!admitted() || roundie_packages_busy() || !path_for(path, id, "active") || stat(path, &info) != 0) {
+        return failed(ESP_ERR_INVALID_STATE, "data-admission");
+    }
+    path_for(path, id, "data");
+    if (length == 0) {
+        return unlink(path) == 0 || errno == ENOENT ? ESP_OK : failed(ESP_FAIL, "data-remove");
+    }
+    size_t free_bytes;
+    if (!roundie_packages_capacity(&free_bytes) || free_bytes < 16384U + DATA_HEADER + length) {
+        return failed(ESP_ERR_NO_MEM, "data-storage-reserve");
+    }
+    uint8_t header[DATA_HEADER] = {'R', 'P', 'D', '1', (uint8_t)length, (uint8_t)(length >> 8),
+        (uint8_t)(length >> 16), (uint8_t)(length >> 24)};
+    size_t digest_length = 0;
+    if (psa_hash_compute(PSA_ALG_SHA_256, data, length, header + 8, 32, &digest_length) != PSA_SUCCESS ||
+        digest_length != 32) {
+        return failed(ESP_FAIL, "data-digest");
+    }
+    path_for(temporary, id, "data.tmp");
+    int file = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (file < 0) {
+        return failed(ESP_FAIL, "data-open");
+    }
+    bool written = write(file, header, sizeof(header)) == sizeof(header) &&
+        write(file, data, length) == (ssize_t)length;
+    int synced = written ? fsync(file) : -1;
+    int closed = close(file);
+    if (!written || synced != 0 || closed != 0 || rename(temporary, path) != 0) {
+        unlink(temporary);
+        return failed(ESP_FAIL, "data-commit");
+    }
+    return ESP_OK;
 }

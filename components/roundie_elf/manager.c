@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "rep/rep_app.h"
 #include "rep/rep_app_v2.h"
+#include "rep/rep_storage_v1.h"
 #include "roundie_app_ui.h"
 
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -59,6 +60,15 @@ static struct {
     uint32_t bytes;
     uint32_t generation;
 } allocations[4];
+/* App storage blob. The worker fills it while unloaded (storage_set) and takes
+ * it back after unload (storage_take); between them only the executor touches
+ * it, inside the instance's callbacks. state() publishes the hand-overs. */
+static struct {
+    bool available; /* this instance has storage; cleared at unload */
+    bool dirty;     /* written since set; kept until the worker takes it */
+    uint32_t length;
+    uint8_t data[REP_STORAGE_CAPACITY];
+} storage;
 
 static roundie_elf_memory_t memory(void)
 {
@@ -465,6 +475,89 @@ const rep_api_v3_t *rep_abi_v3(uint32_t required_version)
     return &api_v3;
 }
 
+static bool storage_owner(uint32_t instance)
+{
+    return owner(instance) && status.abi_version == REP_ABI_V3 && storage.available;
+}
+
+static int32_t app_storage_read(uint32_t instance, void *buffer, uint32_t capacity)
+{
+    if (!storage_owner(instance) || capacity < storage.length) {
+        return -1;
+    }
+    if (storage.length != 0) {
+        if (buffer == NULL || !writable_range(buffer, storage.length)) {
+            return -1;
+        }
+        memcpy(buffer, storage.data, storage.length);
+    }
+    status.api_calls++;
+    return (int32_t)storage.length;
+}
+
+static int32_t app_storage_write(uint32_t instance, const void *data, uint32_t length)
+{
+    if (!storage_owner(instance) || length > REP_STORAGE_CAPACITY) {
+        return -1;
+    }
+    if (length != 0) {
+        if (data == NULL || (!loaded_range(data, length, false) && !owned_range(data, length))) {
+            return -1;
+        }
+        memcpy(storage.data, data, length);
+    }
+    storage.length = length;
+    storage.dirty = true;
+    status.api_calls++;
+    return 0;
+}
+
+static const rep_storage_v1_t storage_v1 = {
+    REP_STORAGE_V1, sizeof(rep_storage_v1_t), REP_STORAGE_CAPACITY, app_storage_read, app_storage_write,
+};
+
+const rep_storage_v1_t *rep_storage_v1(uint32_t required_version)
+{
+    if (required_version != REP_STORAGE_V1 || !storage_owner(status.instance)) {
+        return NULL;
+    }
+    status.api_calls++;
+    return &storage_v1;
+}
+
+bool roundie_elf_storage_set(const void *data, size_t length)
+{
+    if (roundie_elf_busy() || storage.dirty || length > REP_STORAGE_CAPACITY ||
+        (length != 0 && data == NULL)) {
+        return false;
+    }
+    if (length != 0) {
+        memcpy(storage.data, data, length);
+    }
+    storage.length = (uint32_t)length;
+    storage.available = true; /* published by the next submission's prepare */
+    return true;
+}
+
+void roundie_elf_storage_clear(void)
+{
+    if (!roundie_elf_busy()) {
+        storage.available = false;
+    }
+}
+
+bool roundie_elf_storage_take(void *data, size_t *length)
+{
+    if (roundie_elf_busy() || !storage.dirty) {
+        return false;
+    }
+    memcpy(data, storage.data, storage.length);
+    *length = storage.length;
+    storage.dirty = false;
+    storage.length = 0;
+    return true;
+}
+
 static uintptr_t resolver(const char *name)
 {
     if (!roundie_elf_import_allowed(name)) {
@@ -476,6 +569,9 @@ static uintptr_t resolver(const char *name)
     }
     if (strcmp(name, "rep_abi_v2") == 0 && status.abi_version == 2) {
         return (uintptr_t)rep_abi_v2;
+    }
+    if (strcmp(name, "rep_storage_v1") == 0 && status.abi_version == 3) {
+        return (uintptr_t)rep_storage_v1;
     }
     return strcmp(name, "rep_abi_v3") == 0 && status.abi_version == 3 ? (uintptr_t)rep_abi_v3 : 0;
 }
@@ -586,6 +682,8 @@ static void unload(void)
         allocations[i].generation = 0;
     }
     status.alloc_bytes = 0;
+    /* A dirty blob stays for the worker; no later instance reaches it. */
+    storage.available = false;
     if (loader_initialized) {
         esp_elf_deinit(&image);
         loader_initialized = false;

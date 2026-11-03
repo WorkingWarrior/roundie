@@ -50,3 +50,10 @@ esp_err_t roundie_packages_get(unsigned index, roundie_package_record_t *out);
 esp_err_t roundie_packages_find(const char *id, roundie_package_record_t *out);
 esp_err_t roundie_packages_launch(const char *id);
 esp_err_t roundie_packages_remove(const char *id);
+/* App storage (docs/app-storage.md): "data" in the package directory, removed
+ * with the package. read gives length 0 for no file; a corrupt file is
+ * ESP_ERR_INVALID_CRC with length 0 and is left in place. write replaces the
+ * file atomically (length 0 removes it); only for an installed package, with
+ * no application loaded. */
+esp_err_t roundie_packages_data_read(const char *id, void *buffer, size_t capacity, size_t *length);
+esp_err_t roundie_packages_data_write(const char *id, const void *data, size_t length);

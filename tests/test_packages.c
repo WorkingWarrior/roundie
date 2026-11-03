@@ -333,12 +333,42 @@ int main(int argc, char **argv)
     assert(roundie_packages_remove("org.roundie.ui") == ESP_OK);
     active_version(2);
     group("scoped idempotent removal/other applications preserved");
+    /* App storage: atomic replace, verified read, corruption left in place. */
+    uint8_t stored[512];
+    size_t stored_length = 1;
+    assert(roundie_packages_data_read("org.roundie.events", stored, sizeof(stored), &stored_length) == ESP_OK &&
+           stored_length == 0);
+    assert(roundie_packages_data_write("org.roundie.events", "\x01\x02", 2) == ESP_OK);
+    assert(roundie_packages_data_read("org.roundie.events", stored, sizeof(stored), &stored_length) == ESP_OK &&
+           stored_length == 2 && memcmp(stored, "\x01\x02", 2) == 0);
+    assert(roundie_packages_data_read("org.roundie.events", stored, 1, &stored_length) == ESP_ERR_INVALID_CRC &&
+           stored_length == 0);
+    rename_failure = 1;
+    assert(roundie_packages_data_write("org.roundie.events", "\x03\x04", 2) == ESP_FAIL);
+    assert(roundie_packages_data_read("org.roundie.events", stored, sizeof(stored), &stored_length) == ESP_OK &&
+           stored_length == 2 && memcmp(stored, "\x01\x02", 2) == 0);
+    path_for(path, "org.roundie.events", "data.tmp");
+    assert(access(path, F_OK) != 0);
+    assert(roundie_packages_data_write("org.roundie.missing", "\x01", 1) == ESP_ERR_INVALID_STATE);
+    runtime_busy = true;
+    assert(roundie_packages_data_write("org.roundie.events", "\x01", 1) == ESP_ERR_INVALID_STATE);
+    runtime_busy = false;
+    path_for(path, "org.roundie.events", "data");
+    FILE *data = fopen(path, "r+b");
+    assert(data != NULL && fseek(data, 41, SEEK_SET) == 0 && fputc(0xff, data) == 0xff && fclose(data) == 0);
+    assert(roundie_packages_data_read("org.roundie.events", stored, sizeof(stored), &stored_length) ==
+           ESP_ERR_INVALID_CRC && stored_length == 0 && access(path, F_OK) == 0);
+    assert(roundie_packages_data_write("org.roundie.events", "", 0) == ESP_OK && access(path, F_OK) != 0);
+    assert(roundie_packages_data_write("org.roundie.events", "\x05", 1) == ESP_OK && access(path, F_OK) == 0);
+    group("app storage: replace, interrupted replace, corruption kept, admission");
     /* No active record: never choose a random orphan package. */
     path_for(path, "org.roundie.events", "active");
     assert(unlink(path) == 0);
     assert(roundie_packages_scan() == ESP_OK && status.count == 1 && status.orphans == 1);
     assert(roundie_packages_launch("org.roundie.events") != ESP_OK);
     assert(roundie_packages_remove("org.roundie.events") == ESP_OK);
+    path_for(path, "org.roundie.events", "");
+    assert(access(path, F_OK) != 0); /* the data file went with the package */
     group("missing selection fails closed/explicit orphan cleanup");
     fixture(argv[1]);
     assert(roundie_packages_begin(42, package_size, digest) == ESP_OK);

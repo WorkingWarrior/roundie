@@ -248,6 +248,7 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
         (status.abi_version == 1 ? (uintptr_t)rep_abi_v1 :
          status.abi_version == 2 ? (uintptr_t)rep_abi_v2 : (uintptr_t)rep_abi_v3));
     assert(resolve("malloc") == 0 && resolve("xTaskCreate") == 0 && resolve(NULL) == 0);
+    assert(resolve("rep_storage_v1") == (status.abi_version == 3 ? (uintptr_t)rep_storage_v1 : 0));
     elf->ptext = heap_caps_malloc(256, 0);
     if (elf->ptext == NULL) {
         return -12;
@@ -389,7 +390,8 @@ static void validation_tests(void)
     }
     assert(roundie_elf_import_allowed("rep_abi_v2"));
     assert(roundie_elf_import_allowed("rep_abi_v3"));
-    const char *forbidden[] = {"malloc", "esp_restart", "xTaskCreate", "rep_abi_v4", "rep_abi_v1_suffix", "", NULL};
+    assert(roundie_elf_import_allowed("rep_storage_v1"));
+    const char *forbidden[] = {"malloc", "esp_restart", "xTaskCreate", "rep_abi_v4", "rep_abi_v1_suffix", "rep_storage_v2", "", NULL};
     for (unsigned i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
         assert(!roundie_elf_import_allowed(forbidden[i]));
     }

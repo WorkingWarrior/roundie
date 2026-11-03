@@ -54,6 +54,7 @@ The historical bring-up updater rejects the physical REP table.
 - [Application lifecycle and repeated-cycle tests](docs/app-lifecycle.md)
 - [Launcher and system navigation](docs/system-navigation.md)
 - [Packages](docs/package-manager.md)
+- [App storage (rep_storage_v1)](docs/app-storage.md)
 - [PowerManager: screen off, power menu, light sleep](docs/power-manager.md)
 - [Round UI widgets and shadow state](docs/round-ui.md)
 - [Watch face: local time, time zone, clock hands](docs/watch-face.md)

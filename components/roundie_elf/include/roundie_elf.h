@@ -85,6 +85,15 @@ esp_err_t roundie_elf_start(uint8_t *bytes, size_t size);
 esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation);
 esp_err_t roundie_elf_post(uint32_t instance, uint32_t value);
 bool roundie_elf_busy(void);
+
+/* App storage (rep_storage_v1), worker only, while roundie_elf_busy() is false.
+ * set gives the next submitted instance its stored blob; it fails while a
+ * written blob has not been taken. clear withdraws it after a failed
+ * submission. take returns true, once, if the last instance wrote its blob,
+ * copying up to REP_STORAGE_CAPACITY (rep/rep_storage_v1.h) bytes. */
+bool roundie_elf_storage_set(const void *data, size_t length);
+void roundie_elf_storage_clear(void);
+bool roundie_elf_storage_take(void *data, size_t *length);
 void roundie_elf_status(roundie_elf_status_t *out);
 void roundie_elf_set_allowed(bool allowed);
 
