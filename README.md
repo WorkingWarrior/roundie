@@ -9,16 +9,18 @@ Use the pinned ESP-IDF v6.1 checkout:
 cd /mnt/Dane/Development/roundie
 . /home/solve/.espressif/v6.1/esp-idf/export.sh
 # Installed REP development device:
-idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.23 build
+idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.24 build
 # Historical manufacturer-layout diagnostic image, build only:
 idf.py -B build -DROUNDIE_PROFILE=legacy build
 ```
 
-**Current checkpoint, 2026-11-03:** normal 0.3.23 runs from `ota_0`, VALID
-under XIP from PSRAM; normal 0.3.22 is the VALID fallback in `ota_1`.
+**Current checkpoint, 2026-11-03:** normal 0.3.24 runs from `ota_1`, VALID
+under XIP from PSRAM; normal 0.3.23 is the VALID fallback in `ota_0`.
 REP stages 0–4 are done. Stage 5 has the launcher and the
 [Round UI widgets](docs/round-ui.md) (RoundList, ArcSlider, EdgeButton,
-RoundDialog, shadow state), verified on the device by injection and user touch. Stage 6 has packages without an SDK calculator example. Stage 7 USB
+RoundDialog, shadow state), verified on the device by injection and user touch. Stage 6's example is a
+[watch face](docs/watch-face.md) with local time, a time zone and clock hands
+instead of the calculator. Stage 6 has packages without an SDK calculator example. Stage 7 USB
 MTP is NO-GO; Roundie Manager over Web Serial is used instead. Stage 8 has screen
 off, the BOOT power menu and light sleep, verified on the device. Its current
 measurements and deep sleep remain open. See [PowerManager](docs/power-manager.md).
@@ -54,3 +56,4 @@ The historical bring-up updater rejects the physical REP table.
 - [Packages](docs/package-manager.md)
 - [PowerManager: screen off, power menu, light sleep](docs/power-manager.md)
 - [Round UI widgets and shadow state](docs/round-ui.md)
+- [Watch face: local time, time zone, clock hands](docs/watch-face.md)
