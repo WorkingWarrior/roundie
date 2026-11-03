@@ -53,6 +53,7 @@ previous lap. The lap count keeps growing, and only the last three are shown.
     single update was 745 µs, and the longest queue latency 11.3 ms.
   - After stop the applied count held.
   - The deepest queue was 10 of 12, during creation.
-- **PENDING:** finger use and the user's visual check.
+- **User-reported, 2026-11-03:** the stopwatch works with a finger and looks
+  right. Individual controls and the number of attempts were not recorded.
 
 Evidence is in `roundie-backups/stopwatch-1.0.0-2026-11-03/`, outside Git.
