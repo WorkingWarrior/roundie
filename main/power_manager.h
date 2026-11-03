@@ -18,6 +18,12 @@ bool roundie_power_gui_touch(int64_t now_us, bool pressed);
  * caller then skips LVGL and only feeds its watchdog. */
 bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display);
 
+/* GUI task: quick settings actions. sleep returns whether the request was
+ * accepted; admission (and unloading the home application) follows in the
+ * worker. */
+void roundie_power_gui_screen_off(void);
+bool roundie_power_gui_sleep(void);
+
 /* Existing system worker loop. */
 void roundie_power_worker_poll(int64_t now_us);
 #if CONFIG_ROUNDIE_DEV_POWER

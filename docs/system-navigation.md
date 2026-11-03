@@ -59,6 +59,8 @@ chose this after the analysis of what to take from Wear OS.
     when armed.
   - In the list, the left-edge strip goes home ("Home", blue).
   - Elsewhere the left-edge strip closes the application, as before (red).
+  - On home a swipe down from the top edge opens
+    [quick settings](quick-settings.md).
   - The strips cover their area of the watch face, so a long press there does
     not reach the dial.
 - **Recovery.** The one normal trial after Safe Mode starts on the list

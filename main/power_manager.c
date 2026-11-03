@@ -18,6 +18,7 @@
 #include "roundie_power.h"
 #if CONFIG_ROUNDIE_APP_RUNTIME
 #include "app_runtime.h"
+#include "roundie_launcher.h"
 #endif
 #if CONFIG_ROUNDIE_DEV_POWER
 #include "driver/usb_serial_jtag.h"
@@ -29,6 +30,8 @@ static const char *TAG = "power";
  * GUI parks, and touch INT must be high within the next second. */
 #define PARK_AFTER_RELEASE_US 300000
 #define WAKE_SOURCE_WAIT_US 1000000
+/* Bound on unloading the home application before light sleep. */
+#define HOME_PARK_WAIT_US 3000000
 #define MENU_ITEMS 5
 
 typedef enum {
@@ -82,6 +85,10 @@ static struct {
     .lock = portMUX_INITIALIZER_UNLOCKED,
 };
 
+/* Worker only: first admission check of the pending sleep or restart request. */
+static int64_t sleep_requested_us;
+static int64_t command_requested_us;
+
 /* GUI task only. */
 static roundie_power_t policy;
 static roundie_board_t *gui_board;
@@ -129,6 +136,32 @@ static void close_menu(void)
     menu_title = NULL;
 }
 
+static bool request_sleep(void)
+{
+    bool accepted = false;
+    portENTER_CRITICAL(&shared.lock);
+    if (shared.phase == SLEEP_IDLE) {
+        shared.phase = SLEEP_REQUESTED;
+        shared.sleep_limit_s = CONFIG_ROUNDIE_POWER_SLEEP_SAFETY_SECONDS;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&shared.lock);
+    return accepted;
+}
+
+void roundie_power_gui_screen_off(void)
+{
+    if (gui_board != NULL) {
+        close_menu();
+        roundie_power_screen_off(&policy);
+    }
+}
+
+bool roundie_power_gui_sleep(void)
+{
+    return gui_board != NULL && request_sleep();
+}
+
 static void menu_clicked(lv_event_t *event)
 {
     menu_item_t item = (menu_item_t)(intptr_t)lv_event_get_user_data(event);
@@ -145,18 +178,16 @@ static void menu_clicked(lv_event_t *event)
         return;
     }
     bool accepted = false;
-    portENTER_CRITICAL(&shared.lock);
     if (item == ITEM_SLEEP) {
-        if (shared.phase == SLEEP_IDLE) {
-            shared.phase = SLEEP_REQUESTED;
-            shared.sleep_limit_s = CONFIG_ROUNDIE_POWER_SLEEP_SAFETY_SECONDS;
+        accepted = request_sleep();
+    } else {
+        portENTER_CRITICAL(&shared.lock);
+        if (shared.command == COMMAND_NONE && shared.phase == SLEEP_IDLE) {
+            shared.command = item == ITEM_RESTART ? COMMAND_RESTART : COMMAND_SAFE_MODE;
             accepted = true;
         }
-    } else if (shared.command == COMMAND_NONE && shared.phase == SLEEP_IDLE) {
-        shared.command = item == ITEM_RESTART ? COMMAND_RESTART : COMMAND_SAFE_MODE;
-        accepted = true;
+        portEXIT_CRITICAL(&shared.lock);
     }
-    portEXIT_CRITICAL(&shared.lock);
     lv_label_set_text(menu_title, accepted ? "Please wait..." : "Busy");
 }
 
@@ -374,8 +405,27 @@ static void restart(bool safe)
     esp_restart();
 }
 
+/* Light sleep needs an idle runtime. The home application is unloaded for it
+ * and launched again afterwards; any other application refuses sleep. */
+static bool park_home(void)
+{
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    return roundie_launcher_park_home() == ESP_OK;
+#else
+    return false;
+#endif
+}
+
+static void resume_home(void)
+{
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    roundie_launcher_resume_home();
+#endif
+}
+
 static void finish_sleep(bool user_wake, roundie_power_refusal_t refusal, esp_err_t error)
 {
+    resume_home();
     portENTER_CRITICAL(&shared.lock);
     shared.phase = SLEEP_RESUMED;
     shared.user_wake = user_wake;
@@ -430,11 +480,33 @@ void roundie_power_worker_poll(int64_t now_us)
         return;
     }
     if (command != COMMAND_NONE) {
+        if (command_requested_us == 0) {
+            command_requested_us = now_us;
+        }
+        if (runtime_busy() && now_us - command_requested_us < HOME_PARK_WAIT_US && park_home()) {
+            portENTER_CRITICAL(&shared.lock);
+            shared.command = command; /* again once the home application has unloaded */
+            portEXIT_CRITICAL(&shared.lock);
+            return;
+        }
+        command_requested_us = 0;
         restart(command == COMMAND_SAFE_MODE);
+        resume_home(); /* reached only when the restart was refused */
     }
     if (phase == SLEEP_REQUESTED) {
         /* The finger that chose Sleep may still be on the panel. */
         roundie_power_refusal_t refusal = sleep_refusal(board, false);
+        if (sleep_requested_us == 0) {
+            sleep_requested_us = now_us;
+        }
+        if (refusal == ROUNDIE_POWER_REFUSED_APP && now_us - sleep_requested_us < HOME_PARK_WAIT_US &&
+            park_home()) {
+            return; /* checked again once the home application has unloaded */
+        }
+        sleep_requested_us = 0;
+        if (refusal != ROUNDIE_POWER_ALLOWED) {
+            resume_home();
+        }
         portENTER_CRITICAL(&shared.lock);
         shared.refusal = refusal;
         shared.phase = refusal == ROUNDIE_POWER_ALLOWED ? SLEEP_PARK : SLEEP_IDLE;

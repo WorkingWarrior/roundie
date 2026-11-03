@@ -40,6 +40,10 @@ runtime, while OTA is not idle, or outside a VALID image. The menu then shows
 RS1 `REQUEST`. Safe Mode itself never binds the PowerManager: its display stays on
 and BOOT has no function there.
 
+**Home application, 2026-11-04.** The home watch face is always loaded, so
+step 2 below and Restart/Safe Mode first unload it and relaunch it afterwards
+([quick settings](quick-settings.md#sleep-and-restart-with-home-loaded)).
+
 **Light sleep** is executed by the system worker, the sole owner of OTA, packages,
 the NVS latch and USB recovery. No Flash writer is therefore in progress when it
 sleeps. The sequence is:

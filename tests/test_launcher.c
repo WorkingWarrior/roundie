@@ -164,6 +164,41 @@ static void select_id(const char *id)
     assert(nav.state == ROUNDIE_NAV_LOADING && nav.generation == runtime.instance);
 }
 
+/* Quick settings actions, as main.c provides them on the device. */
+static unsigned quick_brightness_percent = 60;
+static unsigned quick_screen_offs;
+static unsigned quick_sleeps;
+
+static bool quick_battery(uint8_t *percent, bool *charging)
+{
+    *percent = 78;
+    *charging = true;
+    return true;
+}
+
+static uint8_t quick_brightness(bool cycle)
+{
+    if (cycle) {
+        quick_brightness_percent = quick_brightness_percent >= 100 ? 30 : quick_brightness_percent < 60 ? 60 : 100;
+    }
+    return (uint8_t)quick_brightness_percent;
+}
+
+static void quick_screen_off(void)
+{
+    quick_screen_offs++;
+}
+
+static bool quick_sleep(void)
+{
+    quick_sleeps++;
+    return true;
+}
+
+static const roundie_launcher_quick_t quick_mock = {
+    quick_battery, quick_brightness, quick_screen_off, quick_sleep,
+};
+
 /* A real LVGL pointer: system chrome sees the same events as a finger. */
 static lv_indev_t *pointer;
 static lv_point_t touch_point;
@@ -216,6 +251,7 @@ int main(int argc, char **argv)
     lv_indev_set_read_cb(pointer, touch_read);
     performance_tests();
     roundie_launcher_gui_bind();
+    roundie_launcher_gui_set_quick_settings(&quick_mock);
     if (argc > 1) {
         lv_mem_monitor_t memory;
         lv_mem_monitor(&memory);
@@ -227,7 +263,7 @@ int main(int argc, char **argv)
         lv_free(pressure);
         assert(roundie_launcher_refresh() == ESP_OK);
         poll(true, false);
-        assert(nav.foreground && nav.gui_objects == 39);
+        assert(nav.foreground && nav.gui_objects == 49);
         lv_deinit();
         puts("launcher low-memory: safe refusal, boot independent");
         return 0;
@@ -237,7 +273,7 @@ int main(int argc, char **argv)
     poll(true, true);
     assert(scans == 0);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 39);
+    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 49);
     assert(roundie_launcher_select("org.roundie.hello", nav.revision, 2) != ESP_OK);
     packages.count = 1;
     entry(0, "org.roundie.hello", 1, ROUNDIE_PACKAGE_OK);
@@ -413,6 +449,31 @@ int main(int argc, char **argv)
     assert(lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN));
     swipe(6, 150, 140, 170);
     assert(!nav.exit_pending); /* the left edge does nothing on home */
+    /* Quick settings: a swipe down from the top edge, closed by a swipe up. */
+    lv_obj_t *top = lv_obj_get_child(lv_layer_top(), 3);
+    lv_obj_t *quick = lv_obj_get_child(lv_layer_top(), 4);
+    assert(!lv_obj_has_flag(top, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN));
+    swipe(180, 10, 180, 60);
+    assert(lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN)); /* too short */
+    touch(180, 10, true);
+    touch(180, 120, true);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_SETTINGS " Ustawienia") == 0);
+    touch(180, 120, false);
+    assert(!lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN));
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(quick, 0)), "Bateria 78% · ładuje") == 0);
+    lv_obj_t *brightness = lv_obj_get_child(quick, 2);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(brightness, 0)), "Jasność 60%") == 0);
+    swipe(180, 110, 180, 120); /* a tap on Brightness: one step */
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(brightness, 0)), "Jasność 100%") == 0);
+    assert(!lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN) && !nav.exit_pending);
+    swipe(180, 330, 180, 220);
+    assert(lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN));
+    swipe(180, 10, 180, 130);
+    swipe(180, 174, 180, 174); /* Screen off */
+    assert(quick_screen_offs == 1 && lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN));
+    swipe(180, 10, 180, 130);
+    swipe(180, 238, 180, 238); /* Sleep */
+    assert(quick_sleeps == 1 && lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN));
     swipe(180, 340, 260, 300);
     assert(!nav.exit_pending); /* too short and too slanted */
     touch(180, 340, true);
@@ -424,6 +485,7 @@ int main(int argc, char **argv)
     assert(nav.exit_pending);
     poll(true, false);
     assert(nav.state == ROUNDIE_NAV_EXITING && lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(top, LV_OBJ_FLAG_HIDDEN));
     assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), "Apps...") == 0);
     runtime.state = ROUNDIE_ELF_UNLOADED;
     finish();
@@ -461,11 +523,57 @@ int main(int argc, char **argv)
     assert(launches == home_launches + 4 && nav.state == ROUNDIE_NAV_LOADING && nav.home_active);
     runtime.state = ROUNDIE_ELF_RUNNING;
     poll(true, false);
+    swipe(180, 10, 180, 130);
+    assert(!lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN));
+    assert(roundie_launcher_exit(runtime.instance) == ESP_OK);
+    poll(true, false);
+    assert(lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN)); /* closed with home */
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    /* Light sleep: home is unloaded, stays unloaded, and is launched on resume. */
+    assert(roundie_launcher_park_home() != ESP_OK); /* nothing running */
+    assert(roundie_launcher_home() == ESP_OK);
+    poll(true, false);
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(roundie_launcher_park_home() == ESP_OK && roundie_launcher_park_home() == ESP_OK);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_EXITING);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    unsigned parked_launches = launches;
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && launches == parked_launches);
+    roundie_launcher_resume_home();
+    poll(true, false);
+    assert(launches == parked_launches + 1 && nav.home_active && nav.state == ROUNDIE_NAV_LOADING);
+    roundie_launcher_resume_home(); /* once only */
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
     assert(roundie_launcher_exit(runtime.instance) == ESP_OK);
     poll(true, false);
     runtime.state = ROUNDIE_ELF_UNLOADED;
     finish();
+    poll(true, false);
+    assert(launches == parked_launches + 1);
+    /* Any other application is not unloaded for sleep. */
+    select_id("org.roundie.other");
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(roundie_launcher_park_home() != ESP_OK && nav.state == ROUNDIE_NAV_ACTIVE);
+    assert(roundie_launcher_exit(runtime.instance) == ESP_OK);
+    poll(true, false);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    poll(true, false); /* back home */
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(nav.home_active && roundie_launcher_exit(runtime.instance) == ESP_OK);
+    poll(true, false);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
     /* A home that fails to start shows its result once; no retry loop. */
+    unsigned failed_launches = launches;
     launch_result = ESP_ERR_NO_MEM;
     assert(roundie_launcher_home() == ESP_OK);
     poll(true, false);
@@ -473,14 +581,14 @@ int main(int argc, char **argv)
     back();
     poll(true, false);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && launches == home_launches + 5);
+    assert(nav.state == ROUNDIE_NAV_LIST && launches == failed_launches + 1);
     launch_result = ESP_OK;
     /* An unlisted or unhealthy home is not launched; disabled, nothing is home. */
     roundie_launcher_set_home("org.roundie.bad", true);
     packages.revision++;
     poll(true, false);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && !nav.home_available && launches == home_launches + 5);
+    assert(nav.state == ROUNDIE_NAV_LIST && !nav.home_available && launches == failed_launches + 1);
     assert(roundie_launcher_home() != ESP_OK && lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN));
     roundie_launcher_set_home("", false);
     assert(roundie_launcher_home() != ESP_OK);

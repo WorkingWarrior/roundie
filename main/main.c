@@ -793,9 +793,9 @@ static void close_color_field(lv_event_t *event)
     lv_obj_delete(lv_event_get_target_obj(event));
 }
 
-static void cycle_backlight(lv_event_t *event)
+/* 30, 60, 100, 30 ... percent; GUI task. */
+static void step_backlight(gui_state_t *state)
 {
-    gui_state_t *state = lv_event_get_user_data(event);
     uint8_t next_percent = 30;
     if (state->brightness_percent < 60) {
         next_percent = 60;
@@ -811,6 +811,42 @@ static void cycle_backlight(lv_event_t *event)
     lv_label_set_text_fmt(state->brightness_label, "Backlight %u%%",
                           next_percent);
 }
+
+static void cycle_backlight(lv_event_t *event)
+{
+    step_backlight(lv_event_get_user_data(event));
+}
+
+#if CONFIG_ROUNDIE_APP_RUNTIME && CONFIG_ROUNDIE_POWER
+/* Quick settings on the home application (docs/quick-settings.md). */
+static gui_state_t *quick_state;
+
+static bool quick_battery(uint8_t *percent, bool *charging)
+{
+    portENTER_CRITICAL(&sensors.lock);
+    roundie_battery_sample_t battery = sensors.battery;
+    portEXIT_CRITICAL(&sensors.lock);
+    if (battery.state != ROUNDIE_SENSOR_VALID || !battery.battery_present || !battery.soc_valid ||
+        battery.soc_percent > 100) {
+        return false;
+    }
+    *percent = (uint8_t)battery.soc_percent;
+    *charging = battery.current_valid && battery.current_ma > 0;
+    return true;
+}
+
+static uint8_t quick_brightness(bool cycle)
+{
+    if (cycle) {
+        step_backlight(quick_state);
+    }
+    return quick_state->brightness_percent;
+}
+
+static const roundie_launcher_quick_t quick_settings = {
+    quick_battery, quick_brightness, roundie_power_gui_screen_off, roundie_power_gui_sleep,
+};
+#endif
 
 static void show_color_field(lv_event_t *event)
 {
@@ -1109,6 +1145,10 @@ void app_main(void)
 #if CONFIG_ROUNDIE_POWER
     if (!recovery_screen) {
         roundie_power_gui_bind(board, &state.brightness_percent, esp_timer_get_time());
+#if CONFIG_ROUNDIE_APP_RUNTIME
+        quick_state = &state;
+        roundie_launcher_gui_set_quick_settings(&quick_settings);
+#endif
     }
 #endif
 

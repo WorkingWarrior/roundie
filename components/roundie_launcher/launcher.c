@@ -24,6 +24,7 @@ static roundie_launcher_entry_t discovered[ROUNDIE_PACKAGES_MAX];
 static roundie_package_record_t record;
 static char home[ROUNDIE_PACKAGE_ID];
 static bool home_due; /* launch home once the list is shown */
+static bool home_parked; /* home unloaded for light sleep; relaunch on resume */
 
 static void set_state(roundie_navigation_t state)
 {
@@ -174,6 +175,33 @@ esp_err_t roundie_launcher_back(uint32_t request)
     }
     portEXIT_CRITICAL(&lock);
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t roundie_launcher_park_home(void)
+{
+    portENTER_CRITICAL(&lock);
+    bool valid = home_parked;
+    if (!valid && status.home_active && !status.exit_pending &&
+        (status.state == ROUNDIE_NAV_ACTIVE || status.state == ROUNDIE_NAV_LOADING) &&
+        status.generation != 0) {
+        status.exit_pending = true;
+        exit_at = esp_timer_get_time();
+        set_state(ROUNDIE_NAV_EXITING);
+        home_parked = true;
+        valid = true;
+    }
+    portEXIT_CRITICAL(&lock);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+void roundie_launcher_resume_home(void)
+{
+    portENTER_CRITICAL(&lock);
+    if (home_parked) {
+        home_parked = false;
+        home_due = true;
+    }
+    portEXIT_CRITICAL(&lock);
 }
 
 void roundie_launcher_result_report(uint32_t request, bool visible, uint32_t apply_us,

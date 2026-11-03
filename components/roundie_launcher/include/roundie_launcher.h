@@ -79,9 +79,28 @@ esp_err_t roundie_launcher_refresh(void);
 void roundie_launcher_set_home(const char *id, bool autostart);
 /* From the list: launch the home package. Same admission as a selection. */
 esp_err_t roundie_launcher_home(void);
+/* Sole worker, for light sleep: unload a running home application (ESP_OK
+ * also while that unload is in progress), and launch it again on resume. Any
+ * other application keeps the existing refusal. */
+esp_err_t roundie_launcher_park_home(void);
+void roundie_launcher_resume_home(void);
 void roundie_launcher_status(roundie_launcher_status_t *out);
 /* Sole existing system worker; allowed means confirmed normal/STABLE policy. */
 void roundie_launcher_poll(bool allowed, bool transfer_busy);
+/* Quick settings, opened by a swipe down from the top edge of the home
+ * application (docs/quick-settings.md). The actions run on the GUI task and
+ * must not block. battery returns false without a valid charge reading;
+ * brightness returns the backlight percent, after one step when cycle is set.
+ * sleep returns whether the request was accepted. */
+typedef struct {
+    bool (*battery)(uint8_t *percent, bool *charging);
+    uint8_t (*brightness)(bool cycle);
+    void (*screen_off)(void);
+    bool (*sleep)(void);
+} roundie_launcher_quick_t;
+/* GUI task, before the first pump; quick stays owned by the caller. NULL
+ * disables the gesture. */
+void roundie_launcher_gui_set_quick_settings(const roundie_launcher_quick_t *quick);
 /* Existing GUI task only; safe closes UI admission before Safe Mode cleanup. */
 void roundie_launcher_gui_bind(void);
 void roundie_launcher_gui_pump(bool safe);

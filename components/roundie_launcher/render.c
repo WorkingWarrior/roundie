@@ -16,6 +16,11 @@ static lv_obj_t *retry;
 static lv_obj_t *edge;      /* left-edge swipe zone on the top layer */
 static lv_obj_t *bottom;    /* bottom-edge swipe zone on the top layer, home only */
 static lv_obj_t *exit_pill; /* swipe feedback, then "Closing..." */
+static lv_obj_t *top;       /* top-edge swipe zone on the top layer, home only */
+static lv_obj_t *quick;     /* quick settings panel on the top layer */
+static lv_obj_t *quick_battery;
+static lv_obj_t *quick_brightness;
+static const roundie_launcher_quick_t *quick_actions;
 static lv_obj_t *spinner;
 static lv_obj_t *result_value;
 static lv_obj_t *result_detail;
@@ -39,7 +44,8 @@ static bool swipe_armed;
  * starts in a strip along the left edge closes an application, or goes home
  * from the list. The strip lies below the 60 px top safe area and within the
  * round panel. On the home application, a swipe up that starts in a strip
- * along the bottom edge opens the list instead. */
+ * along the bottom edge opens the list instead, and a swipe down from a strip
+ * along the top edge opens quick settings. */
 #define EDGE_Y 70
 #define EDGE_WIDTH 44
 #define EDGE_HEIGHT 220
@@ -47,6 +53,9 @@ static bool swipe_armed;
 #define BOTTOM_Y 296
 #define BOTTOM_WIDTH 180
 #define BOTTOM_HEIGHT 64
+#define TOP_HEIGHT 64 /* x as the bottom strip, y=0..63 */
+#define QUICK_BUTTON_WIDTH 200
+#define QUICK_BUTTON_HEIGHT 48
 #define SWIPE_DISTANCE 80 /* travel that accepts, at least twice the cross travel */
 #define PILL_WIDTH 120
 #define PILL_HEIGHT 44
@@ -55,6 +64,8 @@ static bool swipe_armed;
 #define PILL_GO 0x2f6fd0    /* navigates */
 #define SWIPE_LEFT_EDGE 0U
 #define SWIPE_BOTTOM_EDGE 1U
+#define SWIPE_TOP_EDGE 2U
+#define SWIPE_QUICK_PANEL 3U /* up on the open panel: close it */
 
 static uint32_t elapsed_us(int64_t later, int64_t earlier)
 {
@@ -87,13 +98,19 @@ static void selected(lv_event_t *event)
 /* Travel along the swipe direction: right from the left edge, up from the bottom. */
 static int32_t swipe_travel(uint32_t kind, const lv_point_t *point)
 {
-    return kind == SWIPE_BOTTOM_EDGE ? swipe_start.y - point->y : point->x - swipe_start.x;
+    if (kind == SWIPE_BOTTOM_EDGE || kind == SWIPE_QUICK_PANEL) {
+        return swipe_start.y - point->y;
+    }
+    if (kind == SWIPE_TOP_EDGE) {
+        return point->y - swipe_start.y;
+    }
+    return point->x - swipe_start.x;
 }
 
 static bool swipe_accepts(uint32_t kind, const lv_point_t *point)
 {
     int32_t travel = swipe_travel(kind, point);
-    int32_t cross = kind == SWIPE_BOTTOM_EDGE ? point->x - swipe_start.x : point->y - swipe_start.y;
+    int32_t cross = kind == SWIPE_LEFT_EDGE ? point->y - swipe_start.y : point->x - swipe_start.x;
     if (cross < 0) {
         cross = -cross;
     }
@@ -104,6 +121,9 @@ static bool swipe_accepts(uint32_t kind, const lv_point_t *point)
  * would act: red to close the application, blue to navigate. */
 static void swipe_feedback(uint32_t kind, const lv_point_t *point)
 {
+    if (kind == SWIPE_QUICK_PANEL) {
+        return; /* the panel itself is the feedback */
+    }
     int32_t travel = swipe_travel(kind, point);
     if (travel < 0) {
         travel = 0;
@@ -113,6 +133,8 @@ static void swipe_feedback(uint32_t kind, const lv_point_t *point)
     }
     if (kind == SWIPE_BOTTOM_EDGE) {
         lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, 360 - travel);
+    } else if (kind == SWIPE_TOP_EDGE) {
+        lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, travel - PILL_HEIGHT);
     } else {
         int32_t y = point->y - PILL_HEIGHT / 2;
         if (y < EDGE_Y) {
@@ -129,10 +151,51 @@ static void swipe_feedback(uint32_t kind, const lv_point_t *point)
     lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
 }
 
+static void quick_show(bool shown)
+{
+    if (!shown) {
+        lv_obj_add_flag(quick, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    uint8_t percent = 0;
+    bool charging = false;
+    if (quick_actions->battery(&percent, &charging)) {
+        lv_label_set_text_fmt(quick_battery, "Bateria %u%%%s", percent, charging ? " · ładuje" : "");
+    } else {
+        lv_label_set_text(quick_battery, "Bateria: brak odczytu");
+    }
+    lv_label_set_text_fmt(quick_brightness, "Jasność %u%%", quick_actions->brightness(false));
+    lv_obj_remove_flag(quick, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void quick_clicked(lv_event_t *event)
+{
+    unsigned index = (unsigned)(uintptr_t)lv_event_get_user_data(event);
+    if (disabled || quick_actions == NULL) {
+        return;
+    }
+    if (index == 0) {
+        lv_label_set_text_fmt(quick_brightness, "Jasność %u%%", quick_actions->brightness(true));
+        return;
+    }
+    quick_show(false);
+    if (index == 1) {
+        quick_actions->screen_off();
+    } else {
+        quick_actions->sleep();
+    }
+}
+
 static void swipe_released(uint32_t kind)
 {
     bool running = model.state == ROUNDIE_NAV_ACTIVE || model.state == ROUNDIE_NAV_LOADING;
-    if (kind == SWIPE_LEFT_EDGE && model.state == ROUNDIE_NAV_LIST) {
+    if (kind == SWIPE_QUICK_PANEL) {
+        quick_show(false);
+    } else if (kind == SWIPE_TOP_EDGE) {
+        if (running && model.home_active && quick_actions != NULL) {
+            quick_show(true);
+        }
+    } else if (kind == SWIPE_LEFT_EDGE && model.state == ROUNDIE_NAV_LIST) {
         roundie_launcher_home();
     } else if (running && (kind == SWIPE_BOTTOM_EDGE) == model.home_active) {
         roundie_launcher_exit(model.generation); /* home's exit shows the list */
@@ -161,6 +224,9 @@ static void edge_swiped(lv_event_t *event)
     if (code == LV_EVENT_PRESSED) {
         swipe_start = point;
         swipe_armed = true;
+        lv_label_set_text(lv_obj_get_child(exit_pill, 0), kind == SWIPE_TOP_EDGE ? LV_SYMBOL_SETTINGS " Ustawienia" :
+            kind == SWIPE_BOTTOM_EDGE ? LV_SYMBOL_LIST " Apps" :
+            model.state == ROUNDIE_NAV_LIST ? LV_SYMBOL_HOME " Home" : LV_SYMBOL_CLOSE " Close");
         swipe_feedback(kind, &point);
     } else if (code == LV_EVENT_PRESSING && swipe_armed) {
         swipe_feedback(kind, &point);
@@ -223,10 +289,12 @@ static bool create(void)
     edge = lv_obj_create(lv_layer_top());
     bottom = lv_obj_create(lv_layer_top());
     exit_pill = lv_obj_create(lv_layer_top());
+    top = lv_obj_create(lv_layer_top());
+    quick = lv_obj_create(lv_layer_top());
     result_value = label(screen, 250, 55, 150);
     result_detail = label(screen, 270, 45, 205);
     back_button = lv_button_create(screen);
-    if (title == NULL || message == NULL || list == NULL || retry == NULL || edge == NULL || bottom == NULL || exit_pill == NULL || spinner == NULL ||
+    if (title == NULL || message == NULL || list == NULL || retry == NULL || edge == NULL || bottom == NULL || top == NULL || quick == NULL || exit_pill == NULL || spinner == NULL ||
         result_value == NULL || result_detail == NULL || back_button == NULL) {
         return false;
     }
@@ -241,8 +309,8 @@ static bool create(void)
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_pos(retry, 110, 290);
     lv_obj_set_size(retry, 140, 44);
-    lv_obj_t *const strips[] = {edge, bottom};
-    for (unsigned i = 0; i < 2; i++) {
+    lv_obj_t *const strips[] = {edge, bottom, top, quick};
+    for (unsigned i = 0; i < 4; i++) {
         lv_obj_remove_style_all(strips[i]);
         /* Press lock: the strip keeps the touch after the finger leaves it. */
         lv_obj_add_flag(strips[i], LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_PRESS_LOCK);
@@ -254,6 +322,38 @@ static bool create(void)
     lv_obj_set_size(edge, EDGE_WIDTH, EDGE_HEIGHT);
     lv_obj_set_pos(bottom, BOTTOM_X, BOTTOM_Y);
     lv_obj_set_size(bottom, BOTTOM_WIDTH, BOTTOM_HEIGHT);
+    lv_obj_set_pos(top, BOTTOM_X, 0);
+    lv_obj_set_size(top, BOTTOM_WIDTH, TOP_HEIGHT);
+    /* Quick settings: an opaque full-screen panel, closed by a swipe up that
+     * starts outside its buttons. */
+    lv_obj_set_size(quick, 360, 360);
+    lv_obj_set_style_bg_color(quick, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(quick, LV_OPA_COVER, 0);
+    quick_battery = label(quick, 240, 60, 44);
+    lv_obj_t *hint = label(quick, 220, 70, 290);
+    if (quick_battery == NULL || hint == NULL) {
+        return false;
+    }
+    lv_obj_set_style_text_align(quick_battery, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x9aa5b1), 0);
+    lv_label_set_text(hint, "Przesuń w górę, aby zamknąć");
+    static const char *const quick_labels[] = {"Jasność", "Wygaś ekran", "Uśpij"};
+    for (unsigned i = 0; i < 3; i++) {
+        lv_obj_t *button = lv_button_create(quick);
+        lv_obj_t *text = button != NULL ? lv_label_create(button) : NULL;
+        if (text == NULL ||
+            lv_obj_add_event_cb(button, quick_clicked, LV_EVENT_CLICKED, (void *)(uintptr_t)i) == NULL) {
+            return false;
+        }
+        lv_obj_set_size(button, QUICK_BUTTON_WIDTH, QUICK_BUTTON_HEIGHT);
+        lv_obj_set_pos(button, 180 - QUICK_BUTTON_WIDTH / 2, 86 + (int32_t)i * 64);
+        lv_label_set_text(text, quick_labels[i]);
+        lv_obj_center(text);
+        if (i == 0) {
+            quick_brightness = text;
+        }
+    }
     lv_obj_remove_style_all(exit_pill);
     lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(exit_pill, PILL_WIDTH, PILL_HEIGHT);
@@ -273,7 +373,9 @@ static bool create(void)
         lv_obj_add_event_cb(retry, refresh_clicked, LV_EVENT_CLICKED, NULL) == NULL ||
         lv_obj_add_event_cb(back_button, back_clicked, LV_EVENT_CLICKED, NULL) == NULL ||
         lv_obj_add_event_cb(edge, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_LEFT_EDGE) == NULL ||
-        lv_obj_add_event_cb(bottom, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_BOTTOM_EDGE) == NULL) {
+        lv_obj_add_event_cb(bottom, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_BOTTOM_EDGE) == NULL ||
+        lv_obj_add_event_cb(top, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_TOP_EDGE) == NULL ||
+        lv_obj_add_event_cb(quick, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_QUICK_PANEL) == NULL) {
         return false;
     }
     lv_label_set_text(text, "Refresh");
@@ -288,6 +390,8 @@ static bool create(void)
     lv_obj_add_flag(result_detail, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(bottom, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(top, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(quick, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
     for (unsigned i = 0; i < ROUNDIE_PACKAGES_MAX; i++) {
         rows[i] = lv_button_create(list);
@@ -307,6 +411,11 @@ static bool create(void)
     }
     create_time = (uint32_t)(esp_timer_get_time() - started);
     return true;
+}
+
+void roundie_launcher_gui_set_quick_settings(const roundie_launcher_quick_t *quick_settings)
+{
+    quick_actions = quick_settings;
 }
 
 void roundie_launcher_gui_bind(void)
@@ -337,6 +446,8 @@ void roundie_launcher_gui_pump(bool safe)
         if (edge != NULL) {
             lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(bottom, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(top, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(quick, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
         }
         /* Safe Mode may clean the active root; never dereference it afterward. */
@@ -358,9 +469,12 @@ void roundie_launcher_gui_pump(bool safe)
             lv_obj_delete(edge);
             edge = NULL;
         }
-        if (bottom != NULL) {
-            lv_obj_delete(bottom);
-            bottom = NULL;
+        lv_obj_t **const chrome[] = {&bottom, &top, &quick};
+        for (unsigned i = 0; i < 3; i++) {
+            if (*chrome[i] != NULL) {
+                lv_obj_delete(*chrome[i]);
+                *chrome[i] = NULL;
+            }
         }
         if (exit_pill != NULL) {
             lv_obj_delete(exit_pill);
@@ -457,7 +571,16 @@ void roundie_launcher_gui_pump(bool safe)
         lv_obj_set_style_bg_color(exit_pill, lv_color_hex(PILL_IDLE), 0);
         lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(bottom, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(top, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
+        bool home_running = running && model.generation != 0 && model.state != ROUNDIE_NAV_EXITING &&
+            model.home_active;
+        if (!home_running) {
+            lv_obj_add_flag(quick, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (home_running && quick_actions != NULL) {
+            lv_obj_remove_flag(top, LV_OBJ_FLAG_HIDDEN);
+        }
         if (running && model.generation != 0 && model.state != ROUNDIE_NAV_EXITING) {
             /* Home has no Close: a swipe up from the bottom opens the list. */
             lv_obj_remove_flag(model.home_active ? bottom : edge, LV_OBJ_FLAG_HIDDEN);
@@ -492,6 +615,7 @@ void roundie_launcher_gui_pump(bool safe)
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     roundie_launcher_gui_report(true, lv_screen_active() == screen,
-        count_objects(screen) + count_objects(edge) + count_objects(bottom) + count_objects(exit_pill), (uint32_t)memory.free_size,
+        count_objects(screen) + count_objects(edge) + count_objects(bottom) + count_objects(top) +
+            count_objects(quick) + count_objects(exit_pill), (uint32_t)memory.free_size,
         create_time, latency);
 }
