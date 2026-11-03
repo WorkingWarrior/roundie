@@ -1,6 +1,7 @@
 #include "private.h"
 #include <stdio.h>
 #include <inttypes.h>
+#include <math.h>
 #include <string.h>
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -25,11 +26,14 @@ static lv_obj_t *spinner;
 static lv_obj_t *result_value;
 static lv_obj_t *result_detail;
 static lv_obj_t *back_button;
+static lv_obj_t *list_title;   /* header that scrolls with the list */
+static lv_obj_t *list_message;
 static lv_obj_t *rows[ROUNDIE_PACKAGES_MAX];
 static lv_obj_t *names[ROUNDIE_PACKAGES_MAX];
 static lv_obj_t *versions[ROUNDIE_PACKAGES_MAX];
 static roundie_launcher_status_t model;
 static uint32_t painted_revision;
+static uint32_t painted_list_revision; /* list scrolled to the top for it */
 static roundie_navigation_t painted_state = ROUNDIE_NAV_WAITING;
 static bool disabled;
 static uint32_t create_time;
@@ -66,6 +70,19 @@ static bool swipe_armed;
 #define SWIPE_BOTTOM_EDGE 1U
 #define SWIPE_TOP_EDGE 2U
 #define SWIPE_QUICK_PANEL 3U /* up on the open panel: close it */
+
+/* Transforming list (docs/system-navigation.md): the list scrolls over the
+ * whole round screen. A row narrows to fit the circle at its outer edge and
+ * fades out between FADE_START and the screen edge. */
+#define LIST_FIRST_ROW 100
+#define ROW_STEP 82
+#define ROW_HEIGHT 76
+#define ROW_WIDTH 250
+#define ROW_MIN_WIDTH 150
+#define ROW_MARGIN 10      /* from the circle, on each side */
+#define LIST_END_SPACE 120 /* lets the last item scroll up from the bottom edge */
+#define FADE_START 110     /* distance of an item's centre from the screen centre */
+#define SCREEN_RADIUS 180
 
 static uint32_t elapsed_us(int64_t later, int64_t earlier)
 {
@@ -247,6 +264,62 @@ static void refresh_clicked(lv_event_t *event)
     }
 }
 
+/* Width that fits the circle at a distance from the screen centre. */
+static int32_t list_width(int32_t outer)
+{
+    int32_t width = ROW_MIN_WIDTH;
+    if (outer < SCREEN_RADIUS) {
+        float half = sqrtf((float)(SCREEN_RADIUS * SCREEN_RADIUS - outer * outer));
+        width = 2 * ((int32_t)half - ROW_MARGIN);
+    }
+    if (width < ROW_MIN_WIDTH) {
+        width = ROW_MIN_WIDTH;
+    }
+    if (width > ROW_WIDTH) {
+        width = ROW_WIDTH;
+    }
+    return width;
+}
+
+/* Shapes the visible items by their position on the screen. */
+static void list_transform(void)
+{
+    for (uint32_t i = 0; i < lv_obj_get_child_count(list); i++) {
+        lv_obj_t *item = lv_obj_get_child(list, (int32_t)i);
+        if (lv_obj_has_flag(item, LV_OBJ_FLAG_HIDDEN)) {
+            continue;
+        }
+        lv_area_t area;
+        lv_obj_get_coords(item, &area);
+        int32_t distance = (area.y1 + area.y2) / 2 - SCREEN_RADIUS;
+        if (distance < 0) {
+            distance = -distance;
+        }
+        lv_opa_t opa = LV_OPA_COVER;
+        if (distance >= SCREEN_RADIUS) {
+            opa = LV_OPA_TRANSP;
+        } else if (distance > FADE_START) {
+            opa = (lv_opa_t)(LV_OPA_COVER * (SCREEN_RADIUS - distance) / (SCREEN_RADIUS - FADE_START));
+        }
+        if (lv_obj_get_style_opa(item, LV_PART_MAIN) != opa) {
+            lv_obj_set_style_opa(item, opa, 0);
+        }
+        if (lv_obj_check_type(item, &lv_button_class) && item != retry) {
+            int32_t width = list_width(distance + lv_area_get_height(&area) / 2);
+            if (lv_obj_get_width(item) != width) {
+                lv_obj_set_width(item, width);
+                lv_obj_set_x(item, SCREEN_RADIUS - width / 2);
+            }
+        }
+    }
+}
+
+static void list_scrolled(lv_event_t *event)
+{
+    (void)event;
+    list_transform();
+}
+
 static void back_clicked(lv_event_t *event)
 {
     (void)event;
@@ -284,7 +357,6 @@ static bool create(void)
     title = label(screen, 240, 60, 30);
     message = label(screen, 250, 55, 64);
     list = lv_obj_create(screen);
-    retry = lv_button_create(screen);
     spinner = lv_spinner_create(screen);
     edge = lv_obj_create(lv_layer_top());
     bottom = lv_obj_create(lv_layer_top());
@@ -294,21 +366,23 @@ static bool create(void)
     result_value = label(screen, 250, 55, 150);
     result_detail = label(screen, 270, 45, 205);
     back_button = lv_button_create(screen);
-    if (title == NULL || message == NULL || list == NULL || retry == NULL || edge == NULL || bottom == NULL || top == NULL || quick == NULL || exit_pill == NULL || spinner == NULL ||
+    if (title == NULL || message == NULL || list == NULL || edge == NULL || bottom == NULL || top == NULL || quick == NULL || exit_pill == NULL || spinner == NULL ||
         result_value == NULL || result_detail == NULL || back_button == NULL) {
         return false;
     }
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(title, "Roundie / Applications");
     lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(list, 50, 92);
-    lv_obj_set_size(list, 260, 188);
+    lv_obj_set_pos(list, 0, 0);
+    lv_obj_set_size(list, 360, 360);
     lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_set_style_pad_bottom(list, LIST_END_SPACE, 0);
     lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_radius(list, 0, 0);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_pos(retry, 110, 290);
-    lv_obj_set_size(retry, 140, 44);
+    /* A straight scrollbar would be cut by the round panel. */
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
     lv_obj_t *const strips[] = {edge, bottom, top, quick};
     for (unsigned i = 0; i < 4; i++) {
         lv_obj_remove_style_all(strips[i]);
@@ -366,11 +440,10 @@ static bool create(void)
     lv_obj_set_style_text_align(result_detail, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(back_button, 100, 268);
     lv_obj_set_size(back_button, 160, 52);
-    lv_obj_t *text = lv_label_create(retry);
     lv_obj_t *exit_text = lv_label_create(exit_pill);
     lv_obj_t *back_text = lv_label_create(back_button);
-    if (text == NULL || exit_text == NULL || back_text == NULL ||
-        lv_obj_add_event_cb(retry, refresh_clicked, LV_EVENT_CLICKED, NULL) == NULL ||
+    if (exit_text == NULL || back_text == NULL ||
+        lv_obj_add_event_cb(list, list_scrolled, LV_EVENT_SCROLL, NULL) == NULL ||
         lv_obj_add_event_cb(back_button, back_clicked, LV_EVENT_CLICKED, NULL) == NULL ||
         lv_obj_add_event_cb(edge, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_LEFT_EDGE) == NULL ||
         lv_obj_add_event_cb(bottom, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_BOTTOM_EDGE) == NULL ||
@@ -378,8 +451,6 @@ static bool create(void)
         lv_obj_add_event_cb(quick, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_QUICK_PANEL) == NULL) {
         return false;
     }
-    lv_label_set_text(text, "Refresh");
-    lv_obj_center(text);
     lv_obj_set_style_text_color(exit_text, lv_color_hex(0xffffff), 0);
     lv_label_set_text(exit_text, LV_SYMBOL_CLOSE " Close");
     lv_obj_center(exit_text);
@@ -398,17 +469,35 @@ static bool create(void)
         if (rows[i] == NULL) {
             return false;
         }
-        lv_obj_set_pos(rows[i], 0, (int)i * 82);
-        lv_obj_set_size(rows[i], 250, 76);
+        lv_obj_set_pos(rows[i], SCREEN_RADIUS - ROW_WIDTH / 2, LIST_FIRST_ROW + (int32_t)i * ROW_STEP);
+        lv_obj_set_size(rows[i], ROW_WIDTH, ROW_HEIGHT);
         lv_obj_set_style_pad_all(rows[i], 8, 0);
-        names[i] = label(rows[i], 232, 0, 0);
-        versions[i] = label(rows[i], 232, 0, 28);
+        names[i] = label(rows[i], 0, 0, 0);
+        versions[i] = label(rows[i], 0, 0, 28);
         if (names[i] == NULL || versions[i] == NULL ||
             lv_obj_add_event_cb(rows[i], selected, LV_EVENT_CLICKED, (void *)(uintptr_t)i) == NULL) {
             return false;
         }
+        /* The labels follow the row's width as it narrows. */
+        lv_obj_set_width(names[i], lv_pct(100));
+        lv_obj_set_width(versions[i], lv_pct(100));
         lv_obj_add_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
     }
+    /* Header and Refresh scroll with the rows, after them in child order. */
+    list_title = label(list, 240, 60, 30);
+    list_message = label(list, 250, 55, 64);
+    retry = lv_button_create(list);
+    lv_obj_t *text = retry != NULL ? lv_label_create(retry) : NULL;
+    if (list_title == NULL || list_message == NULL || text == NULL ||
+        lv_obj_add_event_cb(retry, refresh_clicked, LV_EVENT_CLICKED, NULL) == NULL) {
+        return false;
+    }
+    lv_obj_set_style_text_align(list_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_align(list_message, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(list_title, "Roundie / Applications");
+    lv_obj_set_size(retry, 140, 44);
+    lv_label_set_text(text, "Refresh");
+    lv_obj_center(text);
     create_time = (uint32_t)(esp_timer_get_time() - started);
     return true;
 }
@@ -553,13 +642,24 @@ void roundie_launcher_gui_pump(bool safe)
             model.unload_result != 0 ? "Application error. Choose again." :
             model.count == 0 ? "No applications installed" : "Choose an application";
         lv_label_set_text(message, text);
+        lv_label_set_text(list_message, text);
         if (idle) {
+            /* The list carries its own header, which scrolls with it. */
+            lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(message, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(retry, SCREEN_RADIUS - 70, LIST_FIRST_ROW + (int32_t)model.count * ROW_STEP + 6);
             lv_obj_remove_flag(list, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(retry, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+            if (painted_list_revision != model.revision) {
+                painted_list_revision = model.revision;
+                lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+            }
+            lv_obj_update_layout(list);
+            list_transform();
         } else {
+            lv_obj_remove_flag(title, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(message, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(list, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(retry, LV_OBJ_FLAG_HIDDEN);
             if (result) {
                 lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
             } else {

@@ -151,7 +151,7 @@ static void back(void)
 {
     unsigned before = launches;
     assert(roundie_launcher_back(nav.result_request - 1) != ESP_OK);
-    lv_obj_send_event(lv_obj_get_child(lv_screen_active(), 7), LV_EVENT_CLICKED, NULL);
+    lv_obj_send_event(lv_obj_get_child(lv_screen_active(), 6), LV_EVENT_CLICKED, NULL);
     poll(true, false);
     assert(nav.state == ROUNDIE_NAV_LIST && launches == before && !nav.result_visible);
 }
@@ -263,7 +263,7 @@ int main(int argc, char **argv)
         lv_free(pressure);
         assert(roundie_launcher_refresh() == ESP_OK);
         poll(true, false);
-        assert(nav.foreground && nav.gui_objects == 49);
+        assert(nav.foreground && nav.gui_objects == 51);
         lv_deinit();
         puts("launcher low-memory: safe refusal, boot independent");
         return 0;
@@ -273,7 +273,7 @@ int main(int argc, char **argv)
     poll(true, true);
     assert(scans == 0);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 49);
+    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 51);
     assert(roundie_launcher_select("org.roundie.hello", nav.revision, 2) != ESP_OK);
     packages.count = 1;
     entry(0, "org.roundie.hello", 1, ROUNDIE_PACKAGE_OK);
@@ -304,7 +304,7 @@ int main(int argc, char **argv)
     assert(nav.app_result == 42 && nav.result_success && nav.executed && nav.result_visible);
     assert(nav.result_request == nav.request && nav.completed == runtime.completed);
     assert(strcmp(nav.selected_name, "org.roundie.hello") == 0);
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 5)), "42") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 4)), "42") == 0);
     assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 1)), "Application finished") == 0);
     uint32_t result_request = nav.request;
     clock_us += 10000000;
@@ -324,7 +324,7 @@ int main(int argc, char **argv)
     strcpy(runtime.error, "loader-relocation");
     finish();
     assert(!nav.result_success && !nav.executed && nav.loader_result == -7);
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 5)), "No application result") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 4)), "No application result") == 0);
     back();
     select_id("org.roundie.hello");
     runtime.executed = true;
@@ -419,7 +419,7 @@ int main(int argc, char **argv)
     assert(nav.state == ROUNDIE_NAV_EXITING); /* Resource/UI teardown pending. */
     finish();
     assert(lv_obj_is_valid(root) && lv_obj_is_valid(chrome));
-    assert(lv_obj_get_child_count(list) == ROUNDIE_PACKAGES_MAX);
+    assert(lv_obj_get_child_count(list) == ROUNDIE_PACKAGES_MAX + 3);
     /* Headless external start is observed and exit remains available. */
     runtime.instance++;
     runtime.abi_version = 2;
@@ -602,6 +602,28 @@ int main(int argc, char **argv)
     packages.revision++;
     poll(true, false);
     assert(nav.count == ROUNDIE_PACKAGES_MAX);
+    /* Transforming list: rows narrow and fade towards the round edge, and
+     * follow the scroll. The header and Refresh scroll with the rows. */
+    list = lv_obj_get_child(lv_screen_active(), 2);
+    lv_obj_t *header = lv_obj_get_child(list, ROUNDIE_PACKAGES_MAX);
+    lv_obj_t *refresh = lv_obj_get_child(list, ROUNDIE_PACKAGES_MAX + 2);
+    lv_obj_update_layout(list);
+    assert(lv_obj_has_flag(lv_obj_get_child(lv_screen_active(), 0), LV_OBJ_FLAG_HIDDEN));
+    assert(strcmp(lv_label_get_text(header), "Roundie / Applications") == 0);
+    assert(lv_obj_get_width(lv_obj_get_child(list, 0)) == 250 && lv_obj_get_style_opa(lv_obj_get_child(list, 1), 0) == LV_OPA_COVER);
+    lv_obj_t *lower = lv_obj_get_child(list, 2); /* centre 122 px below the screen centre */
+    assert(lv_obj_get_width(lower) == 150 && lv_obj_get_x(lower) == 105);
+    assert(lv_obj_get_style_opa(lower, 0) > LV_OPA_TRANSP && lv_obj_get_style_opa(lower, 0) < LV_OPA_COVER);
+    assert(lv_obj_get_style_opa(lv_obj_get_child(list, 3), 0) == LV_OPA_TRANSP);
+    lv_obj_scroll_to_y(list, 164, LV_ANIM_OFF);
+    lv_obj_update_layout(list);
+    assert(lv_obj_get_width(lv_obj_get_child(list, 3)) == 250 && lv_obj_get_style_opa(lv_obj_get_child(list, 3), 0) == LV_OPA_COVER);
+    assert(lv_obj_get_style_opa(header, 0) == LV_OPA_TRANSP);
+    lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
+    lv_obj_update_layout(list);
+    lv_area_t button;
+    lv_obj_get_coords(refresh, &button);
+    assert(button.y2 <= 360 - 100 && lv_obj_get_style_opa(refresh, 0) == LV_OPA_COVER);
     records[7] = records[0];
     packages.revision++;
     poll(true, false);

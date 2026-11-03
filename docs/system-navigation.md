@@ -86,6 +86,39 @@ chose this after the analysis of what to take from Wear OS.
   face shows the list, and a swipe from the left edge in the list returns to
   the watch face. Attempts were not recorded.
 
+## Transforming list
+
+**Decision, 2026-11-04: the application list scrolls over the whole round
+screen, as Wear OS's transforming list.** The user chose it from the Wear OS
+list. It replaces the 260 × 188 rectangular list window (x=50, y=92).
+
+- **Layout.** The list is a 360 × 360 scrolling object. Its content: a header
+  (the title and the status message), the rows (250 × 76, every 82 px from
+  y=100), then Refresh after the last row, and 120 px of end space so the last
+  item can scroll up from the bottom edge. The header and Refresh scroll with
+  the rows; the screen's own title and message show only outside the list
+  states (loading, running, result).
+- **Transform.** On every scroll event, and after each repaint, each visible
+  item is shaped by the distance of its centre from the screen centre:
+  - a row narrows to fit the circle at its outer edge, with 10 px margins,
+    between 250 and 150 px, centred;
+  - every item fades linearly from full opacity at 110 px to transparent at
+    180 px.
+  This uses only width and the recursive `opa` style, not `transform_scale`, so
+  LVGL needs no layer buffer per row (LVGL 9.5). Scaling the text, as Wear OS
+  does, is not done.
+- **Scrollbar.** Turned off: a straight scrollbar would be cut by the round
+  panel. A curved position indicator is not implemented.
+- **Scroll position.** The list returns to the top when its package revision
+  changes, and otherwise keeps its position across an application.
+- **Verification.** Host: `tests/test_launcher.c` with eight rows checks the
+  full-width centre rows, a narrowed (150 px) and partly faded row near the
+  bottom, a transparent row below the edge, the shape after a scroll, the
+  header fading out, and Refresh reachable above the bottom edge.
+  Device, 0.3.32 (OTA VALID, RP1, not touch): the list state shows 51 launcher
+  GUI objects, as on the host, with 39 284 bytes of LVGL memory free.
+  PENDING: finger scrolling, its smoothness, and how the rows look.
+
 The original button, superseded by the swipe: the system owned a 120 × 44 Exit
 button on LVGL's top layer, x=120..239,
 y=12..55. The top 60 pixels are the system navigation safe area. Existing
