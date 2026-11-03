@@ -162,6 +162,39 @@ static void select_id(const char *id)
     assert(nav.state == ROUNDIE_NAV_LOADING && nav.generation == runtime.instance);
 }
 
+/* A real LVGL pointer: system chrome sees the same events as a finger. */
+static lv_indev_t *pointer;
+static lv_point_t touch_point;
+static lv_indev_state_t touch_state;
+
+static void touch_read(lv_indev_t *input, lv_indev_data_t *data)
+{
+    (void)input;
+    data->point = touch_point;
+    data->state = touch_state;
+}
+
+static void touch(int32_t x, int32_t y, bool pressed)
+{
+    touch_point.x = x;
+    touch_point.y = y;
+    touch_state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    lv_tick_inc(20);
+    lv_refr_now(NULL); /* layout, as the GUI task's timer handler does */
+    lv_indev_read(pointer);
+}
+
+/* Press at (x0, y0), move in steps to (x1, y1), release there. */
+static void swipe(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{
+    touch(x0, y0, false);
+    for (int32_t step = 0; step <= 8; step++) {
+        touch(x0 + (x1 - x0) * step / 8, y0 + (y1 - y0) * step / 8, true);
+    }
+    touch(x1, y1, false);
+    roundie_launcher_status(&nav);
+}
+
 static void flush(lv_display_t *display, const lv_area_t *area, uint8_t *pixels)
 {
     (void)area; (void)pixels;
@@ -176,6 +209,9 @@ int main(int argc, char **argv)
     static uint8_t buffer[360 * 10 * 2];
     lv_display_set_buffers(display, buffer, NULL, sizeof(buffer), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(display, flush);
+    pointer = lv_indev_create();
+    lv_indev_set_type(pointer, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(pointer, touch_read);
     performance_tests();
     roundie_launcher_gui_bind();
     if (argc > 1) {
@@ -189,7 +225,7 @@ int main(int argc, char **argv)
         lv_free(pressure);
         assert(roundie_launcher_refresh() == ESP_OK);
         poll(true, false);
-        assert(nav.foreground && nav.gui_objects == 37);
+        assert(nav.foreground && nav.gui_objects == 38);
         lv_deinit();
         puts("launcher low-memory: safe refusal, boot independent");
         return 0;
@@ -199,7 +235,7 @@ int main(int argc, char **argv)
     poll(true, true);
     assert(scans == 0);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 37);
+    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 38);
     assert(roundie_launcher_select("org.roundie.hello", nav.revision, 2) != ESP_OK);
     packages.count = 1;
     entry(0, "org.roundie.hello", 1, ROUNDIE_PACKAGE_OK);
@@ -304,16 +340,39 @@ int main(int argc, char **argv)
     poll(true, false);
     assert(nav.state == ROUNDIE_NAV_ACTIVE);
     lv_obj_t *chrome = lv_obj_get_child(lv_layer_top(), 0);
-    assert(!lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN));
+    lv_obj_t *pill = lv_obj_get_child(lv_layer_top(), 1);
+    assert(!lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(pill, LV_OBJ_FLAG_HIDDEN));
     runtime.state = ROUNDIE_ELF_SUSPENDED;
     poll(true, false);
-    /* Exit is a system callback, never an application widget/input event. */
-    lv_obj_send_event(chrome, LV_EVENT_CLICKED, NULL);
+    /* Exit is a system swipe from the left edge, never an application event.
+     * Too short, too steep, outside the strip or in the top safe area: kept. */
+    swipe(10, 180, 60, 180);
+    assert(!nav.exit_pending);
+    swipe(10, 180, 100, 280);
+    assert(!nav.exit_pending);
+    swipe(70, 180, 200, 180);
+    assert(!nav.exit_pending);
+    swipe(10, 40, 150, 40);
+    assert(!nav.exit_pending && lv_obj_has_flag(pill, LV_OBJ_FLAG_HIDDEN));
+    /* While dragging the pill follows the finger and turns red when armed. */
+    touch(8, 200, true);
+    touch(40, 200, true);
+    assert(!lv_obj_has_flag(pill, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(pill, 0)) == lv_color_to_u32(lv_color_hex(0x3a4452)));
+    touch(110, 205, true);
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(pill, 0)) == lv_color_to_u32(lv_color_hex(0xc0392b)));
+    /* Back over the strip before release: not closed. */
+    touch(30, 205, true);
+    touch(30, 205, false);
     roundie_launcher_status(&nav);
+    assert(!nav.exit_pending && lv_obj_has_flag(pill, LV_OBJ_FLAG_HIDDEN));
+    swipe(6, 150, 140, 170);
     assert(nav.exit_pending && controls == 0);
     assert(roundie_launcher_exit(runtime.instance) != ESP_OK);
     poll(true, false);
     assert(controls == 1 && nav.state == ROUNDIE_NAV_EXITING);
+    assert(lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_flag(pill, LV_OBJ_FLAG_HIDDEN));
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), "Closing...") == 0);
     runtime.state = ROUNDIE_ELF_UNLOADED;
     input_busy = false;
     poll(true, false);

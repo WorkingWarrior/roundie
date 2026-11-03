@@ -10,7 +10,32 @@ screen after normal/STABLE and confirmed OTA readiness, without executing ELF.
 
 ## Foreground and Exit
 
-The system owns a 120 × 44 Exit button on LVGL's top layer, x=120..239,
+**Decision, 2026-11-03: Exit is an edge swipe.** The user found a permanent
+Exit button out of place on a watch face and chose a swipe from the left edge
+(as in Wear OS) over a button revealed by a touch. It replaces the button
+described in the rest of this section; the exit sequence behind it is unchanged.
+
+- **Zone.** An invisible 44 × 220 strip on LVGL's top layer, x=0..43,
+  y=70..289, below the top safe area and inside the round panel. It takes
+  touches that start there, above any application widget, and keeps the drag
+  (press lock, no scroll or gesture chaining). The right edge stays free for the
+  ArcSlider.
+- **Gesture.** Release at least 80 px to the right of the press point, with
+  horizontal travel at least twice the vertical, closes the application.
+  Shorter or steeper drags, or returning before release, do nothing.
+- **Feedback.** While dragging, a 120 × 44 "Close" pill slides in with the finger
+  and turns red once a release would close. After acceptance the strip hides and
+  the pill shows "Closing..." at the top centre until unload.
+- **Trade-off.** The gesture is not discoverable on screen, and the strip covers
+  the left 44 px of application content between y=70 and 289. Diagnostics keep
+  RP1 `EXIT <generation>`.
+- **Verification.** Host: `tests/test_launcher.c` drives a real LVGL pointer
+  through short, steep, outside-strip, safe-area, returned and valid swipes, and
+  checks the pill. Device (0.3.26): firmware runs and RP1 EXIT closes the
+  application. A finger swipe on the panel is PENDING for the user.
+
+The original button, superseded by the swipe: the system owned a 120 × 44 Exit
+button on LVGL's top layer, x=120..239,
 y=12..55. The top 60 pixels are the system navigation safe area. Existing
 ABI 3 geometry stays 360 × 360 and its descriptors are unchanged; applications
 should leave this top central region free of essential content. The installed

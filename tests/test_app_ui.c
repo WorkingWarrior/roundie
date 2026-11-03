@@ -372,16 +372,17 @@ int main(int argc, char **argv)
     current_task = (void *)2;
     roundie_launcher_gui_pump(false);
     assert(lv_screen_active() != home && lv_obj_is_valid(home));
-    /* Leave an accepted GUI update pending when system Exit is clicked. */
+    /* Leave an accepted GUI update pending when system Exit is requested. */
     lv_obj_send_event(lv_obj_get_child(lv_screen_active(), 3), LV_EVENT_CLICKED, NULL);
     current_task = (void *)1;
     roundie_elf_step(esp_timer_get_time());
     assert(ui_status().pending != 0);
     current_task = (void *)2;
-    lv_obj_t *exit = lv_obj_get_child(lv_layer_top(), 0);
-    assert(!lv_obj_has_flag(exit, LV_OBJ_FLAG_HIDDEN));
+    lv_obj_t *edge = lv_obj_get_child(lv_layer_top(), 0);
+    assert(!lv_obj_has_flag(edge, LV_OBJ_FLAG_HIDDEN));
     unsigned delivered = status.ui_delivered;
-    lv_obj_send_event(exit, LV_EVENT_CLICKED, NULL);
+    /* The edge swipe's own call (the gesture is covered by launcher_tests). */
+    assert(roundie_launcher_exit(status.instance) == ESP_OK);
     assert(status.ui_delivered == delivered && status.state == ROUNDIE_ELF_RUNNING);
     current_task = (void *)1;
     roundie_launcher_poll(true, false);
@@ -393,7 +394,7 @@ int main(int argc, char **argv)
     roundie_launcher_status(&navigation);
     assert(navigation.state == ROUNDIE_NAV_LIST && navigation.foreground);
     assert(status.state == ROUNDIE_ELF_UNLOADED && ui_status().outstanding == 0);
-    assert(lv_screen_active() == home && lv_obj_is_valid(exit));
+    assert(lv_screen_active() == home && lv_obj_is_valid(edge));
     roundie_elf_status_t final_runtime;
     roundie_elf_status(&final_runtime);
     assert(final_runtime.resources_outstanding == 0);
