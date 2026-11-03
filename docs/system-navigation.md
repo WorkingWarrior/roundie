@@ -75,8 +75,13 @@ chose this after the analysis of what to take from Wear OS.
   - return home after another application;
   - a failed home not retried;
   - an unhealthy or unset home ignored.
-
-  Device: pending.
+- **Device, 0.3.30 (RP1 injection, not touch):**
+  - After boot, home was running on its own (ACTIVE, `org.roundie.watch`,
+    190 ms from admission to running).
+  - Its EXIT showed the list, which stayed (no relaunch after 6 s).
+  - SELECT stopwatch, then EXIT: the watch came back (generation 3, 200 ms).
+  - The finger gestures (swipe up, left edge from the list) are PENDING until
+    reported.
 
 The original button, superseded by the swipe: the system owned a 120 × 44 Exit
 button on LVGL's top layer, x=120..239,

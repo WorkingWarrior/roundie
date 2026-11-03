@@ -309,3 +309,34 @@ not configure it. The user reported that BOOT held while waking from light sleep
 not enter ROM Download. Light sleep is not a reset, so this says nothing about the
 strap at power-on. The manual route above is unchanged: BOOT held while power or USB
 is applied. See [PowerManager](power-manager.md).
+
+## Restore after foreign firmware, 2026-11-03
+
+**Situation.** The user had installed another firmware. It had replaced the
+partition table with nvs/phy_init/factory (3 MB at 0x10000), and the NVS and
+otadata regions read as all 0xFF. Roundie's RP1 protocol did not answer.
+
+**Read-only check first.**
+- The first 64 KB were saved to
+  `../roundie-backups/restore-0.3.30-2026-11-03/`.
+- The LittleFS superblock at 0x710000 was still present.
+
+**Write, with explicit user approval for repartitioning.** esptool 5.x, with
+`--flash-mode keep --flash-freq keep --flash-size keep`, wrote three images,
+each with its hash verified:
+- the verified M2B bootloader (`f7c33fe8…`) at 0x0;
+- Roundie's partition table at 0x8000;
+- 0.3.30 at 0x10000.
+
+LittleFS and ota_1 were not written and NVS was not erased.
+
+**Result.** 0.3.30 runs from `ota_0`, VALID, self-test passed, with no Safe
+Mode. All five packages survived, including the watch's stored theme file.
+NVS settings (time zone) were already lost to the other firmware.
+
+**Verified reset behaviour on this board:**
+- `--after hard-reset` left the chip in ROM Download
+  (`boot:0x2 DOWNLOAD(USB/UART0)`).
+- `--before no-reset --after watchdog-reset` started the application normally.
+- Opening the port with DTR and RTS forced low also reset the chip into
+  Download. Use the idle pair from `tools/roundie_time.py` (both asserted).
