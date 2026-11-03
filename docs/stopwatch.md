@@ -72,7 +72,8 @@ options and changed the system button look (see below).
   - **Development package.** A temporary measurement package
     (`org.roundie.swexp`) was installed and removed.
 - **Device, 1.0.0 on 0.3.26.** The user confirmed it worked.
-- **PENDING:** the user's finger and visual check of 1.1.0.
+- **User-reported, 1.1.0 on 0.3.28:** looks good, including the new button
+  style. Individual controls and the number of attempts were not recorded.
 
 Evidence is in `roundie-backups/stopwatch-1.0.0-2026-11-03/` and
 `stopwatch-1.1.0-2026-11-03/`, outside Git.
