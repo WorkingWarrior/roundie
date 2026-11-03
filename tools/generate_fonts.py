@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate components/roundie_fonts: Google Sans Flex Medium 14/28/48 with Polish letters.
+"""Regenerate components/roundie_fonts: Google Sans Flex Medium 14/20/28/48 with Polish letters.
 
 The source is the variable font released by Google Fonts (SIL OFL 1.1, see
 components/roundie_fonts/OFL.txt), pinned by SHA-256 and not stored in Git:
@@ -9,7 +9,9 @@ For each size, fontTools makes a static instance (weight 500, optical size equal
 to the pixel size, normal width, no rounding or slant). lv_font_conv renders it
 with the options and FontAwesome symbols of LVGL's built-in Montserrat fonts
 (pinned managed_components/lvgl__lvgl/scripts/built_in_font), so LV_SYMBOL_*
-keep working. The output is post-processed for LVGL 9 as LVGL's own fonts are.
+keep working. The output is post-processed for LVGL 9 as LVGL's own fonts are,
+and its digits are made tabular (equal advance, centred, no kerning), so
+changing numbers such as a running stopwatch do not shift sideways.
 
 Usage: tools/generate_fonts.py --font GoogleSansFlex.ttf --converter PATH/TO/lv_font_conv
 Requires lv_font_conv 1.5.2 and fontTools.
@@ -28,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SYMBOL_SOURCE = ROOT / "managed_components/lvgl__lvgl/scripts/built_in_font"
 OUTPUT = ROOT / "components/roundie_fonts"
 FONT_SHA256 = "a9ac770798857d5e8ac593ced42b22e40a7c08cec98319f92b0eccc2783a77ba"
-SIZES = (14, 28, 48)
+SIZES = (14, 20, 28, 48)
 WEIGHT = 500
 # ASCII, degree and bullet as in LVGL; then ÓóĄąĆćĘęŁłŃńŚśŹźŻż.
 RANGES = ("0x20-0x7F,0xB0,0x2022,0xD3,0xF3,0x104-0x107,0x118-0x119,0x141-0x144,"
@@ -52,6 +54,33 @@ def lvgl9(text):
     text = re.sub(r"#if LVGL_VERSION_MAJOR >= 8\n    \.cache = &cache\n#endif\n", "", text, count=1)
     if "cache" in text or "LV_VERSION_CHECK" in text:
         raise SystemExit("unexpected lv_font_conv output; update the LVGL 9 post-processing")
+    return text
+
+
+DIGIT_IDS = range(0x30 - 0x20 + 1, 0x39 - 0x20 + 2)  # glyph id 1 is U+0020
+
+
+def tabular_digits(text):
+    """Equal advance for 0-9 (the widest), each glyph centred in it, and no
+    kerning classes for digits."""
+    table = re.search(r"glyph_dsc\[\] = \{\n(.*?)\n\};", text, flags=re.S)
+    lines = table.group(1).split("\n")
+    fields = re.compile(r"\.adv_w = (\d+),(.*?)\.ofs_x = (-?\d+)")
+    widest = max(int(fields.search(lines[i]).group(1)) for i in DIGIT_IDS)
+    for i in DIGIT_IDS:
+        match = fields.search(lines[i])
+        advance = int(match.group(1))
+        shift = round((widest - advance) / 32)  # half the difference; advance is in 1/16 px
+        lines[i] = (lines[i][:match.start()] + f".adv_w = {widest},{match.group(2)}.ofs_x = "
+                    f"{int(match.group(3)) + shift}" + lines[i][match.end():])
+    text = text[:table.start(1)] + "\n".join(lines) + text[table.end(1):]
+    for name in ("kern_left_class_mapping", "kern_right_class_mapping"):
+        mapping = re.search(name + r"\[\] =\n\{\n(.*?)\n\};", text, flags=re.S)
+        values = [v.strip() for v in mapping.group(1).replace("\n", "").split(",") if v.strip()]
+        for i in DIGIT_IDS:
+            values[i] = "0"
+        rows = ["    " + ", ".join(values[j:j + 8]) for j in range(0, len(values), 8)]
+        text = text[:mapping.start(1)] + ",\n".join(rows) + text[mapping.end(1):]
     return text
 
 
@@ -90,7 +119,7 @@ def main():
             text = target.read_text().replace(str(instance), f"Google Sans Flex wght {WEIGHT} opsz {size}")
             text = text.replace(str(symbols), symbols.name)
             text = text.replace(str(target), target.name)
-            target.write_text(lvgl9(text))
+            target.write_text(tabular_digits(lvgl9(text)))
             print(f"{target.relative_to(ROOT)}: {target.stat().st_size} bytes")
 
 

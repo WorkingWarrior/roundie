@@ -11,6 +11,7 @@ set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 add_subdirectory("${ROOT}/managed_components/lvgl__lvgl" lvgl)
 # LVGL's default font: an object library, so every executable links its objects.
 add_library(roundie_fonts OBJECT "${ROOT}/components/roundie_fonts/roundie_font_14.c"
+    "${ROOT}/components/roundie_fonts/roundie_font_20.c"
     "${ROOT}/components/roundie_fonts/roundie_font_28.c"
     "${ROOT}/components/roundie_fonts/roundie_font_48.c")
 target_link_libraries(roundie_fonts PRIVATE lvgl)

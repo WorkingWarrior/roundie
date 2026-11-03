@@ -67,6 +67,16 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
     `LONG_PRESSED`, 400 ms by default) sends `REP3_EVENT_BUTTON` with the dial's
     handle. It covers widgets created before the dial; later, non-clickable
     labels pass touches to it. RP1 `UI VALUE g <dial> 0` injects a long press.
+  - `REP_UI_OPTION_TAP` (64, dial only) does the same for a tap (LVGL
+    `CLICKED`). It cannot be combined with `LONG_PRESS`, because the event would
+    not say which one happened.
+  - `REP_UI_OPTION_SECOND_RING` (32, dial only, not with `NO_SECONDS`) draws
+    no ticks or hands. Instead, a 6 px ring around the face fills from 12
+    o'clock to the current second of the minute (`value % 60`), and `COLOR`
+    sets the fill. A first version lit scale ticks via an LVGL scale section.
+    On the device, every second change then redrew the whole face (187 ms per
+    frame), and each 0.1 s text update cost 42 ms. With an `lv_arc` only the
+    changed part is redrawn: 18 ms and 15 ms (0.3.28).
 - **Styled labels.** A version-2 `LABEL` takes `REP_UI_OPTION_FONT_MEDIUM`
   (28 px) or `REP_UI_OPTION_FONT_LARGE` (48 px), plus `REP_UI_OPTION_HIDDEN`.
   The fonts are described below.
@@ -104,13 +114,16 @@ Polish watch face and accepted Google Sans instead of Montserrat.
   `LV_SYMBOL_*` keep working. It is followed by the LVGL 9 post-processing that
   LVGL applies to its own fonts. The same converter reproduced the bitmaps,
   glyph table, cmaps and kerning of LVGL's built-in Montserrat 14.
+- **Tabular digits (added 2026-11-03 for the stopwatch).** The generator gives
+  0–9 the widest digit's advance, centres each digit in it and removes the
+  digits' kerning classes, so a changing number keeps its width.
 - **Coverage.** Each font has ASCII, `°`, `•`, all 18 Polish letters
   (`ĄĆĘŁŃÓŚŹŻąćęłńóśźż`) and the symbols. Other scripts are absent.
 - **Sizes.** 14 px (line height 18) is LVGL's default font in every component.
   The top-level `CMakeLists.txt` sets `LV_FONT_DEFAULT` and
   `LV_FONT_CUSTOM_DECLARE` as global compile definitions, because LVGL's Kconfig
-  cannot name a custom default. 28 px (line 34) and 48 px (line 58) serve the
-  styled labels. Montserrat 28 and 48 are no longer enabled. List rows stay 44 px,
+  cannot name a custom default. 20 px is for button labels. 28 px (line 34) and
+  48 px (line 58) serve the styled labels. Montserrat 28 and 48 are no longer enabled. List rows stay 44 px,
   because their spacing is computed from the line height.
 - **Cost.** The three fonts take 164,037 B of Flash (linker map, 0.3.25). Firmware
   0.3.25 is 17,376 B larger than 0.3.24, which had Montserrat 14, 28 and 48.
