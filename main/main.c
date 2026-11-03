@@ -49,6 +49,7 @@ _Static_assert(sizeof(time_t) == 8, "RTC requires ESP-IDF 64-bit time_t");
 #define DISPLAY_HEIGHT 360
 #define DISPLAY_STRIP_LINES CONFIG_ROUNDIE_LCD_STRIP_LINES
 #define GUI_DELAY_MAX_MS 10U
+#define HOME_PACKAGE "org.roundie.watch" /* see docs/system-navigation.md */
 
 static const char *TAG = "roundie";
 
@@ -437,6 +438,13 @@ static void sensor_worker(void *argument)
     if (watchdog_error != ESP_OK) {
         ESP_LOGE(TAG, "System worker watchdog: %s", esp_err_to_name(watchdog_error));
     }
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    /* Home is the watch face (docs/system-navigation.md). The one normal trial
+     * after Safe Mode starts on the list, not in a package that may have failed. */
+    roundie_boot_status_t boot_status;
+    roundie_boot_status(&boot_status);
+    roundie_launcher_set_home(HOME_PACKAGE, !boot_status.trial);
+#endif
     int64_t next_sample_us = esp_timer_get_time() + 5000000;
     for (;;) {
         if (watchdog_error == ESP_OK) {

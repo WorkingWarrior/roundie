@@ -60,6 +60,8 @@ typedef struct {
     bool launch_pending;
     bool exit_pending;
     bool foreground;
+    bool home_active;    /* the observed application is the home package */
+    bool home_available; /* the home package is listed and healthy */
     char selected[ROUNDIE_PACKAGE_ID];
     roundie_launcher_entry_t entries[ROUNDIE_PACKAGES_MAX];
 } roundie_launcher_status_t;
@@ -71,6 +73,12 @@ esp_err_t roundie_launcher_exit(uint32_t generation);
 /* Dismiss a copied, fully unloaded result; never submits native work. */
 esp_err_t roundie_launcher_back(uint32_t request);
 esp_err_t roundie_launcher_refresh(void);
+/* Home (docs/system-navigation.md): the package launched when the list first
+ * appears (autostart) and after any other application exits normally. Its
+ * exit shows the list. Call once, before the worker polls; "" disables. */
+void roundie_launcher_set_home(const char *id, bool autostart);
+/* From the list: launch the home package. Same admission as a selection. */
+esp_err_t roundie_launcher_home(void);
 void roundie_launcher_status(roundie_launcher_status_t *out);
 /* Sole existing system worker; allowed means confirmed normal/STABLE policy. */
 void roundie_launcher_poll(bool allowed, bool transfer_busy);

@@ -89,7 +89,9 @@ esp_err_t roundie_packages_get(unsigned index, roundie_package_record_t *out)
 }
 esp_err_t roundie_packages_launch(const char *id)
 {
-    assert(task == (void *)2 && strcmp(id, nav.selected) == 0);
+    static roundie_launcher_status_t current; /* home is admitted in the same poll */
+    roundie_launcher_status(&current);
+    assert(task == (void *)2 && strcmp(id, current.selected) == 0);
     launches++;
     if (launch_result == ESP_OK) {
         runtime.instance++;
@@ -225,7 +227,7 @@ int main(int argc, char **argv)
         lv_free(pressure);
         assert(roundie_launcher_refresh() == ESP_OK);
         poll(true, false);
-        assert(nav.foreground && nav.gui_objects == 38);
+        assert(nav.foreground && nav.gui_objects == 39);
         lv_deinit();
         puts("launcher low-memory: safe refusal, boot independent");
         return 0;
@@ -235,7 +237,7 @@ int main(int argc, char **argv)
     poll(true, true);
     assert(scans == 0);
     poll(true, false);
-    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 38);
+    assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 0 && nav.gui_objects == 39);
     assert(roundie_launcher_select("org.roundie.hello", nav.revision, 2) != ESP_OK);
     packages.count = 1;
     entry(0, "org.roundie.hello", 1, ROUNDIE_PACKAGE_OK);
@@ -340,7 +342,9 @@ int main(int argc, char **argv)
     poll(true, false);
     assert(nav.state == ROUNDIE_NAV_ACTIVE);
     lv_obj_t *chrome = lv_obj_get_child(lv_layer_top(), 0);
-    lv_obj_t *pill = lv_obj_get_child(lv_layer_top(), 1);
+    lv_obj_t *bottom = lv_obj_get_child(lv_layer_top(), 1);
+    lv_obj_t *pill = lv_obj_get_child(lv_layer_top(), 2);
+    assert(lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN)); /* no home configured */
     assert(!lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(pill, LV_OBJ_FLAG_HIDDEN));
     runtime.state = ROUNDIE_ELF_SUSPENDED;
     poll(true, false);
@@ -390,6 +394,96 @@ int main(int argc, char **argv)
     assert(roundie_launcher_exit(runtime.instance) == ESP_OK);
     poll(true, false);
     finish();
+    /* Home: launched once the list is current; no Close on home; a swipe up
+     * from the bottom edge opens the list without relaunching home. */
+    packages.count = 4;
+    entry(3, "org.roundie.other", 3, ROUNDIE_PACKAGE_OK);
+    roundie_launcher_set_home("org.roundie.ui", true);
+    packages.revision++;
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && nav.home_available && !nav.home_active);
+    unsigned home_launches = launches;
+    uint32_t inputs = nav.physical + nav.injected;
+    poll(true, false);
+    assert(launches == home_launches + 1 && nav.state == ROUNDIE_NAV_LOADING && nav.home_active);
+    assert(strcmp(nav.selected, "org.roundie.ui") == 0 && nav.physical + nav.injected == inputs);
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_ACTIVE);
+    assert(lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN));
+    swipe(6, 150, 140, 170);
+    assert(!nav.exit_pending); /* the left edge does nothing on home */
+    swipe(180, 340, 260, 300);
+    assert(!nav.exit_pending); /* too short and too slanted */
+    touch(180, 340, true);
+    touch(180, 250, true);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_LIST " Apps") == 0);
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(pill, 0)) == lv_color_to_u32(lv_color_hex(0x2f6fd0)));
+    touch(180, 250, false);
+    roundie_launcher_status(&nav);
+    assert(nav.exit_pending);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_EXITING && lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN));
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), "Apps...") == 0);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && launches == home_launches + 1 && !nav.home_active);
+    /* From the list, a swipe from the left edge goes home. */
+    assert(!lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN));
+    touch(6, 150, false); /* the repaint waits for a release */
+    touch(6, 150, true);
+    touch(100, 150, true);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_HOME " Home") == 0);
+    assert(lv_color_to_u32(lv_obj_get_style_bg_color(pill, 0)) == lv_color_to_u32(lv_color_hex(0x2f6fd0)));
+    touch(140, 150, false);
+    roundie_launcher_status(&nav);
+    assert(nav.launch_pending && nav.home_active);
+    poll(true, false);
+    assert(launches == home_launches + 2 && nav.state == ROUNDIE_NAV_LOADING);
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(roundie_launcher_exit(runtime.instance) == ESP_OK);
+    poll(true, false);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    /* The normal end of another application returns home. */
+    select_id("org.roundie.other");
+    assert(!nav.home_active);
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(!lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN));
+    swipe(6, 150, 140, 170);
+    poll(true, false);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    poll(true, false);
+    assert(launches == home_launches + 4 && nav.state == ROUNDIE_NAV_LOADING && nav.home_active);
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(roundie_launcher_exit(runtime.instance) == ESP_OK);
+    poll(true, false);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    /* A home that fails to start shows its result once; no retry loop. */
+    launch_result = ESP_ERR_NO_MEM;
+    assert(roundie_launcher_home() == ESP_OK);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_RESULT);
+    back();
+    poll(true, false);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && launches == home_launches + 5);
+    launch_result = ESP_OK;
+    /* An unlisted or unhealthy home is not launched; disabled, nothing is home. */
+    roundie_launcher_set_home("org.roundie.bad", true);
+    packages.revision++;
+    poll(true, false);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && !nav.home_available && launches == home_launches + 5);
+    assert(roundie_launcher_home() != ESP_OK && lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN));
+    roundie_launcher_set_home("", false);
+    assert(roundie_launcher_home() != ESP_OK);
     /* Full capacity and malformed/duplicate publication fail closed. */
     packages.count = ROUNDIE_PACKAGES_MAX;
     for (unsigned i = 3; i < ROUNDIE_PACKAGES_MAX; i++) {
@@ -423,6 +517,6 @@ int main(int argc, char **argv)
     roundie_launcher_status(&nav);
     assert(!nav.foreground && lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN));
     lv_deinit();
-    puts("launcher: production state, real LVGL, ABI presentation, ownership and cleanup gates passed");
+    puts("launcher: production state, real LVGL, ABI presentation, ownership, cleanup and home navigation gates passed");
     return 0;
 }

@@ -14,6 +14,7 @@ static lv_obj_t *list;
 static lv_obj_t *message;
 static lv_obj_t *retry;
 static lv_obj_t *edge;      /* left-edge swipe zone on the top layer */
+static lv_obj_t *bottom;    /* bottom-edge swipe zone on the top layer, home only */
 static lv_obj_t *exit_pill; /* swipe feedback, then "Closing..." */
 static lv_obj_t *spinner;
 static lv_obj_t *result_value;
@@ -34,17 +35,26 @@ static uint32_t failed_revision;
 static lv_point_t swipe_start;
 static bool swipe_armed;
 
-/* System navigation for running applications: a swipe to the right that
- * starts in a strip along the left edge closes the application. The strip
- * lies below the 60 px top safe area and within the round panel. */
+/* System navigation (docs/system-navigation.md). A swipe to the right that
+ * starts in a strip along the left edge closes an application, or goes home
+ * from the list. The strip lies below the 60 px top safe area and within the
+ * round panel. On the home application, a swipe up that starts in a strip
+ * along the bottom edge opens the list instead. */
 #define EDGE_Y 70
 #define EDGE_WIDTH 44
 #define EDGE_HEIGHT 220
-#define SWIPE_DISTANCE 80 /* horizontal travel that closes, at least twice the vertical */
+#define BOTTOM_X 90
+#define BOTTOM_Y 296
+#define BOTTOM_WIDTH 180
+#define BOTTOM_HEIGHT 64
+#define SWIPE_DISTANCE 80 /* travel that accepts, at least twice the cross travel */
 #define PILL_WIDTH 120
 #define PILL_HEIGHT 44
 #define PILL_IDLE 0x3a4452
-#define PILL_ARMED 0xc0392b
+#define PILL_ARMED 0xc0392b /* closes */
+#define PILL_GO 0x2f6fd0    /* navigates */
+#define SWIPE_LEFT_EDGE 0U
+#define SWIPE_BOTTOM_EDGE 1U
 
 static uint32_t elapsed_us(int64_t later, int64_t earlier)
 {
@@ -74,45 +84,68 @@ static void selected(lv_event_t *event)
     }
 }
 
-static bool swipe_closes(const lv_point_t *point)
+/* Travel along the swipe direction: right from the left edge, up from the bottom. */
+static int32_t swipe_travel(uint32_t kind, const lv_point_t *point)
 {
-    int32_t dx = point->x - swipe_start.x;
-    int32_t dy = point->y - swipe_start.y;
-    if (dy < 0) {
-        dy = -dy;
-    }
-    return dx >= SWIPE_DISTANCE && dx >= 2 * dy;
+    return kind == SWIPE_BOTTOM_EDGE ? swipe_start.y - point->y : point->x - swipe_start.x;
 }
 
-/* Moves the pill in from the left edge with the finger; red once a release
- * would close the application. */
-static void swipe_feedback(const lv_point_t *point)
+static bool swipe_accepts(uint32_t kind, const lv_point_t *point)
 {
-    int32_t travel = point->x - swipe_start.x;
+    int32_t travel = swipe_travel(kind, point);
+    int32_t cross = kind == SWIPE_BOTTOM_EDGE ? point->x - swipe_start.x : point->y - swipe_start.y;
+    if (cross < 0) {
+        cross = -cross;
+    }
+    return travel >= SWIPE_DISTANCE && travel >= 2 * cross;
+}
+
+/* Moves the pill in from the edge with the finger; coloured once a release
+ * would act: red to close the application, blue to navigate. */
+static void swipe_feedback(uint32_t kind, const lv_point_t *point)
+{
+    int32_t travel = swipe_travel(kind, point);
     if (travel < 0) {
         travel = 0;
     }
     if (travel > PILL_WIDTH + 20) {
         travel = PILL_WIDTH + 20;
     }
-    int32_t y = point->y - PILL_HEIGHT / 2;
-    if (y < EDGE_Y) {
-        y = EDGE_Y;
+    if (kind == SWIPE_BOTTOM_EDGE) {
+        lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, 360 - travel);
+    } else {
+        int32_t y = point->y - PILL_HEIGHT / 2;
+        if (y < EDGE_Y) {
+            y = EDGE_Y;
+        }
+        if (y > EDGE_Y + EDGE_HEIGHT - PILL_HEIGHT) {
+            y = EDGE_Y + EDGE_HEIGHT - PILL_HEIGHT;
+        }
+        lv_obj_set_pos(exit_pill, travel - PILL_WIDTH, y);
     }
-    if (y > EDGE_Y + EDGE_HEIGHT - PILL_HEIGHT) {
-        y = EDGE_Y + EDGE_HEIGHT - PILL_HEIGHT;
-    }
-    lv_obj_set_pos(exit_pill, travel - PILL_WIDTH, y);
-    lv_obj_set_style_bg_color(exit_pill, lv_color_hex(swipe_closes(point) ? PILL_ARMED : PILL_IDLE), 0);
+    bool closes = kind == SWIPE_LEFT_EDGE && model.state != ROUNDIE_NAV_LIST;
+    uint32_t armed = closes ? PILL_ARMED : PILL_GO;
+    lv_obj_set_style_bg_color(exit_pill, lv_color_hex(swipe_accepts(kind, point) ? armed : PILL_IDLE), 0);
     lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void swipe_released(uint32_t kind)
+{
+    bool running = model.state == ROUNDIE_NAV_ACTIVE || model.state == ROUNDIE_NAV_LOADING;
+    if (kind == SWIPE_LEFT_EDGE && model.state == ROUNDIE_NAV_LIST) {
+        roundie_launcher_home();
+    } else if (running && (kind == SWIPE_BOTTOM_EDGE) == model.home_active) {
+        roundie_launcher_exit(model.generation); /* home's exit shows the list */
+    }
 }
 
 static void edge_swiped(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
     lv_indev_t *input = lv_indev_active();
+    uint32_t kind = (uint32_t)(uintptr_t)lv_event_get_user_data(event);
     bool running = model.state == ROUNDIE_NAV_ACTIVE || model.state == ROUNDIE_NAV_LOADING;
-    if (disabled || !running) {
+    if (disabled || (!running && model.state != ROUNDIE_NAV_LIST)) {
         return;
     }
     if (code == LV_EVENT_PRESS_LOST) {
@@ -128,14 +161,14 @@ static void edge_swiped(lv_event_t *event)
     if (code == LV_EVENT_PRESSED) {
         swipe_start = point;
         swipe_armed = true;
-        swipe_feedback(&point);
+        swipe_feedback(kind, &point);
     } else if (code == LV_EVENT_PRESSING && swipe_armed) {
-        swipe_feedback(&point);
+        swipe_feedback(kind, &point);
     } else if (code == LV_EVENT_RELEASED && swipe_armed) {
         swipe_armed = false;
         lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
-        if (swipe_closes(&point)) {
-            roundie_launcher_exit(model.generation);
+        if (swipe_accepts(kind, &point)) {
+            swipe_released(kind);
         }
     }
 }
@@ -188,11 +221,12 @@ static bool create(void)
     retry = lv_button_create(screen);
     spinner = lv_spinner_create(screen);
     edge = lv_obj_create(lv_layer_top());
+    bottom = lv_obj_create(lv_layer_top());
     exit_pill = lv_obj_create(lv_layer_top());
     result_value = label(screen, 250, 55, 150);
     result_detail = label(screen, 270, 45, 205);
     back_button = lv_button_create(screen);
-    if (title == NULL || message == NULL || list == NULL || retry == NULL || edge == NULL || exit_pill == NULL || spinner == NULL ||
+    if (title == NULL || message == NULL || list == NULL || retry == NULL || edge == NULL || bottom == NULL || exit_pill == NULL || spinner == NULL ||
         result_value == NULL || result_detail == NULL || back_button == NULL) {
         return false;
     }
@@ -207,14 +241,19 @@ static bool create(void)
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_pos(retry, 110, 290);
     lv_obj_set_size(retry, 140, 44);
-    lv_obj_remove_style_all(edge);
+    lv_obj_t *const strips[] = {edge, bottom};
+    for (unsigned i = 0; i < 2; i++) {
+        lv_obj_remove_style_all(strips[i]);
+        /* Press lock: the strip keeps the touch after the finger leaves it. */
+        lv_obj_add_flag(strips[i], LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_PRESS_LOCK);
+        /* The strip keeps the drag: no scrolling or gesture of what lies below. */
+        lv_obj_remove_flag(strips[i], LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_CHAIN_HOR |
+                           LV_OBJ_FLAG_SCROLL_CHAIN_VER | LV_OBJ_FLAG_GESTURE_BUBBLE);
+    }
     lv_obj_set_pos(edge, 0, EDGE_Y);
     lv_obj_set_size(edge, EDGE_WIDTH, EDGE_HEIGHT);
-    /* Press lock: the strip keeps the touch after the finger leaves it. */
-    lv_obj_add_flag(edge, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_PRESS_LOCK);
-    /* The strip keeps the drag: no scrolling or gesture of what lies below. */
-    lv_obj_remove_flag(edge, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_CHAIN_HOR |
-                       LV_OBJ_FLAG_SCROLL_CHAIN_VER | LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_pos(bottom, BOTTOM_X, BOTTOM_Y);
+    lv_obj_set_size(bottom, BOTTOM_WIDTH, BOTTOM_HEIGHT);
     lv_obj_remove_style_all(exit_pill);
     lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(exit_pill, PILL_WIDTH, PILL_HEIGHT);
@@ -233,7 +272,8 @@ static bool create(void)
     if (text == NULL || exit_text == NULL || back_text == NULL ||
         lv_obj_add_event_cb(retry, refresh_clicked, LV_EVENT_CLICKED, NULL) == NULL ||
         lv_obj_add_event_cb(back_button, back_clicked, LV_EVENT_CLICKED, NULL) == NULL ||
-        lv_obj_add_event_cb(edge, edge_swiped, LV_EVENT_ALL, NULL) == NULL) {
+        lv_obj_add_event_cb(edge, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_LEFT_EDGE) == NULL ||
+        lv_obj_add_event_cb(bottom, edge_swiped, LV_EVENT_ALL, (void *)(uintptr_t)SWIPE_BOTTOM_EDGE) == NULL) {
         return false;
     }
     lv_label_set_text(text, "Refresh");
@@ -247,6 +287,7 @@ static bool create(void)
     lv_obj_add_flag(result_value, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(result_detail, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(bottom, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
     for (unsigned i = 0; i < ROUNDIE_PACKAGES_MAX; i++) {
         rows[i] = lv_button_create(list);
@@ -295,6 +336,7 @@ void roundie_launcher_gui_pump(bool safe)
         disabled = true;
         if (edge != NULL) {
             lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(bottom, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
         }
         /* Safe Mode may clean the active root; never dereference it afterward. */
@@ -315,6 +357,10 @@ void roundie_launcher_gui_pump(bool safe)
         if (edge != NULL) {
             lv_obj_delete(edge);
             edge = NULL;
+        }
+        if (bottom != NULL) {
+            lv_obj_delete(bottom);
+            bottom = NULL;
         }
         if (exit_pill != NULL) {
             lv_obj_delete(exit_pill);
@@ -407,21 +453,23 @@ void roundie_launcher_gui_pump(bool safe)
             }
         }
         swipe_armed = false;
+        lv_obj_t *pill_text = lv_obj_get_child(exit_pill, 0);
+        lv_obj_set_style_bg_color(exit_pill, lv_color_hex(PILL_IDLE), 0);
+        lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(bottom, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
         if (running && model.generation != 0 && model.state != ROUNDIE_NAV_EXITING) {
-            lv_obj_remove_flag(edge, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_style_bg_color(exit_pill, lv_color_hex(PILL_IDLE), 0);
-            lv_label_set_text(lv_obj_get_child(exit_pill, 0), LV_SYMBOL_CLOSE " Close");
+            /* Home has no Close: a swipe up from the bottom opens the list. */
+            lv_obj_remove_flag(model.home_active ? bottom : edge, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(pill_text, model.home_active ? LV_SYMBOL_LIST " Apps" : LV_SYMBOL_CLOSE " Close");
         } else if (running && model.generation != 0) {
             /* Accepted: the pill stays at the top centre until unloaded. */
-            lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, 12);
-            lv_obj_set_style_bg_color(exit_pill, lv_color_hex(PILL_IDLE), 0);
-            lv_label_set_text(lv_obj_get_child(exit_pill, 0), "Closing...");
+            lv_label_set_text(pill_text, model.home_active ? "Apps..." : "Closing...");
             lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(edge, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
+        } else if (model.state == ROUNDIE_NAV_LIST && model.home_available) {
+            lv_obj_remove_flag(edge, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(pill_text, LV_SYMBOL_HOME " Home");
         }
         if (!running || idle) {
             lv_screen_load(screen);
@@ -444,6 +492,6 @@ void roundie_launcher_gui_pump(bool safe)
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     roundie_launcher_gui_report(true, lv_screen_active() == screen,
-        count_objects(screen) + count_objects(edge) + count_objects(exit_pill), (uint32_t)memory.free_size,
+        count_objects(screen) + count_objects(edge) + count_objects(bottom) + count_objects(exit_pill), (uint32_t)memory.free_size,
         create_time, latency);
 }

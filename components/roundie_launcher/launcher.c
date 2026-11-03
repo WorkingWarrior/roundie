@@ -22,6 +22,8 @@ static uint32_t observed_request;
 /* Sole worker scratch, deliberately outside its 12 KiB stack. */
 static roundie_launcher_entry_t discovered[ROUNDIE_PACKAGES_MAX];
 static roundie_package_record_t record;
+static char home[ROUNDIE_PACKAGE_ID];
+static bool home_due; /* launch home once the list is shown */
 
 static void set_state(roundie_navigation_t state)
 {
@@ -36,6 +38,57 @@ void roundie_launcher_status(roundie_launcher_status_t *out)
     portEXIT_CRITICAL(&lock);
 }
 
+/* Locked. origin is TOUCH=1, INJECTED=2 or 0 for the system's home launch. */
+static bool admit(const char *id, uint32_t origin, int64_t started)
+{
+    bool valid = gui_ready && snapshot_valid && status.state == ROUNDIE_NAV_LIST &&
+        !refresh_pending && status.request != UINT32_MAX;
+    bool found = false;
+    for (unsigned i = 0; i < status.count; i++) {
+        if (strcmp(id, status.entries[i].id) == 0 && status.entries[i].health == ROUNDIE_PACKAGE_OK) {
+            found = true;
+        }
+    }
+    if (!valid || !found) {
+        return false;
+    }
+    strcpy(status.selected, id);
+    for (unsigned i = 0; i < status.count; i++) {
+        if (strcmp(id, status.entries[i].id) == 0) {
+            strcpy(status.selected_name, status.entries[i].name[0] != '\0' ?
+                status.entries[i].name : id);
+            break;
+        }
+    }
+    status.request++;
+    status.generation = 0;
+    status.launch_pending = true;
+    status.launch_result = 0;
+    status.unload_result = 0;
+    status.app_result = 0;
+    status.result_request = 0;
+    status.completed = 0;
+    status.completed_us = 0;
+    status.executed = false;
+    status.result_success = false;
+    status.result_visible = false;
+    status.loader_result = 0;
+    status.error[0] = '\0';
+    status.result_apply_us = 0;
+    status.completion_to_gui_us = 0;
+    status.admission_us = 0;
+    status.started_us = 0;
+    status.exit_admission_us = 0;
+    status.return_us = 0;
+    status.physical += origin == 1;
+    status.injected += origin == 2;
+    status.home_active = home[0] != '\0' && strcmp(id, home) == 0;
+    home_due = false;
+    requested_at = started;
+    set_state(ROUNDIE_NAV_REQUESTED);
+    return true;
+}
+
 esp_err_t roundie_launcher_select(const char *id, uint32_t revision, uint32_t origin)
 {
     if (id == NULL || !roundie_package_id_valid(id) || (origin != 1 && origin != 2)) {
@@ -43,54 +96,37 @@ esp_err_t roundie_launcher_select(const char *id, uint32_t revision, uint32_t or
     }
     int64_t started = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
-    bool valid = gui_ready && snapshot_valid && status.state == ROUNDIE_NAV_LIST &&
-        !refresh_pending && revision == status.revision && status.request != UINT32_MAX;
-    bool found = false;
-    for (unsigned i = 0; i < status.count; i++) {
-        if (strcmp(id, status.entries[i].id) == 0 && status.entries[i].health == ROUNDIE_PACKAGE_OK) {
-            found = true;
-        }
-    }
-    valid = valid && found;
-    if (valid) {
-        strcpy(status.selected, id);
-        for (unsigned i = 0; i < status.count; i++) {
-            if (strcmp(id, status.entries[i].id) == 0) {
-                strcpy(status.selected_name, status.entries[i].name[0] != '\0' ?
-                    status.entries[i].name : id);
-                break;
-            }
-        }
-        status.request++;
-        status.generation = 0;
-        status.launch_pending = true;
-        status.launch_result = 0;
-        status.unload_result = 0;
-        status.app_result = 0;
-        status.result_request = 0;
-        status.completed = 0;
-        status.completed_us = 0;
-        status.executed = false;
-        status.result_success = false;
-        status.result_visible = false;
-        status.loader_result = 0;
-        status.error[0] = '\0';
-        status.result_apply_us = 0;
-        status.completion_to_gui_us = 0;
-        status.admission_us = 0;
-        status.started_us = 0;
-        status.exit_admission_us = 0;
-        status.return_us = 0;
-        status.physical += origin == 1;
-        status.injected += origin == 2;
-        requested_at = started;
-        set_state(ROUNDIE_NAV_REQUESTED);
-    } else {
+    bool valid = revision == status.revision && admit(id, origin, started);
+    if (!valid) {
         status.rejected++;
     }
     uint32_t elapsed = (uint32_t)(esp_timer_get_time() - started);
     if (elapsed > status.enqueue_max_us) {
         status.enqueue_max_us = elapsed;
+    }
+    portEXIT_CRITICAL(&lock);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+void roundie_launcher_set_home(const char *id, bool autostart)
+{
+    portENTER_CRITICAL(&lock);
+    if (id != NULL && roundie_package_id_valid(id)) {
+        strcpy(home, id);
+        home_due = autostart;
+    } else {
+        home[0] = '\0';
+        home_due = false;
+    }
+    portEXIT_CRITICAL(&lock);
+}
+
+esp_err_t roundie_launcher_home(void)
+{
+    portENTER_CRITICAL(&lock);
+    bool valid = home[0] != '\0' && admit(home, 0, esp_timer_get_time());
+    if (!valid) {
+        status.rejected++;
     }
     portEXIT_CRITICAL(&lock);
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
@@ -232,6 +268,13 @@ static void publish(esp_err_t result)
     if (result == ESP_OK && packages.count <= ROUNDIE_PACKAGES_MAX && status.revision != UINT32_MAX) {
         memcpy(status.entries, discovered, sizeof(discovered));
         status.count = packages.count;
+        status.home_available = false;
+        for (unsigned i = 0; i < status.count; i++) {
+            if (home[0] != '\0' && strcmp(status.entries[i].id, home) == 0 &&
+                status.entries[i].health == ROUNDIE_PACKAGE_OK) {
+                status.home_available = true;
+            }
+        }
         status.revision++;
         package_revision = packages.revision;
         snapshot_valid = true;
@@ -277,6 +320,7 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
         status.generation = runtime.instance;
         status.selected[0] = '\0';
         status.result_visible = false;
+        status.home_active = false;
         requested_at = now;
         set_state(ROUNDIE_NAV_LOADING);
         portEXIT_CRITICAL(&lock);
@@ -328,8 +372,12 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
                 memcpy(status.error, runtime.error, sizeof(runtime.error));
                 set_state(ROUNDIE_NAV_RESULT);
             } else {
+                /* A normal end of any other application returns home; the
+                 * home application's own end shows the list. */
+                home_due = !status.home_active && status.unload_result == ESP_OK;
                 set_state(snapshot_valid ? ROUNDIE_NAV_LIST : ROUNDIE_NAV_ERROR);
             }
+            status.home_active = false;
         }
         portEXIT_CRITICAL(&lock);
         return;
@@ -347,6 +395,15 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     }
     roundie_packages_status_t packages;
     roundie_packages_status(&packages);
+    portENTER_CRITICAL(&lock);
+    if (home_due && !launch && status.state == ROUNDIE_NAV_LIST && !refresh_pending &&
+        packages.revision == package_revision) {
+        /* Once, when the list is current: a missing or unhealthy home stays on the list. */
+        launch = status.home_available && admit(home, 0, now);
+        home_due = false;
+        memcpy(id, status.selected, sizeof(id));
+    }
+    portEXIT_CRITICAL(&lock);
     if (launch) {
         uint32_t previous_instance = runtime.instance;
         uint32_t previous_completion = runtime.completed;

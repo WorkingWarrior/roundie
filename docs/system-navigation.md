@@ -35,6 +35,49 @@ described in the rest of this section; the exit sequence behind it is unchanged.
   application. User-reported: a finger swipe on the panel closes the watch
   (attempts not recorded).
 
+## Home: the watch face
+
+**Decision, 2026-11-03: the watch face is home, as in Wear OS.** The user
+chose this after the analysis of what to take from Wear OS.
+
+- **Home package.** `HOME_PACKAGE` in `main/main.c` (`org.roundie.watch`) is an
+  ordinary installed ELF package, not a firmware watch face. No picker yet.
+- **Autostart.** It launches once the list is first shown and current, which
+  is after STABLE and confirmed OTA. So the list is visible for about 10 s
+  after boot first. If home is not installed or unhealthy, the list stays.
+- **Returning home.** Home relaunches after another application ends
+  normally: by Exit, or by returning on its own with no unload error.
+  - A failed launch, an ABI 1 result or an unload error shows the result
+    screen; Back leads to the list.
+  - Home's own end shows the list.
+  - A home that fails is never retried automatically, so a defective watch
+    face cannot loop.
+- **Gestures.**
+  - On home there is no Close. A swipe up starting in a 180 × 64 strip at the
+    bottom edge (x=90..269, y=296..359) opens the list. It needs 80 px of
+    travel, at least twice the sideways travel. Its pill, "Apps", turns blue
+    when armed.
+  - In the list, the left-edge strip goes home ("Home", blue).
+  - Elsewhere the left-edge strip closes the application, as before (red).
+  - The strips cover their area of the watch face, so a long press there does
+    not reach the dial.
+- **Recovery.** The one normal trial after Safe Mode starts on the list
+  without autostart: a home that crashed the previous session is not
+  relaunched by itself. A crash on a later boot enters Safe Mode again (see
+  [BootGuard](boot-guard.md)); it does not brick the board.
+- **Cost.** Home is reloaded after every application, unmeasured on device
+  until reported (load and first paint).
+- **Verification.** Host: `tests/test_launcher.c` covers:
+  - autostart after a current list;
+  - no Close on home, and short or slanted bottom swipes rejected;
+  - swipe up to the list without relaunch;
+  - left edge from the list to home;
+  - return home after another application;
+  - a failed home not retried;
+  - an unhealthy or unset home ignored.
+
+  Device: pending.
+
 The original button, superseded by the swipe: the system owned a 120 × 44 Exit
 button on LVGL's top layer, x=120..239,
 y=12..55. The top 60 pixels are the system navigation safe area. Existing
