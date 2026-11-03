@@ -1,5 +1,10 @@
 # Milestone 3C — system-owned application UI
 
+**Stage 5, 2026-11-03:** the [Round UI extension](round-ui.md) adds round widgets,
+value events and shadow reads behind `REP3_CAP_ROUND_UI`. The table, version-1
+requests and limits below are unchanged, except that a copied command is now
+176 bytes, so the FIFO is 2112 bytes.
+
 **3E.1 maintenance:** the GUI pump drains at most the fixed 12-command mailbox
 before rendering (previously four). Lifecycle priority, FIFO ordering, admission
 and teardown barriers remain unchanged; no accepted update is coalesced away.
