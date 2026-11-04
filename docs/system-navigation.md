@@ -117,7 +117,8 @@ list. It replaces the 260 × 188 rectangular list window (x=50, y=92).
   header fading out, and Refresh reachable above the bottom edge.
   Device, 0.3.32 (OTA VALID, RP1, not touch): the list state shows 51 launcher
   GUI objects, as on the host, with 39 284 bytes of LVGL memory free.
-  PENDING: finger scrolling, its smoothness, and how the rows look.
+- **User-reported, 2026-11-04 (finger, 0.3.32):** "Działa dobrze" (works well).
+  Attempts and a smoothness measurement were not recorded.
 
 The original button, superseded by the swipe: the system owned a 120 × 44 Exit
 button on LVGL's top layer, x=120..239,
