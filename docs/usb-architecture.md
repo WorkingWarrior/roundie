@@ -174,6 +174,23 @@ changes no partition, bootloader or eFuse.
 | Return from ROM | USB removed, reconnected without BOOT or PWR: 0.3.34 on ota_0 VALID, probe slot ABORTED, reset class power-on, RO1 and RP1 answered over USB Serial/JTAG |
 | Software restart from OTG | Twice (once by accident): after `esp_restart()` the board rolled back to 0.3.34 and `303a:1001` reappeared 0.4 s after the OTG device vanished; RO1 answered |
 
+**Cable removal, same day (battery attached, probe running, one run):** the
+probe kept running through the pull and replug (`up` continued, 41 s at the
+read-out), and its counters went from `attached=1 detached=0 suspended=0` to
+`attached=2 detached=0 suspended=1`. So without a VBUS sense line the stack
+reported **suspend** when the cable was removed and a new **attach** after the
+replug (the host enumerated a new device and the CDC port worked), and
+**never reported detach**. This supports the earlier assumption that cable
+removal is visible only as suspend or reset. Not measured: the delay between
+the pull and the suspend, current draw, and any transfer in progress.
+
+**Power latch finding.** A first attempt failed because the board lost power
+when the cable was pulled: after the earlier 2 s PWR hold with USB attached the
+board kept running on USB, but its power latch was left off, and with no USB it
+went dark. A short PWR press on battery alone turned it on again. After any
+test that holds PWR with USB attached, press PWR briefly once before relying
+on battery power. This is an observation of the unit, not a schematic proof.
+
 **What this settles.** The recovery gate above is **passed for this unit and
 procedure**: ROM Download is reachable from OTG ownership, and a software
 restart into a USB Serial/JTAG image restores that path, so the PHY mux does

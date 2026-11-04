@@ -213,6 +213,11 @@ This identification command did not program or erase Flash or write eFuses;
 the output describes the detected existing configuration. No Flash contents
 were read back.
 
+**Note, 2026-11-04:** after this entry procedure the power latch can stay
+off (the 2 s PWR hold in step 1 with USB attached). The board then runs from
+USB but goes dark when the cable is removed. A short PWR press on battery alone
+turns it on. See [the USB architecture note](usb-architecture.md).
+
 ## Return to normal operation — PASSED
 
 1. Leave BOOT released and disconnect USB. The operator confirmed both;
