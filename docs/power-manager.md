@@ -27,13 +27,23 @@ that touch is released. After a sleep wake the waking press may be read late. Th
 hold therefore lasts until a press is seen and released, or for 500 ms when none
 is seen, as after a BOOT wake.
 
+**Screen on after screen off (2026-11-04).** On the unit the panel stayed black
+after a screen-off timeout when only DISPON was sent, as after light sleep. Turning the
+screen on now re-initialises the ST77916 once no transfer is in flight, then
+repaints (`roundie_board_display_reinit`); the cause is not identified. The
+2026-11-03 notes below that call screen on/off verified rested on counters, not on
+seeing the panel.
+
 **Power menu.** BOOT (GPIO0) is configured as an input with pull-up, never as an
 output, so it stays the ROM Download strap. A debounced press (30 ms) opens or
 closes the menu while the screen is on, and only turns the screen on while it is
 off. The menu is a full-screen backdrop on LVGL's top layer, above applications
-and the launcher's Exit control. Its five 200 × 42 targets (Sleep, Screen off,
-Restart, Safe Mode, Cancel) lie between y=62 and y=304, where the narrowest chord
-of the round panel is about 260 px. Restart and Safe Mode run in the system worker.
+and the launcher's Exit control. Its six 200 × 38 targets every 41 px (Sleep, Screen
+off, Restart, USB storage, Safe Mode, Cancel; the labels are Polish) lie between
+y=56 and y=299, where the narrowest chord of the round panel is about 260 px.
+Restart, USB storage and Safe Mode run in the system worker; USB storage mode
+([plan](usb-storage-mode-plan.md)) is a planned restart that also unloads the
+home application first, and light sleep is refused while it runs.
 They are refused while an application, staging or package transaction owns the
 runtime, while OTA is not idle, or outside a VALID image. The menu then shows
 "Exit the app first" or "Busy". Safe Mode writes the same persistent request as

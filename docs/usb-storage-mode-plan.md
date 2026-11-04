@@ -303,3 +303,37 @@ device holds hello, round, stopwatch, ui and watch.
 **Still open for G3:** a re-attach during a run on the device, flash wear and
 latency for repeated installs, Windows, macOS and Android.
 
+## 11. Gate G4 results, 2026-11-04 (firmware 0.3.41)
+
+**Implemented.** The BOOT power menu has a "Pamięć USB" item (six 200 x 38 px
+targets every 41 px between y=56 and y=299, inside the round panel). It is a
+worker command next to Restart: the worker unloads the home application as for
+light sleep (3 s bound), evaluates the same admission rule as RS1 `STORAGE`,
+stores the one-shot request and restarts as a planned restart. A loaded
+application other than home refuses with a Polish message. RW1 `STORAGE`
+(`tools/roundie_power.py storage`) starts the same worker path for tests. The
+quick settings panel has no entry (decision D2 named the BOOT menu only).
+
+**Fix found on the way.** After a screen-off timeout the panel stayed black
+after wake, as it did after light sleep: user-reported "czarny ekran", and a
+`SCREEN ON` that reported `active` did not bring the picture back. Turning the
+screen on now re-initialises the ST77916 (reset, init table, DISPON) once no
+transfer is in flight, and repaints, as the sleep wake already did. Cause not
+identified; the earlier 2026-11-03 note that the screen-off path was verified
+rested on counters, not on seeing the panel.
+
+**Verified**
+
+| Evidence | Result |
+|---|---|
+| Host | Full suite, 88 tests OK. The menu and worker glue are device-only code |
+| Target build | 0.3.40 and 0.3.41, no new warnings |
+| Device, home running (0.3.40, RW1 command) | Home unloaded, restart, USB storage enumerated 3.2 s after the command, status port `usb=ok`; `EXITNOW`: `storage=0`, `failures=0`, VALID, stage 4, home running again |
+| Device, another application loaded | The command was accepted, no restart happened, the application kept running |
+| Regression | Timed light sleep with the home application: 4,991 ms, `refusal none`, home relaunched. RP1 package list, launch and remove, and the earlier import runs, worked on 0.3.39-0.3.41 |
+| Device, by finger (user-reported "Działa") | The screen went off on its own, a touch woke it (this was the black-screen case on 0.3.40, fine on 0.3.41), BOOT opened the menu, "Pamięć USB" entered the mode, "Zakończ" returned to the watch face |
+
+**Not verified.** Whether all six menu targets are easy to hit near the top and
+bottom edge was asked but not answered. A restart refusal with a real OTA
+session is still unreachable in the mode. Windows, macOS and Android.
+
