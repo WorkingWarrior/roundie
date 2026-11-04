@@ -146,3 +146,35 @@ independent work.
 | Entry while a package transaction or OTA is open | Refused by precondition |
 | Boot round trip is slow | Measure in G1; accept or reduce |
 | Lab USB identity reaching users | D3 blocks release |
+
+## 8. Gate G1 results, 2026-11-04 (firmware 0.3.35)
+
+**Implemented.** Component `components/roundie_storage_mode` (flag and
+admission rule, host-tested), RS1 `STORAGE` (`tools/roundie_safe.py storage`),
+`main/storage_mode_screen.c` (Polish screen, "Zakończ" button, countdown), a
+`storage` field in the RS1 status, and `roundie_app_runtime_allowed()` returning
+false while the mode is active. No USB, no PackageManager use.
+
+**Staging choices.** G1 keeps the normal system worker and USB Serial/JTAG, so
+the mode can be observed over RS1; G2 replaces that path. The idle timeout is
+30 s for quick cycles; the plan's working value (a few minutes) is set in G2.
+The display is kept on through the existing power-policy `keep_display` input.
+
+**Verified.**
+
+| Evidence | Result |
+|---|---|
+| Host | Flag: one request survives exactly one software restart, any other reset class, a different image, a corrupt or uninitialised record, or a second boot never starts it. All six refusals. RS1 harness: STORAGE is refused while an application is loaded, while OTA is open, for an unconfirmed image and when discarded; accepted once, then refused while active. Full suite: 86 tests OK |
+| Target build | 0.3.35, no new warnings |
+| Device, 10 cycles (RS1 over USB Serial/JTAG, no touch) | Each: request accepted with the restart flag, RS1 answered 1.6 s later with `storage=1`, `safe=0`, `failures=0`, the launcher in WAITING with no generation, the mode ended by itself after about 32 s, and the next RS1 reply showed `storage=0`, `failures=0`, `safe=0`, image VALID |
+| Refusal on device | A second STORAGE request inside the mode was rejected (code 3) |
+| BootGuard stage | Inside the mode, 14 s after the request: stage 4 (STABLE), failure counter 0, no trial. After leaving it: stage 4 again, home running |
+
+**Experiment answered:** in G1 the mode marks STABLE because the normal boot
+machinery runs unchanged. G2 must keep that property or define it explicitly
+when the system worker no longer starts USB Serial/JTAG.
+
+**Not verified.** How the screen looks and whether "Zakończ" works by finger
+(PENDING, needs the user); a restart refusal path with a real OTA session;
+behaviour with a loaded application is refused on the admission rule only (the
+device tests entered with the home application closed).
