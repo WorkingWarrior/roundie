@@ -25,6 +25,9 @@ static int64_t next_report_us;
 static bool usb_failed;
 static bool exit_requested;
 static bool restarting;
+static uint32_t take_backs;
+static uint32_t host_releases; /* host to firmware: an eject or a take-back */
+static roundie_storage_phase_t previous_phase = ROUNDIE_STORAGE_PHASE_WAITING_FOR_HOST;
 
 static void exit_clicked(lv_event_t *event)
 {
@@ -116,12 +119,17 @@ void roundie_storage_screen_poll(int64_t now_us)
         }
     } else {
         action = roundie_storage_session_poll(&session, usb.host_owns, usb.io_calls, now_us);
+        if (previous_phase == ROUNDIE_STORAGE_PHASE_HOST_OWNS && session.phase == ROUNDIE_STORAGE_PHASE_EJECTED) {
+            host_releases++;
+        }
+        previous_phase = session.phase;
         show_phase(session.phase);
         seconds_left = roundie_storage_session_seconds_left(&session, now_us);
     }
     lv_label_set_text_fmt(countdown_label, "Powrót za %" PRIu32 " s", seconds_left);
     if (action == ROUNDIE_STORAGE_ACTION_TAKE_BACK) {
         ESP_LOGW(TAG, "Host silent: taking the drive back");
+        take_backs++;
         roundie_storage_usb_take_back();
     }
 #if CONFIG_ROUNDIE_DEV_STORAGE_CDC
@@ -130,10 +138,11 @@ void roundie_storage_screen_poll(int64_t now_us)
         char line[200];
         snprintf(line, sizeof(line),
                  "STGMODE up=%" PRId64 " phase=%d owner=%s usb=%s att=%" PRIu32 " det=%" PRIu32 " susp=%" PRIu32
-                 " res=%" PRIu32 " io=%" PRIu32 " drop=%" PRIu32 " left=%" PRIu32 "\r\n",
+                 " res=%" PRIu32 " io=%" PRIu32 " drop=%" PRIu32 " tb=%" PRIu32 " rel=%" PRIu32 " left=%" PRIu32 "\r\n",
                  (now_us - started_us) / 1000000, (int)session.phase, usb.host_owns ? "USB" : "APP",
                  usb.started ? "ok" : (usb.failed_step != NULL ? usb.failed_step : "off"), usb.attached,
-                 usb.detached, usb.suspended, usb.resumed, usb.io_calls, usb.dropped_events, seconds_left);
+                 usb.detached, usb.suspended, usb.resumed, usb.io_calls, usb.dropped_events, take_backs, host_releases,
+                 seconds_left);
         roundie_storage_usb_report(line);
     }
     if (roundie_storage_usb_exit_requested()) {

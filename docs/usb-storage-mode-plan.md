@@ -223,3 +223,25 @@ a host that owns the drive and has been suspended for 20 s loses it.
 - Power cost of the mode and its boot round trip: only the 2.9 s and 2.5 s
   above were observed, not measured as a budget.
 
+### G2 physical results, 2026-11-04 (firmware 0.3.37)
+
+0.3.37 adds two counters to the development status line: `tb` (drive taken back
+from a silent host) and `rel` (drive passed from the host to the firmware).
+Each result below is one run with the user at the board.
+
+| Case | Observation |
+|---|---|
+| Screen and button | User-reported: "looks good". The mode had ended and normal mode was back (`storage=0`, `failures=0`, stage 4) when checked, which is consistent with the "Zakończ" tap; the tap itself was not observed |
+| Cable pulled while the host owned the drive, replugged after 25-30 s | Counters before: `att=1 susp=0 tb=0 rel=0`; after: `att=2 det=0 susp=1 tb=1 rel=1`. The drive was taken back, then returned to the host at the re-attach (`phase=1`, `owner=USB`, `io` rose from 113 to 205 as the host rescanned). The delay between the pull and the take-back was not recorded |
+| ROM Download entry from storage mode | PWR held 2 s with USB attached (the mode kept running), cable removed (host lost the device), BOOT held while reconnecting: esptool `--no-stub chip-id` connected, ESP32-S3, MAC `28:84:85:87:98:7c`, "Staying in bootloader"; read-only |
+| Return from ROM | Cable removed and replugged without BOOT or PWR: 0.3.37 on `ota_1` VALID, reset class power-on, `storage=0`, `failures=0`, home running, USB Serial/JTAG answering |
+
+**Observation, not new:** the PWR hold leaves the power latch off, so after
+this procedure the board needs one short PWR press to run on battery alone
+(usb-architecture.md).
+
+**Open for G2:** the restart refusal during a real OTA session is unreachable in
+this mode, because OTA runs only over USB Serial/JTAG, which is off; it stays
+covered by the admission rule and host tests. Windows, macOS and Android remain
+PENDING. G2's device gate is otherwise met.
+
