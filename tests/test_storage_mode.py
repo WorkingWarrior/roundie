@@ -30,5 +30,16 @@ class StorageModeTests(unittest.TestCase):
             ], check=True)
             subprocess.run([executable], check=True, timeout=10)
 
+    def test_importer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = str(Path(directory) / "storage_import")
+            subprocess.run([
+                "cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
+                "-fsanitize=address,undefined",
+                "-I" + str(ROOT / "components/roundie_storage_mode/include"),
+                str(ROOT / "tests/test_storage_import.c"), "-lcrypto", "-o", executable,
+            ], check=True)
+            subprocess.run([executable], check=True, timeout=20)
+
 if __name__ == "__main__":
     unittest.main()

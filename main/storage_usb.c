@@ -36,6 +36,7 @@ static _Atomic uint32_t resumed_count;
 static _Atomic uint32_t dropped_count;
 #if CONFIG_ROUNDIE_DEV_STORAGE_CDC
 static _Atomic bool exit_word_seen;
+static _Atomic int dev_decision; /* 0 none, 1 INSTALL, 2 SKIP */
 #endif
 
 /* Small bounded event queue: TinyUSB task produces, the GUI task consumes. */
@@ -167,14 +168,22 @@ static void cdc_rx(int itf, cdcacm_event_t *event)
     if (tinyusb_cdcacm_read((tinyusb_cdcacm_itf_t)itf, buffer, sizeof(buffer), &length) != ESP_OK) {
         return;
     }
-    /* The whole word, so stray bytes sent by a host cannot end the mode. */
-    static const char word[] = "EXITNOW";
-    static size_t matched;
+    /* Whole words, so stray bytes sent by a host cannot act. */
+    static const char *const words[] = {"EXITNOW", "INSTALL", "SKIP"};
+    static size_t matched[3];
     for (size_t index = 0; index < length; index++) {
-        matched = buffer[index] == (uint8_t)word[matched] ? matched + 1 : (buffer[index] == 'E' ? 1 : 0);
-        if (matched == sizeof(word) - 1) {
-            atomic_store(&exit_word_seen, true);
-            matched = 0;
+        for (unsigned word = 0; word < 3; word++) {
+            size_t size = strlen(words[word]);
+            matched[word] = buffer[index] == (uint8_t)words[word][matched[word]] ? matched[word] + 1 :
+                (buffer[index] == (uint8_t)words[word][0] ? 1 : 0);
+            if (matched[word] == size) {
+                matched[word] = 0;
+                if (word == 0) {
+                    atomic_store(&exit_word_seen, true);
+                } else {
+                    atomic_store(&dev_decision, (int)word);
+                }
+            }
         }
     }
 }
@@ -190,6 +199,11 @@ void roundie_storage_usb_report(const char *line)
 bool roundie_storage_usb_exit_requested(void)
 {
     return atomic_load(&exit_word_seen);
+}
+
+int roundie_storage_usb_take_dev_decision(void)
+{
+    return atomic_exchange(&dev_decision, 0);
 }
 #endif
 

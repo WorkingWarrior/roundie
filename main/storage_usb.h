@@ -33,4 +33,6 @@ void roundie_storage_usb_take_back(void);
 void roundie_storage_usb_report(const char *line);
 /* True once the host sent the word EXITNOW to the port. */
 bool roundie_storage_usb_exit_requested(void);
+/* Answer to the confirmation dialog sent as the word INSTALL or SKIP; 0 none, 1 install, 2 skip. */
+int roundie_storage_usb_take_dev_decision(void);
 #endif

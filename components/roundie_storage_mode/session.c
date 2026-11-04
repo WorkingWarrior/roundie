@@ -1,4 +1,5 @@
 #include "roundie_storage_session.h"
+#include <stdint.h>
 
 static int64_t deadline_us(const roundie_storage_session_t *session)
 {
@@ -9,6 +10,10 @@ static int64_t deadline_us(const roundie_storage_session_t *session)
         return session->last_activity_us + ROUNDIE_STORAGE_HOST_IDLE_EXIT_US;
     case ROUNDIE_STORAGE_PHASE_EJECTED:
         return session->phase_since_us + ROUNDIE_STORAGE_EJECTED_EXIT_US;
+    case ROUNDIE_STORAGE_PHASE_IMPORTING:
+        return INT64_MAX;
+    case ROUNDIE_STORAGE_PHASE_RESULT:
+        return session->phase_since_us + ROUNDIE_STORAGE_RESULT_EXIT_US;
     }
     return session->phase_since_us;
 }
@@ -20,6 +25,15 @@ void roundie_storage_session_init(roundie_storage_session_t *session, int64_t no
         .phase_since_us = now_us,
         .last_activity_us = now_us,
     };
+}
+
+void roundie_storage_session_set_phase(roundie_storage_session_t *session, roundie_storage_phase_t phase,
+                                       int64_t now_us)
+{
+    if (session->phase != phase) {
+        session->phase = phase;
+        session->phase_since_us = now_us;
+    }
 }
 
 void roundie_storage_session_bus_event(roundie_storage_session_t *session,
@@ -74,6 +88,9 @@ roundie_storage_action_t roundie_storage_session_poll(roundie_storage_session_t 
 
 uint32_t roundie_storage_session_seconds_left(const roundie_storage_session_t *session, int64_t now_us)
 {
+    if (session->phase == ROUNDIE_STORAGE_PHASE_IMPORTING) {
+        return 0;
+    }
     int64_t left = deadline_us(session) - now_us;
     return left > 0 ? (uint32_t)(left / 1000000) : 0;
 }

@@ -39,6 +39,7 @@
 #include "power_manager.h"
 #include "roundie_storage_mode.h"
 #include "storage_mode_screen.h"
+#include "storage_import.h"
 #include "local_time.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
@@ -467,6 +468,7 @@ static void sensor_worker(void *argument)
         roundie_recovery_poll(esp_timer_get_time());
 #if CONFIG_ROUNDIE_APP_RUNTIME
         roundie_app_runtime_poll(esp_timer_get_time());
+        roundie_storage_import_poll(esp_timer_get_time());
         roundie_launcher_poll(roundie_app_runtime_allowed(), roundie_app_runtime_upload_busy());
 #endif
 #if CONFIG_ROUNDIE_POWER

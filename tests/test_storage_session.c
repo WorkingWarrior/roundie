@@ -67,6 +67,26 @@ int main(void)
     roundie_storage_session_bus_event(&session, ROUNDIE_STORAGE_BUS_SUSPENDED, S(1));
     assert(roundie_storage_session_poll(&session, false, 0, S(60)) == ROUNDIE_STORAGE_ACTION_NONE);
     assert(roundie_storage_session_seconds_left(&session, S(500)) == 0);
+    /* The import: no idle exit while importing, a result timeout after, and a host that
+     * takes the drive back overrides both. */
+    roundie_storage_session_init(&session, 0);
+    roundie_storage_session_poll(&session, true, 1, S(1));
+    roundie_storage_session_poll(&session, false, 1, S(2));
+    assert(session.phase == ROUNDIE_STORAGE_PHASE_EJECTED);
+    roundie_storage_session_set_phase(&session, ROUNDIE_STORAGE_PHASE_IMPORTING, S(2));
+    assert(roundie_storage_session_poll(&session, false, 1, S(5000)) == ROUNDIE_STORAGE_ACTION_NONE);
+    assert(roundie_storage_session_seconds_left(&session, S(5000)) == 0);
+    roundie_storage_session_set_phase(&session, ROUNDIE_STORAGE_PHASE_RESULT, S(5000));
+    assert(roundie_storage_session_seconds_left(&session, S(5000)) == 25);
+    assert(roundie_storage_session_poll(&session, false, 1, S(5024)) == ROUNDIE_STORAGE_ACTION_NONE);
+    assert(roundie_storage_session_poll(&session, false, 1, S(5025)) == ROUNDIE_STORAGE_ACTION_EXIT);
+    roundie_storage_session_set_phase(&session, ROUNDIE_STORAGE_PHASE_RESULT, S(5025)); /* same phase: no restart */
+    assert(session.phase_since_us == S(5000));
+    roundie_storage_session_poll(&session, true, 2, S(5030)); /* re-attached while a result is shown */
+    assert(session.phase == ROUNDIE_STORAGE_PHASE_HOST_OWNS);
+    roundie_storage_session_set_phase(&session, ROUNDIE_STORAGE_PHASE_IMPORTING, S(5031));
+    roundie_storage_session_poll(&session, true, 2, S(5032)); /* the host has the drive again: it wins */
+    assert(session.phase == ROUNDIE_STORAGE_PHASE_HOST_OWNS);
     puts("storage session: ownership, take-back and timeout policy passed");
     return 0;
 }

@@ -11,11 +11,14 @@
 #define ROUNDIE_STORAGE_NO_HOST_EXIT_US (INT64_C(120) * 1000000)
 #define ROUNDIE_STORAGE_HOST_IDLE_EXIT_US (INT64_C(600) * 1000000)
 #define ROUNDIE_STORAGE_EJECTED_EXIT_US (INT64_C(20) * 1000000)
+#define ROUNDIE_STORAGE_RESULT_EXIT_US (INT64_C(25) * 1000000) /* time to read the import result */
 
 typedef enum {
     ROUNDIE_STORAGE_PHASE_WAITING_FOR_HOST,
     ROUNDIE_STORAGE_PHASE_HOST_OWNS,
     ROUNDIE_STORAGE_PHASE_EJECTED,
+    ROUNDIE_STORAGE_PHASE_IMPORTING, /* the importer has the volume: no idle exit while it works */
+    ROUNDIE_STORAGE_PHASE_RESULT,    /* the result is on screen */
 } roundie_storage_phase_t;
 
 typedef enum {
@@ -46,5 +49,9 @@ void roundie_storage_session_bus_event(roundie_storage_session_t *session,
  * count of host block reads and writes, to tell an idle host from a busy one. */
 roundie_storage_action_t roundie_storage_session_poll(roundie_storage_session_t *session,
                                                       bool host_owns, uint32_t io_calls, int64_t now_us);
+/* The caller moves the session through the import: EJECTED to IMPORTING to RESULT. A host
+ * that takes the drive back overrides any phase on the next poll. */
+void roundie_storage_session_set_phase(roundie_storage_session_t *session, roundie_storage_phase_t phase,
+                                       int64_t now_us);
 /* Whole seconds until the mode would end on its own; 0 when it is due. */
 uint32_t roundie_storage_session_seconds_left(const roundie_storage_session_t *session, int64_t now_us);

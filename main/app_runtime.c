@@ -32,16 +32,29 @@ static bool staging_busy(void)
 #endif
 }
 
-bool roundie_app_runtime_allowed(void)
+/* Everything that lets an application or a package transaction run, except the mode. */
+static bool admission_conditions(void)
 {
     roundie_boot_status_t boot;
     roundie_boot_status(&boot);
     roundie_ota_status_t ota;
     roundie_ota_status(&ota);
-    return !boot.safe && !roundie_storage_mode_active() && boot.stage == ROUNDIE_BOOT_STABLE &&
+    return !boot.safe && boot.stage == ROUNDIE_BOOT_STABLE &&
         ota.initialized && ota.boot_checked && ota.boot_passed &&
         ota.running.state == ESP_OTA_IMG_VALID && ota.phase == ROUNDIE_OTA_IDLE &&
         strcmp(ota.running.label, ota.boot) == 0 && roundie_storage_available();
+}
+
+/* No application starts in USB storage mode; packages are still installed there. */
+bool roundie_app_runtime_allowed(void)
+{
+    return !roundie_storage_mode_active() && admission_conditions();
+}
+
+/* A package transaction would be admitted now. True in USB storage mode once the boot is stable. */
+bool roundie_app_runtime_packages_ready(void)
+{
+    return admission_conditions() && !roundie_elf_busy() && !staging_busy() && !roundie_packages_busy();
 }
 
 bool roundie_app_runtime_busy(void)
@@ -103,7 +116,7 @@ void roundie_app_runtime_poll(int64_t now_us)
 
 bool roundie_packages_allowed(void)
 {
-    return roundie_app_runtime_allowed();
+    return admission_conditions();
 }
 
 bool roundie_packages_runtime_busy(void)
