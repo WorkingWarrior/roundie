@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_sleep.h"
@@ -33,7 +34,7 @@ static const char *TAG = "power";
 #define WAKE_SOURCE_WAIT_US 1000000
 /* Bound on unloading the home application before light sleep. */
 #define HOME_PARK_WAIT_US 3000000
-#define MENU_ITEMS 5
+#define MENU_ITEMS 6
 
 typedef enum {
     SLEEP_IDLE,
@@ -47,6 +48,7 @@ typedef enum {
     COMMAND_NONE,
     COMMAND_RESTART,
     COMMAND_SAFE_MODE,
+    COMMAND_STORAGE, /* restart into USB storage mode */
 } command_t;
 
 typedef enum {
@@ -59,6 +61,7 @@ typedef enum {
     ITEM_SLEEP,
     ITEM_SCREEN_OFF,
     ITEM_RESTART,
+    ITEM_STORAGE,
     ITEM_SAFE_MODE,
     ITEM_CANCEL,
 } menu_item_t;
@@ -107,6 +110,11 @@ static void report(const char *message)
     portEXIT_CRITICAL(&shared.lock);
 }
 
+/* GUI task only. After the screen was off, the ST77916 shows nothing on DISPON
+ * alone (seen on the unit after a screen-off timeout and after light sleep), so
+ * it is initialised again once no transfer is in flight, then everything is repainted. */
+static bool reinit_pending;
+
 static void apply_screen(bool on)
 {
     esp_err_t error;
@@ -116,6 +124,7 @@ static void apply_screen(bool on)
             error = roundie_board_backlight_set(gui_board, *gui_brightness);
         }
     } else {
+        reinit_pending = false; /* a later screen-off wins over a pending wake */
         error = roundie_board_backlight_set(gui_board, 0);
         if (error == ESP_OK) {
             error = roundie_board_display_power(gui_board, false);
@@ -184,7 +193,8 @@ static void menu_clicked(lv_event_t *event)
     } else {
         portENTER_CRITICAL(&shared.lock);
         if (shared.command == COMMAND_NONE && shared.phase == SLEEP_IDLE) {
-            shared.command = item == ITEM_RESTART ? COMMAND_RESTART : COMMAND_SAFE_MODE;
+            shared.command = item == ITEM_RESTART ? COMMAND_RESTART :
+                item == ITEM_STORAGE ? COMMAND_STORAGE : COMMAND_SAFE_MODE;
             accepted = true;
         }
         portEXIT_CRITICAL(&shared.lock);
@@ -195,7 +205,7 @@ static void menu_clicked(lv_event_t *event)
 static void open_menu(void)
 {
     static const char *const labels[MENU_ITEMS] = {
-        "Uśpij", "Wygaś ekran", "Restart", "Tryb awaryjny", "Anuluj",
+        "Uśpij", "Wygaś ekran", "Restart", "Pamięć USB", "Tryb awaryjny", "Anuluj",
     };
     /* Full-screen backdrop on the top layer: above applications and system
      * chrome, and it absorbs touches outside the buttons. */
@@ -216,12 +226,12 @@ static void open_menu(void)
     lv_obj_set_style_text_color(menu_title, lv_color_hex(0xffffff), 0);
     lv_obj_align(menu_title, LV_ALIGN_TOP_MID, 0, 32);
 
-    /* 200 x 42 targets between y=62 and y=304 stay inside the round panel:
-     * the narrowest chord there is about 260 px. */
+    /* Six 200 x 38 targets every 41 px between y=56 and y=299 stay inside the
+     * round panel: the narrowest chord there is about 260 px. */
     for (int index = 0; index < MENU_ITEMS; index++) {
         lv_obj_t *button = lv_button_create(menu);
-        lv_obj_set_size(button, 200, 42);
-        lv_obj_align(button, LV_ALIGN_TOP_MID, 0, 62 + index * 50);
+        lv_obj_set_size(button, 200, 38);
+        lv_obj_align(button, LV_ALIGN_TOP_MID, 0, 56 + index * 41);
         lv_obj_add_event_cb(button, menu_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)index);
         lv_obj_t *label = lv_label_create(button);
         lv_label_set_text(label, labels[index]);
@@ -289,6 +299,13 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
     if (phase == SLEEP_PARKED) {
         return false;
     }
+    if (reinit_pending && dma_idle) {
+        reinit_pending = false;
+        esp_err_t reinit_error = roundie_board_display_reinit(gui_board);
+        ESP_LOGI(TAG, "Display re-initialised after screen off: %s", esp_err_to_name(reinit_error));
+        apply_screen(true);
+        lv_obj_invalidate(lv_screen_active());
+    }
     if (phase == SLEEP_RESUMED) {
         roundie_power_woke(&policy, now_us, user_wake);
         if (user_wake) {
@@ -339,7 +356,7 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
         shared.screen_offs++;
         portEXIT_CRITICAL(&shared.lock);
     } else if (action == ROUNDIE_POWER_TURN_SCREEN_ON) {
-        apply_screen(true);
+        reinit_pending = true;
     } else if (action == ROUNDIE_POWER_TOGGLE_MENU) {
         if (menu != NULL) {
             close_menu();
@@ -390,22 +407,76 @@ static roundie_power_refusal_t sleep_refusal(roundie_board_t *board, bool check_
 static void restart(bool safe)
 {
     if (runtime_busy()) {
-        report("Exit the app first");
+        report("Zamknij aplikację");
         return;
     }
     if (roundie_recovery_active() || !ota_idle() || !roundie_recovery_restart_allowed()) {
-        report("Busy: update pending");
+        report("Zajęty: trwa aktualizacja");
         return;
     }
     if (safe) {
         /* Same persistent request as RS1 REQUEST on an idle runtime. */
         roundie_boot_enter_safe(ROUNDIE_SAFE_REQUEST);
         if (!roundie_boot_persistence_sync()) {
-            report("Safe Mode not saved");
+            report("Nie zapisano trybu awaryjnego");
             return;
         }
     }
     ESP_LOGI(TAG, "Power menu %s", safe ? "Safe Mode restart" : "restart");
+    roundie_boot_planned_restart();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
+}
+
+/* Same planned restart as above, into USB storage mode: the one-shot request
+ * is kept in RTC memory and read first thing after the restart. The caller has
+ * already parked the home application. */
+static const char *storage_refusal_text(roundie_storage_refusal_t refusal)
+{
+    switch (refusal) {
+    case ROUNDIE_STORAGE_ALLOWED:
+        return "";
+    case ROUNDIE_STORAGE_REFUSED_ACTIVE:
+        return "już włączony";
+    case ROUNDIE_STORAGE_REFUSED_SAFE_MODE:
+        return "tryb awaryjny";
+    case ROUNDIE_STORAGE_REFUSED_NOT_STABLE:
+        return "poczekaj chwilę";
+    case ROUNDIE_STORAGE_REFUSED_OTA:
+        return "trwa aktualizacja";
+    case ROUNDIE_STORAGE_REFUSED_UNCONFIRMED:
+        return "wersja niepotwierdzona";
+    case ROUNDIE_STORAGE_REFUSED_APP:
+        return "zamknij aplikację";
+    }
+    return "odmowa";
+}
+
+static void enter_storage_mode(void)
+{
+    roundie_boot_status_t boot;
+    roundie_boot_status(&boot);
+    roundie_ota_status_t ota;
+    roundie_ota_status(&ota);
+    const roundie_storage_conditions_t conditions = {
+        .storage_mode = roundie_storage_mode_active(),
+        .safe = boot.safe,
+        .stable = boot.stage == ROUNDIE_BOOT_STABLE,
+        .ota_idle = ota.initialized && ota.phase == ROUNDIE_OTA_IDLE,
+        .image_valid = ota.initialized && ota.running.state == ESP_OTA_IMG_VALID,
+        .app_busy = runtime_busy(),
+    };
+    roundie_storage_refusal_t refusal = roundie_storage_mode_refusal(&conditions);
+    if (refusal != ROUNDIE_STORAGE_ALLOWED || !roundie_recovery_restart_allowed()) {
+        char message[40];
+        snprintf(message, sizeof(message), "Pamięć USB: %s",
+                 refusal != ROUNDIE_STORAGE_ALLOWED ? storage_refusal_text(refusal) : "trwa aktualizacja");
+        report(message);
+        ESP_LOGW(TAG, "Storage mode refused: %s", message);
+        return;
+    }
+    roundie_storage_mode_request(esp_app_get_description()->app_elf_sha256);
+    ESP_LOGI(TAG, "Power menu: restart into USB storage mode");
     roundie_boot_planned_restart();
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_restart();
@@ -496,7 +567,11 @@ void roundie_power_worker_poll(int64_t now_us)
             return;
         }
         command_requested_us = 0;
-        restart(command == COMMAND_SAFE_MODE);
+        if (command == COMMAND_STORAGE) {
+            enter_storage_mode();
+        } else {
+            restart(command == COMMAND_SAFE_MODE);
+        }
         resume_home(); /* reached only when the restart was refused */
     }
     if (phase == SLEEP_REQUESTED) {
@@ -519,7 +594,7 @@ void roundie_power_worker_poll(int64_t now_us)
         portEXIT_CRITICAL(&shared.lock);
         if (refusal != ROUNDIE_POWER_ALLOWED) {
             char message[40];
-            snprintf(message, sizeof(message), "Sleep refused: %s", roundie_power_refusal_name(refusal));
+            snprintf(message, sizeof(message), "Uśpienie odrzucone: %s", roundie_power_refusal_name(refusal));
             report(message);
             ESP_LOGW(TAG, "%s", message);
         }
@@ -583,6 +658,15 @@ void roundie_power_command(char *line, bool discard)
             shared.screen_request = operation[8] == 'F' ? SCREEN_REQUEST_OFF : SCREEN_REQUEST_ON;
             portEXIT_CRITICAL(&shared.lock);
             error = ESP_OK;
+        } else if (strcmp(operation, "STORAGE") == 0) {
+            /* The same request as the power menu item, so the parking path can be tested. */
+            portENTER_CRITICAL(&shared.lock);
+            bool accepted = shared.command == COMMAND_NONE && shared.phase == SLEEP_IDLE;
+            if (accepted) {
+                shared.command = COMMAND_STORAGE;
+            }
+            portEXIT_CRITICAL(&shared.lock);
+            error = accepted ? ESP_OK : ESP_ERR_INVALID_STATE;
         } else if (strncmp(operation, "SLEEP ", 6) == 0) {
             /* Diagnostics always carry a timer so the host gets USB back. */
             char *end = NULL;

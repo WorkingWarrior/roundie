@@ -71,6 +71,7 @@ def main(argv=None):
     commands.add_parser("status")
     commands.add_parser("screen-off")
     commands.add_parser("screen-on")
+    commands.add_parser("storage", help="restart into USB storage mode, as the power menu item does")
     sleep = commands.add_parser("sleep", help="timed light sleep; the board returns over USB after wake")
     sleep.add_argument("seconds", type=int)
     args = parser.parse_args(argv)
@@ -89,7 +90,7 @@ def main(argv=None):
                 print(f"Sleep was not entered: refusal={after['refusal']}", file=sys.stderr)
                 return 1
             return 0
-        operation = {"status": "STATUS", "screen-off": "SCREEN OFF", "screen-on": "SCREEN ON"}[args.command]
+        operation = {"status": "STATUS", "screen-off": "SCREEN OFF", "screen-on": "SCREEN ON", "storage": "STORAGE"}[args.command]
         with open_serial(args.port) as port:
             print(json.dumps(request(port, operation), indent=2))
         return 0
