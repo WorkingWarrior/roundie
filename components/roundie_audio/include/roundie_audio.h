@@ -15,6 +15,7 @@
 #define ROUNDIE_AUDIO_PREBUFFER_MS 100U         /* buffered before playback starts or resumes */
 #define ROUNDIE_AUDIO_PAUSE_AFTER_MS 500U       /* an underrun this long closes the codec and the amplifier */
 #define ROUNDIE_AUDIO_MASTER_DEFAULT 70U        /* system volume, a share of the cap */
+#define ROUNDIE_AUDIO_OWNER_DIAGNOSTIC UINT32_MAX /* RA1 self-test; application instances never reach it */
 
 /* Stream handles are generation counters: 0 is never valid, a stale one is refused. */
 typedef uint32_t roundie_audio_stream_t;
@@ -48,13 +49,16 @@ esp_err_t roundie_audio_play_tone(uint32_t frequency_hz, uint32_t duration_ms, u
 esp_err_t roundie_audio_play_melody(uint8_t volume_percent);
 /* A PCM stream: 16-bit samples, mono or stereo, at 8, 16, 24, 32 or 48 kHz. One stream at a
  * time, never together with a tone. The owner is an opaque number (an application
- * instance); volume_percent is a software gain on the samples. write copies into a ring
+ * instance); volume_percent is a software gain on the samples. The prebuffer is 100 ms,
+ * at most half the ring (85 ms of ring in all at 48 kHz stereo). write copies into a ring
  * and never blocks: it returns the bytes accepted (0 when full) or -1 for a stale or
  * closed handle. Playback starts once the prebuffer is full; a drained ring plays
  * silence, then pauses. Returns 0 when refused. */
 roundie_audio_stream_t roundie_audio_stream_open(uint32_t owner, uint32_t sample_rate, uint8_t channels,
                                                  uint8_t volume_percent);
 int32_t roundie_audio_stream_write(roundie_audio_stream_t stream, const void *pcm, uint32_t bytes);
+/* Bytes a write would accept now (whole frames), or -1 for a stale or closing handle. */
+int32_t roundie_audio_stream_writable(roundie_audio_stream_t stream);
 /* Asynchronous. drain plays what is buffered first; otherwise it is dropped at once. */
 void roundie_audio_stream_close(roundie_audio_stream_t stream, bool drain);
 /* Discards the owner's stream and waits (bounded) until the task released it. True when the

@@ -498,6 +498,9 @@ roundie_audio_stream_t roundie_audio_stream_open(uint32_t owner, uint32_t sample
     stream.drain = false;
     stream.codec_open = false;
     size_t prebuffer = (size_t)sample_rate * channels * sizeof(int16_t) * ROUNDIE_AUDIO_PREBUFFER_MS / 1000U;
+    if (prebuffer > ROUNDIE_AUDIO_RING_BYTES / 2U) {
+        prebuffer = ROUNDIE_AUDIO_RING_BYTES / 2U; /* 48 kHz stereo: 100 ms would not fit, playback never starts */
+    }
     roundie_playback_init(&stream.playback, prebuffer, (int64_t)ROUNDIE_AUDIO_PAUSE_AFTER_MS * 1000);
     stream.generation = ++generation_counter;
     if (stream.generation == 0) {
@@ -514,7 +517,7 @@ roundie_audio_stream_t roundie_audio_stream_open(uint32_t owner, uint32_t sample
 
 int32_t roundie_audio_stream_write(roundie_audio_stream_t handle, const void *pcm, uint32_t bytes)
 {
-    if (handle == 0 || pcm == NULL || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
+    if (handle == 0 || pcm == NULL || stream_mutex == NULL || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
         return -1;
     }
     int32_t accepted = -1;
@@ -528,9 +531,24 @@ int32_t roundie_audio_stream_write(roundie_audio_stream_t handle, const void *pc
     return accepted;
 }
 
+int32_t roundie_audio_stream_writable(roundie_audio_stream_t handle)
+{
+    if (handle == 0 || stream_mutex == NULL || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
+        return -1;
+    }
+    int32_t free_bytes = -1;
+    if (stream.open && !stream.closing && stream.generation == handle) {
+        uint32_t frame_bytes = (uint32_t)stream.channels * (uint32_t)sizeof(int16_t);
+        uint32_t space = (uint32_t)roundie_ring_free(&stream.ring);
+        free_bytes = (int32_t)(space - space % frame_bytes);
+    }
+    xSemaphoreGive(stream_mutex);
+    return free_bytes;
+}
+
 void roundie_audio_stream_close(roundie_audio_stream_t handle, bool drain)
 {
-    if (handle == 0 || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
+    if (handle == 0 || stream_mutex == NULL || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
         return;
     }
     if (stream.open && stream.generation == handle) {
@@ -542,6 +560,9 @@ void roundie_audio_stream_close(roundie_audio_stream_t handle, bool drain)
 
 bool roundie_audio_release_owner(uint32_t owner, uint32_t timeout_ms)
 {
+    if (stream_mutex == NULL) {
+        return true; /* audio never initialised: nobody owns a stream */
+    }
     if (xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
         return false;
     }
@@ -582,7 +603,7 @@ static void selftest_task(void *argument)
 {
     selftest_t test = *(selftest_t *)argument;
     heap_caps_free(argument);
-    roundie_audio_stream_t handle = roundie_audio_stream_open(0xA2, ROUNDIE_AUDIO_SAMPLE_RATE, 2, test.volume_percent);
+    roundie_audio_stream_t handle = roundie_audio_stream_open(ROUNDIE_AUDIO_OWNER_DIAGNOSTIC, ROUNDIE_AUDIO_SAMPLE_RATE, 2, test.volume_percent);
     if (handle != 0) {
         roundie_tone_t tone;
         static int16_t buffer[2U * CHUNK_FRAMES];

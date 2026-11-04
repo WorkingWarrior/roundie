@@ -44,10 +44,11 @@ static const char *string(const uint8_t *bytes, const Elf32_Shdr *strings, uint3
 bool roundie_elf_import_allowed(const char *name)
 {
     return name != NULL && (strcmp(name, "rep_abi_v1") == 0 || strcmp(name, "rep_abi_v2") == 0 ||
-                            strcmp(name, "rep_abi_v3") == 0 || strcmp(name, "rep_storage_v1") == 0);
+                            strcmp(name, "rep_abi_v3") == 0 || strcmp(name, "rep_storage_v1") == 0 ||
+                            strcmp(name, "rep_audio_v1") == 0);
 }
 
-/* The ABI's own table, plus the storage extension for ABI 3. */
+/* The ABI's own table, plus the storage and audio extensions for ABI 3. */
 static bool import_matches(const char *name, uint32_t abi_version)
 {
     if (abi_version == 1) {
@@ -56,7 +57,8 @@ static bool import_matches(const char *name, uint32_t abi_version)
     if (abi_version == 2) {
         return strcmp(name, "rep_abi_v2") == 0;
     }
-    return strcmp(name, "rep_abi_v3") == 0 || strcmp(name, "rep_storage_v1") == 0;
+    return strcmp(name, "rep_abi_v3") == 0 || strcmp(name, "rep_storage_v1") == 0 ||
+        strcmp(name, "rep_audio_v1") == 0;
 }
 
 bool roundie_elf_validate(const void *input, size_t size, roundie_elf_info_t *out,

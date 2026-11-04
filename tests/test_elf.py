@@ -30,6 +30,7 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "tests/elf_mocks"), "-I" + str(ROOT / "include"),
                             "-I" + str(ROOT / "components/roundie_elf/include"),
                             "-I" + str(ROOT / "components/roundie_app_ui/include"),
+                            "-I" + str(ROOT / "components/roundie_audio/include"),
                             str(ROOT / "tests/test_elf.c"), str(ROOT / "components/roundie_elf/validate.c"),
                             "-o", executable], check=True)
             subprocess.run([executable, str(Path(example) / "hello.app.elf"), str(Path(event) / "event.app.elf")], check=True, timeout=20)
@@ -80,7 +81,8 @@ class ElfTests(unittest.TestCase):
             for standard in ("c11", "c23"):
                 subprocess.run([str(TOOLCHAIN / "xtensa-esp32s3-elf-gcc"), f"-std={standard}",
                                 "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-x", "c",
-                                "-I" + str(ROOT / "include"), "-"], input='#include "rep/rep_app.h"\n#include "rep/rep_app_v2.h"\n#include "rep/rep_app_v3.h"\n',
+                                "-I" + str(ROOT / "include"), "-"], input='#include "rep/rep_app.h"\n#include "rep/rep_app_v2.h"\n#include "rep/rep_app_v3.h"\n'
+                                      '#include "rep/rep_storage_v1.h"\n#include "rep/rep_audio_v1.h"\n',
                                 text=True, check=True)
 
 

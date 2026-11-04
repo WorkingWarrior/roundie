@@ -46,7 +46,7 @@ follow AGENTS.md: **fact**, **proposal**, **assumption**, **experiment**.
 | A0 | This page: facts, decisions, compile check | Reviewed |
 | A1 | `roundie_audio` component: I²S, ES8311 and amplifier bring-up; a tone from a development command | Host test of the tone generator; device: codec ACKs at 0x18 and reports its ID, no I²S or I²C error, touch and gauge reads keep working during a tone; **audible output PENDING the user** (needs a speaker on H1) |
 | A2 | Stream engine: ring, volume cap, underrun policy, stop on request; power interplay | Host tests; device: no underruns at the chosen buffer, sleep refused while playing |
-| A3 | `rep_audio_v1` for applications: ABI, validator allowlist, per-instance resources, example application | Host and target checks; device: playback from an application, stop on unload with no call into unloaded code |
+| A3 | `rep_audio_v1` for applications: ABI, validator allowlist, per-instance resources, example application | Host and target checks; device: playback from an application, stop on unload with no call into unloaded code (passed 2026-11-04, see below) |
 | A4 | Validation | Repeated start and stop, unload while playing, load and latency measurements |
 
 ## Pending experiments
@@ -147,3 +147,58 @@ started normally.
 level of 70 % is loud enough (the first play was not heard). Streams at rates
 other than 16 kHz and mono input on the device (host-tested only). Long streams
 and repeated open and close (gate A4). Audio across light sleep.
+
+## Gate A3 results, 2026-11-04 (firmware 0.3.48, `org.roundie.sound` 1.0.0)
+
+**Decision: `rep_audio_v1`** (`include/rep/rep_audio_v1.h`), a second ABI 3 import
+beside `rep_abi_v3`, like `rep_storage_v1`. The 52-byte `rep_api_v3_t` is
+unchanged. Firmware without the import rejects the ELF with
+`import:rep_audio_v1` before loading, so no capability bit is needed.
+
+- **Table:** `open(instance, rate, channels, volume)` returns a handle or 0;
+  `writable` returns the bytes that fit or -1; `write` copies whole frames and
+  never blocks; `close(drain)` ends the stream. `buffer_bytes` reports the ring
+  size (16,384).
+- **NULL** when audio is not initialised (or `CONFIG_ROUNDIE_AUDIO` is off), and
+  outside a callback. The app then runs silent.
+- **Ownership:** one stream per instance; the system-wide busy flag also refuses a
+  second stream or a stream during a system sound. Calls check the executor,
+  the instance and the handle. `write` accepts only app data sections or SDK
+  allocations, not the stack. The ring copies the samples, so no app pointer
+  survives the call.
+- **Release:** after the app's stop callback the runtime calls
+  `roundie_audio_release_owner(instance, 200 ms)`; unload calls it again. The app
+  may close its own stream in stop. A stream outlives neither stop nor unload.
+- **Feeding:** apps use their periodic timer (50 ms minimum). The ring holds
+  256 ms at 16 kHz stereo and 85 ms at 48 kHz stereo; above 16 kHz stereo a 50 ms
+  timer leaves little margin.
+- **Prebuffer cap (A2 fix):** 100 ms of 48 kHz stereo is 19,200 B, more than the
+  ring, so playback would never have started. The prebuffer is now at most half
+  the ring. Not host-tested (it lives in `audio.c`) and not run on the device.
+- **Diagnostic owner:** the RA1 self-test stream now uses owner `UINT32_MAX`
+  instead of 0xA2, which an application instance number could reach.
+
+**Example:** `examples/sound_elf` ("Dźwięk"). A button plays "Wlazł kotek na
+płotek" (a folk tune, 18 notes, about 6.4 s, 16 kHz mono) from a 256-entry
+integer sine table with 5 ms fades, and stops it on a second press. Each 50 ms
+tick writes what fits; at the end it closes with drain. No libc or libgcc
+helpers (no 64-bit division). Without audio the button is disabled and the title
+reads "Brak dźwięku".
+
+**Verified**
+
+| Evidence | Result |
+|---|---|
+| Host, `tests/test_app_round.c` (mocked audio backend) | Press fills the ring; ticks feed until the whole tune (203,520 B) is written, then close with drain; peak within 16,000; a second press stops without drain; a second open, another instance, a stale handle, a stack pointer and NULL are refused; NULL outside a callback; unload while playing releases the stream once; no audio gives a disabled button |
+| Host, `tests/test_elf.c` | Resolver returns `rep_audio_v1` only for ABI 3; allowlist accepts it and refuses `rep_audio_v2` and `roundie_audio_stream_open` |
+| Host | Full suite: 90 tests OK. Header compiles for Xtensa in C11 and C23 |
+| Target | 0.3.48 builds without new warnings (1,132,272 B). Example: 5,496 B, imports `rep_abi_v3` and `rep_audio_v1` only, accepted by the validator |
+| Device, install | OTA VALID, running `ota_0`; package SHA-256 `490abfcd…3781` installed; 3 widgets, 0 UI failures |
+| Device, injected press | Tune played to the end: ring kept at 14–16 KB, 0 underruns, 0 pauses, stream closed itself; GUI 100 iterations/s; longest app callback 4.3 ms, no budget overrun |
+| Device, exit mid-tune | Stream released within 1.5 s (`plays` +1, no stream open), launcher back to home, no runtime error |
+| Device, by ear (user-reported) | Pressed with a finger (UI counters: 4 physical presses, 0 injected, 0 failures): "Słychać melodię" |
+
+**Not verified (PENDING).** Rates other than 16 kHz and stereo from an app on
+the device. Pops at start and end. Light sleep while an app holds a stream (it is
+refused while audio is busy, as for any sound; not exercised with the app).
+Repeated launch and unload while playing (gate A4).

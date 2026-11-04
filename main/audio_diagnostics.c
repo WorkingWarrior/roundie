@@ -32,7 +32,7 @@ void roundie_audio_command(char *line, bool discard)
             error = ESP_OK;
         } else if (strcmp(operation, "RELEASE") == 0) {
             /* Releases the self-test stream as an application unload would. */
-            error = roundie_audio_release_owner(0xA2, 500) ? ESP_OK : ESP_ERR_TIMEOUT;
+            error = roundie_audio_release_owner(ROUNDIE_AUDIO_OWNER_DIAGNOSTIC, 500) ? ESP_OK : ESP_ERR_TIMEOUT;
         } else if (strncmp(operation, "STREAM ", 7) == 0) {
             /* STREAM <hz> <ms> <volume> <stall ms>: a producer writes a tone into a stream. */
             char *end = NULL;

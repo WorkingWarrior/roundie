@@ -1,3 +1,4 @@
 #pragma once
 #define CONFIG_ROUNDIE_APP_RUNTIME 1
 #define CONFIG_ROUNDIE_DEV_ELF 1
+#define CONFIG_ROUNDIE_AUDIO 1

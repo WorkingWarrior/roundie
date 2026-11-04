@@ -30,13 +30,18 @@ void vTaskDelay(TickType_t ticks)
  * (tests/app_ui/CMakeLists.txt). */
 const rep_descriptor_v3_t *watch_app_entry_v3(const rep_api_v3_t *table);
 const rep_descriptor_v3_t *stopwatch_app_entry_v3(const rep_api_v3_t *table);
+const rep_descriptor_v3_t *sound_app_entry_v3(const rep_api_v3_t *table);
 static bool use_watch;
 static bool use_stopwatch;
+static bool use_sound;
 
 static const rep_descriptor_v3_t *test_entry(const rep_api_v3_t *table)
 {
     if (use_stopwatch) {
         return stopwatch_app_entry_v3(table);
+    }
+    if (use_sound) {
+        return sound_app_entry_v3(table);
     }
     return use_watch ? watch_app_entry_v3(table) : rep_app_entry_v3(table);
 }
@@ -911,6 +916,90 @@ static void stopwatch_runtime_tests(void)
     puts("Stopwatch example + production runtime: tap start/stop, laps, reset, hour format, dial PASS (host C callbacks, mocked loader)");
 }
 
+/* Sound example on rep_audio_v1: the timer feeds the stream until the tune is
+ * written, then it closes with drain; the button stops it; stop and unload
+ * release the stream; the table checks owner, handle and pointers. */
+static void sound_runtime_tests(void)
+{
+    /* 16 notes of 300 ms and 2 of 600 ms, each followed by 20 ms of silence, 16 kHz mono. */
+    const uint32_t tune_bytes = (16U * 300U * 16U + 2U * 600U * 16U + 18U * 320U) * 2U;
+    use_sound = true;
+    mock_audio.ready = true;
+    roundie_elf_set_allowed(true);
+    assert(roundie_elf_prepare());
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING && round_ui);
+    uint32_t generation = status.instance;
+    lv_obj_t *root = lv_screen_active();
+    lv_obj_t *title = child(root, 0);
+    lv_obj_t *play = child(root, 1);
+    assert(strcmp(lv_label_get_text(title), "Dźwięk") == 0 && strcmp(button_text(play), "Graj") == 0);
+    assert(!lv_obj_has_state(play, LV_STATE_DISABLED) && mock_audio.handle == 0);
+
+    /* Play to the end: the press fills the ring, each tick refills what was played. */
+    uint32_t releases = mock_audio.releases;
+    click(play);
+    drain();
+    assert(mock_audio.handle != 0 && mock_audio.owner == generation && mock_audio.rate == 16000 &&
+           mock_audio.channels == 1 && mock_audio.buffered == ROUNDIE_AUDIO_RING_BYTES);
+    assert(strcmp(button_text(play), "Stop") == 0 && status.timer_handle != 0);
+    for (unsigned tick = 0; tick < 40 && mock_audio.handle != 0; tick++) {
+        mock_audio.buffered = 0;
+        step_after(50000);
+    }
+    assert(mock_audio.handle == 0 && mock_audio.drained == 1 && mock_audio.total == tune_bytes);
+    assert(mock_audio.peak > 15000 && mock_audio.peak <= 16000);
+    assert(status.timer_handle == 0 && strcmp(button_text(play), "Graj") == 0);
+
+    /* The button stops at once (no drain). */
+    click(play);
+    drain();
+    assert(mock_audio.handle != 0);
+    click(play);
+    drain();
+    assert(mock_audio.handle == 0 && mock_audio.drained == 1 && mock_audio.closes == 2);
+    assert(status.timer_handle == 0 && strcmp(button_text(play), "Graj") == 0);
+
+    /* Table checks, as from inside a native callback, with a stream open. */
+    click(play);
+    drain();
+    uint32_t stream = mock_audio.handle;
+    static int16_t app_samples[4];
+    int16_t stack_samples[4] = {0};
+    callback_active = true;
+    const rep_audio_v1_t *sound = rep_audio_v1(REP_AUDIO_V1);
+    assert(sound != NULL && rep_audio_v1(2) == NULL && sound->buffer_bytes == ROUNDIE_AUDIO_RING_BYTES);
+    assert(sound->open(generation, 16000, 1, 100) == 0);              /* one stream per app */
+    assert(sound->writable(generation + 1, stream) == -1);             /* not the owner */
+    assert(sound->writable(generation, stream + 1) == -1);             /* stale handle */
+    assert(sound->write(generation, stream, stack_samples, sizeof(stack_samples)) == -1); /* stack */
+    assert(sound->write(generation, stream, NULL, 2) == -1);
+    assert(sound->write(generation, stream, app_samples, 0) == 0);
+    assert(sound->close(generation + 1, stream, 0) == -1);
+    callback_active = false;
+    assert(rep_audio_v1(REP_AUDIO_V1) == NULL); /* outside a callback */
+
+    /* Unload while playing: the system releases the stream after stop. */
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && ui_status().outstanding == 0);
+    assert(mock_audio.handle == 0 && mock_audio.releases == releases + 1);
+    assert(lv_screen_active() == home && live_bytes == 0);
+
+    /* No working audio: the table is NULL and the button disabled. */
+    mock_audio.ready = false;
+    assert(roundie_elf_prepare());
+    assert(roundie_elf_execute(fixture, fixture_size));
+    root = lv_screen_active();
+    title = child(root, 0);
+    play = child(root, 1);
+    assert(strcmp(lv_label_get_text(title), "Brak dźwięku") == 0 && lv_obj_has_state(play, LV_STATE_DISABLED));
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0);
+    mock_audio.ready = true;
+    use_sound = false;
+    puts("Sound example + rep_audio_v1: feed to drained end, stop, ownership and pointer checks, release at unload, no audio PASS (host C callbacks, mocked audio)");
+}
+
 /* Every generated font has the Polish letters, ASCII and an LVGL symbol. */
 static void font_tests(void)
 {
@@ -955,6 +1044,7 @@ int main(int argc, char **argv)
     round_runtime_tests();
     watch_runtime_tests();
     stopwatch_runtime_tests();
+    sound_runtime_tests();
     lv_deinit();
     return 0;
 }

@@ -11,6 +11,11 @@
 #include "rep/rep_app.h"
 #include "rep/rep_app_v2.h"
 #include "rep/rep_storage_v1.h"
+#include "rep/rep_audio_v1.h"
+#include "sdkconfig.h"
+#if CONFIG_ROUNDIE_AUDIO
+#include "roundie_audio.h"
+#endif
 #include "roundie_app_ui.h"
 
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -27,6 +32,8 @@ static bool lifecycle_stopped;
 static rep_descriptor_v2_t lifecycle;
 static bool ui_owned;
 static bool round_ui; /* descriptor required REP3_CAP_ROUND_UI */
+/* rep_audio_v1: this instance's stream handle, 0 when none. Executor only. */
+static uint32_t audio_stream;
 /* REP3_CAP_CLOCK: executor-only state; the source is set once before start. */
 static roundie_elf_clock_source_t clock_source;
 static bool clock_app;
@@ -525,6 +532,101 @@ const rep_storage_v1_t *rep_storage_v1(uint32_t required_version)
     return &storage_v1;
 }
 
+#if CONFIG_ROUNDIE_AUDIO
+static bool audio_owner(uint32_t instance, uint32_t stream)
+{
+    return owner(instance) && status.abi_version == REP_ABI_V3 && stream != 0 && stream == audio_stream;
+}
+
+static uint32_t app_audio_open(uint32_t instance, uint32_t sample_rate, uint32_t channels, uint32_t volume_percent)
+{
+    if (!owner(instance) || status.abi_version != REP_ABI_V3 || audio_stream != 0 ||
+        status.state == ROUNDIE_ELF_STOPPING || status.state == ROUNDIE_ELF_UNLOADING ||
+        channels > 2U || volume_percent > 100U) {
+        return 0;
+    }
+    audio_stream = roundie_audio_stream_open(instance, sample_rate, (uint8_t)channels, (uint8_t)volume_percent);
+    if (audio_stream != 0) {
+        status.resources_acquired++;
+    }
+    status.api_calls++;
+    return audio_stream;
+}
+
+static int32_t app_audio_writable(uint32_t instance, uint32_t stream)
+{
+    if (!audio_owner(instance, stream)) {
+        return -1;
+    }
+    return roundie_audio_stream_writable(stream);
+}
+
+static int32_t app_audio_write(uint32_t instance, uint32_t stream, const void *pcm, uint32_t bytes)
+{
+    if (!audio_owner(instance, stream)) {
+        return -1;
+    }
+    if (bytes == 0) {
+        return 0;
+    }
+    /* The ring copies the samples before this returns; no app pointer is kept. */
+    if (pcm == NULL || (!loaded_range(pcm, bytes, false) && !owned_range(pcm, bytes))) {
+        return -1;
+    }
+    status.api_calls++;
+    return roundie_audio_stream_write(stream, pcm, bytes);
+}
+
+static int32_t app_audio_close(uint32_t instance, uint32_t stream, uint32_t drain)
+{
+    if (!audio_owner(instance, stream)) {
+        return -1;
+    }
+    roundie_audio_stream_close(stream, drain != 0U);
+    audio_stream = 0;
+    status.resources_released++;
+    status.api_calls++;
+    return 0;
+}
+
+static const rep_audio_v1_t audio_v1 = {
+    REP_AUDIO_V1, sizeof(rep_audio_v1_t), ROUNDIE_AUDIO_RING_BYTES,
+    app_audio_open, app_audio_writable, app_audio_write, app_audio_close,
+};
+#endif
+
+const rep_audio_v1_t *rep_audio_v1(uint32_t required_version)
+{
+#if CONFIG_ROUNDIE_AUDIO
+    roundie_audio_status_t audio;
+    roundie_audio_status(&audio);
+    if (required_version != REP_AUDIO_V1 || !owner(status.instance) || status.abi_version != REP_ABI_V3 ||
+        !audio.initialized) {
+        return NULL;
+    }
+    status.api_calls++;
+    return &audio_v1;
+#else
+    (void)required_version;
+    return NULL;
+#endif
+}
+
+/* Executor only: the instance's stream is discarded when it stops or unloads.
+ * The ring holds copies, so nothing refers to app memory afterwards. */
+static void release_audio(void)
+{
+#if CONFIG_ROUNDIE_AUDIO
+    if (!roundie_audio_release_owner(status.instance, 200)) {
+        ESP_LOGW("elf", "Audio stream of instance %" PRIu32 " not yet released", status.instance);
+    }
+    if (audio_stream != 0) {
+        audio_stream = 0;
+        status.resources_reclaimed++;
+    }
+#endif
+}
+
 bool roundie_elf_storage_set(const void *data, size_t length)
 {
     if (roundie_elf_busy() || storage.dirty || length > REP_STORAGE_CAPACITY ||
@@ -572,6 +674,9 @@ static uintptr_t resolver(const char *name)
     }
     if (strcmp(name, "rep_storage_v1") == 0 && status.abi_version == 3) {
         return (uintptr_t)rep_storage_v1;
+    }
+    if (strcmp(name, "rep_audio_v1") == 0 && status.abi_version == 3) {
+        return (uintptr_t)rep_audio_v1;
     }
     return strcmp(name, "rep_abi_v3") == 0 && status.abi_version == 3 ? (uintptr_t)rep_abi_v3 : 0;
 }
@@ -636,6 +741,7 @@ static bool stop_lifecycle(void)
         if (lifecycle_started && invoke(lifecycle.stop) != 0 && status.error[0] == '\0') {
             snprintf(status.error, sizeof(status.error), "callback-stop");
         }
+        release_audio(); /* after stop, so the app may close its own stream there */
         lifecycle_stopped = true;
         status.shutdown_us = (uint32_t)(esp_timer_get_time() - started);
     }
@@ -684,6 +790,7 @@ static void unload(void)
     status.alloc_bytes = 0;
     /* A dirty blob stays for the worker; no later instance reaches it. */
     storage.available = false;
+    release_audio(); /* ABI 1 and 2 never open one; ABI 3 released it at stop */
     if (loader_initialized) {
         esp_elf_deinit(&image);
         loader_initialized = false;

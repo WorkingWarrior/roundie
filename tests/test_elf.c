@@ -10,6 +10,86 @@
 #include "../components/roundie_elf/manager.c"
 #include "../components/roundie_elf/executor.c"
 
+/* rep_audio_v1 backend: roundie_audio's stream calls, mocked. The ring takes
+ * up to ROUNDIE_AUDIO_RING_BYTES; tests empty it as playback would. */
+static struct {
+    bool ready;
+    uint32_t next;
+    uint32_t handle;
+    uint32_t owner;
+    uint32_t rate;
+    uint8_t channels;
+    uint32_t buffered;
+    uint32_t total;
+    int32_t peak;
+    uint32_t opens;
+    uint32_t closes;
+    uint32_t drained;
+    uint32_t releases;
+} mock_audio = {.ready = true};
+void roundie_audio_status(roundie_audio_status_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->initialized = mock_audio.ready;
+}
+roundie_audio_stream_t roundie_audio_stream_open(uint32_t owner, uint32_t sample_rate, uint8_t channels,
+                                                 uint8_t volume_percent)
+{
+    (void)volume_percent;
+    if (!mock_audio.ready || mock_audio.handle != 0 || (channels != 1 && channels != 2)) {
+        return 0;
+    }
+    mock_audio.handle = ++mock_audio.next;
+    mock_audio.owner = owner;
+    mock_audio.rate = sample_rate;
+    mock_audio.channels = channels;
+    mock_audio.buffered = 0;
+    mock_audio.total = 0;
+    mock_audio.peak = 0;
+    mock_audio.opens++;
+    return mock_audio.handle;
+}
+int32_t roundie_audio_stream_writable(roundie_audio_stream_t stream)
+{
+    return stream != 0 && stream == mock_audio.handle ? (int32_t)(ROUNDIE_AUDIO_RING_BYTES - mock_audio.buffered) : -1;
+}
+int32_t roundie_audio_stream_write(roundie_audio_stream_t stream, const void *pcm, uint32_t bytes)
+{
+    if (stream == 0 || stream != mock_audio.handle) {
+        return -1;
+    }
+    uint32_t frame = mock_audio.channels * 2U;
+    uint32_t take = bytes - bytes % frame;
+    if (take > ROUNDIE_AUDIO_RING_BYTES - mock_audio.buffered) {
+        take = ROUNDIE_AUDIO_RING_BYTES - mock_audio.buffered;
+    }
+    const int16_t *samples = pcm;
+    for (uint32_t i = 0; i < take / 2U; i++) {
+        int32_t value = samples[i] < 0 ? -samples[i] : samples[i];
+        mock_audio.peak = value > mock_audio.peak ? value : mock_audio.peak;
+    }
+    mock_audio.buffered += take;
+    mock_audio.total += take;
+    return (int32_t)take;
+}
+void roundie_audio_stream_close(roundie_audio_stream_t stream, bool drain)
+{
+    if (stream != 0 && stream == mock_audio.handle) {
+        mock_audio.handle = 0;
+        mock_audio.closes++;
+        mock_audio.drained += drain;
+    }
+}
+bool roundie_audio_release_owner(uint32_t owner, uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    if (mock_audio.handle != 0 && mock_audio.owner == owner) {
+        mock_audio.handle = 0;
+        mock_audio.releases++;
+    }
+    return true;
+}
+
 /* ABI 1/2 regression executable does not own GUI resources. ABI 3 exercises
  * the real bridge and LVGL backend in the dedicated UI integration harness. */
 #ifndef ROUNDIE_UI_INTEGRATION
@@ -249,6 +329,7 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
          status.abi_version == 2 ? (uintptr_t)rep_abi_v2 : (uintptr_t)rep_abi_v3));
     assert(resolve("malloc") == 0 && resolve("xTaskCreate") == 0 && resolve(NULL) == 0);
     assert(resolve("rep_storage_v1") == (status.abi_version == 3 ? (uintptr_t)rep_storage_v1 : 0));
+    assert(resolve("rep_audio_v1") == (status.abi_version == 3 ? (uintptr_t)rep_audio_v1 : 0));
     elf->ptext = heap_caps_malloc(256, 0);
     if (elf->ptext == NULL) {
         return -12;
@@ -391,7 +472,9 @@ static void validation_tests(void)
     assert(roundie_elf_import_allowed("rep_abi_v2"));
     assert(roundie_elf_import_allowed("rep_abi_v3"));
     assert(roundie_elf_import_allowed("rep_storage_v1"));
-    const char *forbidden[] = {"malloc", "esp_restart", "xTaskCreate", "rep_abi_v4", "rep_abi_v1_suffix", "rep_storage_v2", "", NULL};
+    assert(roundie_elf_import_allowed("rep_audio_v1"));
+    const char *forbidden[] = {"malloc", "esp_restart", "xTaskCreate", "rep_abi_v4", "rep_abi_v1_suffix", "rep_storage_v2",
+                               "rep_audio_v2", "roundie_audio_stream_open", "", NULL};
     for (unsigned i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
         assert(!roundie_elf_import_allowed(forbidden[i]));
     }
