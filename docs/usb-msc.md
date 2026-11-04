@@ -66,6 +66,9 @@ holds dirty data (the cache); the cost of 4 MB of PSRAM against the GUI and
 XIP budget; integration with PackageManager, Safe Mode, sleep and home
 parking.
 
+**Integration plan.** [usb-storage-mode-plan.md](usb-storage-mode-plan.md)
+proposes a one-shot boot mode for this drive; it is not approved.
+
 ## What this does not settle
 
 - Windows and macOS, and an unclean unplug while the host holds dirty data
