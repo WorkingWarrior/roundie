@@ -21,8 +21,10 @@ class BootGuardTests(unittest.TestCase):
                     "-I" + str(ROOT / "components/roundie_elf/include"),
                     "-I" + str(ROOT / "components/roundie_boot_guard/include"),
                     "-I" + str(ROOT / "components/roundie_ota/include"),
+                    "-I" + str(ROOT / "components/roundie_storage_mode/include"),
                     "-I" + str(ROOT / "main"), str(ROOT / "tests/test_boot_guard.c"),
                     str(ROOT / "components/roundie_boot_guard/persistence.c"),
+                    str(ROOT / "components/roundie_storage_mode/storage_mode.c"),
                     str(ROOT / "main/recovery_diagnostics.c"), "-o", executable,
                 ], check=True)
                 subprocess.run([executable], check=True, timeout=10)

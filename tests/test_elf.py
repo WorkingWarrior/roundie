@@ -45,6 +45,8 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "components/roundie_packages/include"),
                             "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),
+                            "-I" + str(ROOT / "components/roundie_storage_mode/include"),
+                            str(ROOT / "components/roundie_storage_mode/storage_mode.c"),
                             str(ROOT / "tests/test_elf_development.c"), str(ROOT / "main/app_runtime.c"),
                             str(ROOT / "components/roundie_elf/validate.c"),
                             str(ROOT / "components/roundie_ota/ota_protocol.c"), "-lcrypto", "-o", staging], check=True)

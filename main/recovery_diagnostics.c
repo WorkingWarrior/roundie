@@ -10,6 +10,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "roundie_ota.h"
+#include "roundie_storage_mode.h"
+#include "esp_app_desc.h"
 #include "sdkconfig.h"
 #if CONFIG_ROUNDIE_APP_RUNTIME
 #include "app_runtime.h"
@@ -133,6 +135,27 @@ void roundie_recovery_command(char *line, bool discard)
                         restart = false;
                     }
 #endif
+                } else if (strcmp(operation, "STORAGE") == 0) {
+                    /* One-shot request for USB storage mode; the restart below is planned. */
+                    roundie_boot_status_t boot_now;
+                    roundie_boot_status(&boot_now);
+                    const roundie_storage_conditions_t conditions = {
+                        .storage_mode = roundie_storage_mode_active(),
+                        .safe = boot_now.safe,
+                        .stable = boot_now.stage == ROUNDIE_BOOT_STABLE,
+                        .ota_idle = ota.initialized && ota.phase == ROUNDIE_OTA_IDLE,
+                        .image_valid = ota.initialized && ota.running.state == ESP_OTA_IMG_VALID,
+                        .app_busy = !app_idle,
+                    };
+                    roundie_storage_refusal_t refusal = roundie_storage_mode_refusal(&conditions);
+                    if (refusal == ROUNDIE_STORAGE_ALLOWED) {
+                        roundie_storage_mode_request(esp_app_get_description()->app_elf_sha256);
+                        error = ESP_OK;
+                        restart = true;
+                    } else {
+                        ESP_LOGW("recovery", "Storage mode refused: %s", roundie_storage_refusal_name(refusal));
+                        error = ESP_ERR_INVALID_STATE;
+                    }
                 } else if (strcmp(operation, "CLEAR") == 0 && idle_valid && app_idle && roundie_boot_clear()) {
                     error = roundie_boot_persistence_sync() ? ESP_OK : ESP_FAIL;
                 } else if (strcmp(operation, "REBOOT") == 0 && roundie_recovery_active() &&
@@ -186,7 +209,7 @@ void roundie_recovery_command(char *line, bool discard)
         "\"retained\":%u,\"persistence\":%u,\"skip_gui\":%u,\"trial\":%u,\"fault_remaining\":%lu,"
         "\"test_build\":%u,\"version\":\"%s\",\"running\":\"%s\",\"ota_state\":\"%s\",\"elf\":\"%s\","
         "\"other\":\"%s\",\"other_state\":\"%s\",\"other_image\":%u,\"other_compatible\":%u,"
-        "\"other_elf\":\"%s\",\"internal_free\":%zu,\"restart\":%u,\"fault_app\":\"%s\"}\n",
+        "\"other_elf\":\"%s\",\"internal_free\":%zu,\"restart\":%u,\"fault_app\":\"%s\",\"storage\":%u}\n",
         id, (int)error, status.safe, roundie_boot_reason_name(status.reason),
         (unsigned long)status.latch, (unsigned long)status.failures, (unsigned long)status.reset,
         (int)esp_reset_reason(), (unsigned long)status.stage, (unsigned long)status.previous_stage,
@@ -200,7 +223,7 @@ void roundie_recovery_command(char *line, bool discard)
         version, ota.running.label, roundie_ota_image_state_name(ota.running.state), ota.running.elf,
         ota.other.label, roundie_ota_image_state_name(ota.other.state), ota.other.image_valid,
         ota.other.compatible, ota.other.elf, heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-        restart || fault || hang, status.fault_app);
+        restart || fault || hang, status.fault_app, roundie_storage_mode_active());
     int written = -1;
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         written = usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));

@@ -50,6 +50,7 @@ const esp_partition_t *esp_ota_get_running_partition(void);
 const esp_partition_t *esp_ota_get_boot_partition(void);
 const esp_partition_t *esp_ota_get_next_update_partition(const esp_partition_t *start);
 esp_err_t esp_ota_get_state_partition(const esp_partition_t *p, esp_ota_img_states_t *state);
+const esp_app_desc_t *esp_app_get_description(void);
 esp_err_t esp_ota_get_partition_description(const esp_partition_t *p, esp_app_desc_t *desc);
 esp_err_t esp_image_verify(int mode, const esp_partition_pos_t *p, esp_image_metadata_t *metadata);
 esp_err_t esp_ota_check_image_validity(esp_partition_type_t type, const esp_image_header_t *header, const esp_app_desc_t *desc);

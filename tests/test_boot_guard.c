@@ -10,6 +10,7 @@
 #include "esp_system.h"
 #include "roundie_ota.h"
 #include "recovery_diagnostics.h"
+#include "roundie_storage_mode.h"
 
 static uint8_t image[32] = {1};
 static uint8_t blob[16];
@@ -35,6 +36,12 @@ void roundie_app_runtime_poll(int64_t now)
     }
 }
 int64_t esp_timer_get_time(void) { return 100; }
+const esp_app_desc_t *esp_app_get_description(void)
+{
+    static esp_app_desc_t description;
+    memcpy(description.app_elf_sha256, image, sizeof(image));
+    return &description;
+}
 
 esp_err_t nvs_open(const char *name, unsigned mode, nvs_handle_t *handle)
 {
@@ -241,6 +248,28 @@ int main(void)
     assert(status().skip_gui && status().reason == ROUNDIE_SAFE_STORAGE);
     /* Caller still must supply real GUI/DMA health; this helper alone never
      * calls the OTA confirmation API. */
+
+    /* USB storage mode: STORAGE asks for a planned restart only when the image
+     * is VALID and STABLE, OTA is idle and nothing is loaded. */
+    fresh();
+    stable();
+    ota.running.state = ESP_OTA_IMG_VALID;
+    ota.phase = ROUNDIE_OTA_IDLE;
+    unsigned resets_before = resets;
+    elf_busy = true;
+    assert(!command("STORAGE", false) && resets == resets_before);
+    elf_busy = false;
+    ota.phase = ROUNDIE_OTA_RECEIVING;
+    assert(!command("STORAGE", false) && resets == resets_before);
+    ota.phase = ROUNDIE_OTA_IDLE;
+    ota.running.state = ESP_OTA_IMG_PENDING_VERIFY;
+    assert(!command("STORAGE", false) && resets == resets_before);
+    ota.running.state = ESP_OTA_IMG_VALID;
+    assert(!command("STORAGE", true) && resets == resets_before);
+    assert(command("STORAGE", false) && resets == resets_before + 1);
+    start(ROUNDIE_RESET_SOFTWARE);
+    assert(roundie_storage_mode_begin(true, image) && roundie_storage_mode_active());
+    assert(!command("STORAGE", false) && !roundie_storage_mode_begin(true, image));
 
     fresh();
     assert(command("STATUS", false));

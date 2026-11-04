@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "rep/rep_storage_v1.h"
 #include "roundie_packages.h"
+#include "roundie_storage_mode.h"
 #include "storage_diagnostics.h"
 #if CONFIG_ROUNDIE_DEV_ELF
 #include "elf_diagnostics.h"
@@ -37,7 +38,7 @@ bool roundie_app_runtime_allowed(void)
     roundie_boot_status(&boot);
     roundie_ota_status_t ota;
     roundie_ota_status(&ota);
-    return !boot.safe && boot.stage == ROUNDIE_BOOT_STABLE &&
+    return !boot.safe && !roundie_storage_mode_active() && boot.stage == ROUNDIE_BOOT_STABLE &&
         ota.initialized && ota.boot_checked && ota.boot_passed &&
         ota.running.state == ESP_OTA_IMG_VALID && ota.phase == ROUNDIE_OTA_IDLE &&
         strcmp(ota.running.label, ota.boot) == 0 && roundie_storage_available();

@@ -56,7 +56,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "request", "clear", "reboot", "slots"):
+    for name in ("status", "request", "clear", "reboot", "slots", "storage"):
         commands.add_parser(name)
     select = commands.add_parser("select", help="select alternate verified VALID image; data compatibility is operator-owned")
     select.add_argument("slot", choices=("ota_0", "ota_1"))
@@ -66,7 +66,7 @@ def main(argv=None):
     hang = commands.add_parser("hang", help="development image only: stop the worker until its task watchdog panics")
     hang.add_argument("--elf", required=True)
     args = parser.parse_args(argv)
-    operation = {"status": "STATUS", "request": "REQUEST", "clear": "CLEAR", "reboot": "REBOOT", "slots": "SLOT STATUS"}.get(args.command)
+    operation = {"status": "STATUS", "request": "REQUEST", "clear": "CLEAR", "reboot": "REBOOT", "slots": "SLOT STATUS", "storage": "STORAGE"}.get(args.command)
     try:
         if args.command in ("select", "fault", "hang"):
             if re.fullmatch(r"[0-9a-f]{64}", args.elf) is None:

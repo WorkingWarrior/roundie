@@ -37,6 +37,8 @@
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #include "power_manager.h"
+#include "roundie_storage_mode.h"
+#include "storage_mode_screen.h"
 #include "local_time.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
@@ -991,6 +993,13 @@ void app_main(void)
     if (boot.fault_app[0] != '\0') {
         ESP_LOGW(TAG, "Previous session failed with package %s loaded", boot.fault_app);
     }
+    /* One-shot request, read and cleared here so any failure returns to normal
+     * mode. Only a planned software restart outside Safe Mode starts it. */
+    const bool storage_mode = roundie_storage_mode_begin(
+        boot.reset == ROUNDIE_RESET_SOFTWARE && !boot.safe, description->app_elf_sha256);
+    if (storage_mode) {
+        ESP_LOGW(TAG, "USB storage mode (gate G1: screen only, no USB yet); applications are inhibited");
+    }
     roundie_ota_status_t startup_ota;
     roundie_ota_snapshot(&startup_ota);
     if (roundie_boot_fault_step(startup_ota.running.state == ESP_OTA_IMG_VALID)) {
@@ -1152,6 +1161,9 @@ void app_main(void)
     }
 #endif
 
+    if (storage_mode) {
+        roundie_storage_screen_start();
+    }
     error = roundie_board_backlight_set(board, 60);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Backlight start: %s", esp_err_to_name(error));
@@ -1181,7 +1193,7 @@ void app_main(void)
         portENTER_CRITICAL(&state.dma_lock);
         bool dma_idle = state.dma_completions == (uint32_t)state.transfer_id;
         portEXIT_CRITICAL(&state.dma_lock);
-        if (!roundie_power_gui_poll(iteration_at, dma_idle, roundie_gui_bench_due())) {
+        if (!roundie_power_gui_poll(iteration_at, dma_idle, roundie_gui_bench_due() || storage_mode)) {
             /* Parked for light sleep: no LVGL or LCD work until resumed. */
             error = esp_task_wdt_reset();
             if (error != ESP_OK) {
@@ -1206,6 +1218,9 @@ void app_main(void)
 #if CONFIG_ROUNDIE_APP_RUNTIME
         roundie_launcher_gui_pump(roundie_recovery_active());
 #endif
+        if (storage_mode) {
+            roundie_storage_screen_poll(iteration_at);
+        }
         roundie_ui_display_progress(state.completed_transfers, state.transfer_errors);
         static roundie_ui_status_t app_ui;
         roundie_ui_status(&app_ui);
