@@ -178,3 +178,48 @@ when the system worker no longer starts USB Serial/JTAG.
 (PENDING, needs the user); a restart refusal path with a real OTA session;
 behaviour with a loaded application is refused on the admission rule only (the
 device tests entered with the home application closed).
+
+## 9. Gate G2 results, 2026-11-04 (firmware 0.3.36)
+
+**Implemented.** `main/storage_usb.c`: 1 MiB FAT volume in PSRAM behind an
+`esp_blockdev`, esp_tinyusb 3.0.0 mass storage with the library's automatic
+mount switching, a bounded queue of bus events from the TinyUSB task, and the
+development CDC status port (`ROUNDIE_DEV_STORAGE_CDC`, word `EXITNOW`).
+`components/roundie_storage_mode/session.c`: the ownership and timeout policy.
+`main/storage_mode_screen.c`: states WAITING, HOST_OWNS, EJECTED and a USB
+failure, with a countdown. The system worker skips the USB Serial/JTAG driver in
+the mode. Light sleep is refused in the mode. The USB identity is still the
+component's default (D3 open). The build adds the esp_tinyusb dependency
+(`dependencies.lock`), two Kconfig options and about 78 KB.
+
+**Policy values (decisions, adjustable):** no host for 120 s ends the mode; a
+host that owns the drive and does no I/O for 600 s ends it; after an eject the
+mode ends after 20 s (G3 replaces this with the import and a short countdown);
+a host that owns the drive and has been suspended for 20 s loses it.
+
+**Verified**
+
+| Evidence | Result |
+|---|---|
+| Host | Session policy: no-host timeout; busy host postpones the idle timeout; eject starts the short timeout; re-attach returns the drive; suspend without detach takes the drive back after the limit; resume cancels it; suspend while the firmware owns the drive takes nothing. Full suite: 87 tests OK |
+| Target build | 0.3.36, no new warnings, 1,063,136 B |
+| Device, enter | RS1 `storage` accepted; USB Serial/JTAG left the bus and `303a:4003` appeared 2.9 s after the command; the status port reported `usb=ok`, `phase=1` (host owns), `att=1`, `det=0` |
+| Device, Linux 7.3.1 | `sdc` 1 MB with a 992.5 KB vfat partition; udisks mounted it; `Inbox` and `README.TXT` visible; a 100 KiB file copied into `Inbox` with a matching SHA-256 after `sync` |
+| Device, eject | udisks `Drive.Eject`: the status port showed `owner=APP`, `phase=2`, `left=16`; 18.2 s after the eject the mode ended by itself and USB Serial/JTAG (`303a:1001`) returned |
+| Device, back in normal mode | RS1: `storage=0`, `failures=0`, `safe=0`, image VALID, stage reached 4 |
+| EXITNOW | Stray bytes before the word did not end the mode; the word did; USB Serial/JTAG returned 2.5 s later |
+| Host owns after attach | With the cable plugged in, the library mounts the drive to the host at attach, so the "no host" timeout does not apply to a plugged cable: an idle host keeps the mode for the 600 s idle limit (390 s were left when observed) |
+
+**Not verified (PENDING, need the user or a decision).**
+
+- The screen by eye and "Zakończ" by finger.
+- A cable pull while the host owns the drive (take-back after 20 s) and a
+  re-attach during the ejected window: the logic is host-tested, the device
+  path is not.
+- ROM Download entry from storage mode (the same procedure as the OTG probe,
+  repeated with this firmware).
+- A restart refusal with a real OTA session.
+- Windows, macOS and Android.
+- Power cost of the mode and its boot round trip: only the 2.9 s and 2.5 s
+  above were observed, not measured as a budget.
+
