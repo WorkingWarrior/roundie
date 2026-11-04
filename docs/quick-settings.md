@@ -81,5 +81,6 @@ RP1/RW1 protocol text, and the package names, which belong to the packages.
   not U+00B7. The battery line therefore separates with "•" (U+2022), which
   they do include. Any new string must stay inside those ranges.
 - **Verification.** Host: `tests/test_launcher.c` asserts the pill, status and
-  result texts. Device 0.3.33: OTA VALID. PENDING (by eye): that every Polish
-  glyph renders, and that the power menu and the pills fit.
+  result texts. Device 0.3.33: OTA VALID.
+- **User-reported, 2026-11-04 (0.3.33):** "Wyglądają dobrze" (they look good).
+  Which screens were looked at was not recorded.
