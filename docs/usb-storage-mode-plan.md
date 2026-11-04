@@ -245,3 +245,45 @@ this mode, because OTA runs only over USB Serial/JTAG, which is off; it stays
 covered by the admission rule and host tests. Windows, macOS and Android remain
 PENDING. G2's device gate is otherwise met.
 
+## 10. Gate G3 results, 2026-11-04 (firmware 0.3.39)
+
+**Implemented.** The importer is `components/roundie_storage_mode/import.c`, a
+non-blocking state machine with injected file system, SHA-256 and PackageManager
+(so it is host-tested with mocks). `main/storage_import.c` binds it to the VFS,
+PSA hashing and `roundie_packages_*`, and is stepped from the system worker loop,
+the only caller of PackageManager. The GUI reads a published copy of the status
+and posts requests, answers and cancels through atomics; it never waits for
+storage work. `main/storage_mode_screen.c` shows the confirmation dialog
+("Zainstalować?", name, version, "Instaluj" and "Pomiń") and the result summary.
+
+**Decisions applied (D1 default, adjustable).** Each package is confirmed on the
+watch. Candidates are `.rpk` files directly in `Inbox`, at most 8 per run, each
+at most 65,760 B (PackageManager's maximum), ASCII names under 64 characters,
+not hidden. Everything else is ignored and counted; empty and oversized `.rpk`
+files are reported as failures. The answer window is 45 s, inside
+PackageManager's 60 s READY window; no answer is a timeout and the file stays.
+A file is deleted from `Inbox` only after it was installed. The run waits up to
+30 s for the boot to be stable (PackageManager admits nothing earlier) instead of
+failing; a host that re-attaches during a run cancels it. Admission for
+packages is allowed in storage mode while applications stay inhibited.
+
+**Verified**
+
+| Evidence | Result |
+|---|---|
+| Host | Classification table; valid install and an update; skip, timeout (before the READY window), empty, oversized, not a package; refusal at begin, write, finish and install, aborting exactly when a session is open; a volume that vanishes while hashing and while staging; list failure; the 8-file bound; cancel mid-transfer and while waiting for the answer; readiness wait then success, and refusal after 30 s; session numbers increase across runs; at most 8 chunks are read per step. Full suite: 88 tests OK |
+| Target build | 0.3.39, no new warnings |
+| Device, real host stack (Linux 7.3.1, `cp`, udisks eject; answers sent through the development words) | Run A: `MSCTEST.RPK` installed; `BAD.RPK` (one flipped byte in the ELF) `bad_package`/`package-ELF-digest`; `JUNK.RPK` (400 random bytes) `bad_package`/`package-header`; `BIG.RPK` (70,000 B) `too_large`; `EMPTY.RPK` `empty`; `._MAC.RPK` and `NOTES.TXT` ignored. Run B: no answer, `timeout` after 45 s, file kept. Run C: the same version again `refused` (`replace-requires-healthy-older-version`), then 1.1.0 `updated`. Run D: `skip`, file kept. After each run: `storage=0`, `failures=0`, `safe=0`, VALID. The installed package was listed by RP1, launched (accepted), then removed to restore the device |
+| First attempt | A run started 8-9 s after entering the mode was refused with `package-admission`, because PackageManager admits only from STABLE, about 12 s in. The readiness wait is the fix and was verified in the second attempt |
+
+**Not verified (PENDING).**
+
+- The dialog buttons and the result screen by eye and finger (the device runs
+  used the development words INSTALL and SKIP).
+- A re-attach during a run on the device (host-tested only).
+- Flash behaviour: the number of package installs per mode entry that the
+  LittleFS wear and write latency can take is unmeasured; the GUI was not
+  observed during the writes.
+- Windows, macOS and Android; the drive texts in the host's language.
+- A package larger than the typical one: only a 1.9 KB package was imported.
+
