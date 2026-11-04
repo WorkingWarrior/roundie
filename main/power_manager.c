@@ -291,7 +291,12 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
     if (phase == SLEEP_RESUMED) {
         roundie_power_woke(&policy, now_us, user_wake);
         if (user_wake) {
+            /* Hypothesis, pending the device test: light sleep leaves the
+             * ST77916 blank, so initialise it again and repaint all. */
+            esp_err_t error = roundie_board_display_reinit(gui_board);
+            ESP_LOGI(TAG, "Display re-initialised after wake: %s", esp_err_to_name(error));
             apply_screen(true);
+            lv_obj_invalidate(lv_screen_active());
         }
         portENTER_CRITICAL(&shared.lock);
         shared.phase = SLEEP_IDLE;

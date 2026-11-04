@@ -79,6 +79,9 @@ esp_err_t roundie_board_touch_read(roundie_board_t *board, bool *pressed,
 esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent);
 /* GUI task only: ST77916 DISPOFF/DISPON. Backlight is separate. */
 esp_err_t roundie_board_display_power(roundie_board_t *board, bool on);
+/* GUI task only, no transfer in flight: resets and initialises the ST77916
+ * again, then DISPON. Panel memory is lost; the caller repaints everything. */
+esp_err_t roundie_board_display_reinit(roundie_board_t *board);
 /* Normal start only; GPIO0 is configured as an input and never driven. */
 bool roundie_board_boot_pressed(roundie_board_t *board);
 

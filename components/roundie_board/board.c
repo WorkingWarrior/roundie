@@ -514,6 +514,22 @@ esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent)
     return ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
 
+esp_err_t roundie_board_display_reinit(roundie_board_t *board)
+{
+    if (board == NULL || board->panel == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = esp_lcd_panel_reset(board->panel);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = esp_lcd_panel_init(board->panel);
+    if (error != ESP_OK) {
+        return error;
+    }
+    return esp_lcd_panel_disp_on_off(board->panel, true);
+}
+
 esp_err_t roundie_board_display_power(roundie_board_t *board, bool on)
 {
     if (board == NULL || board->panel == NULL) {

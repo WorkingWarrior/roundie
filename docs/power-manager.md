@@ -152,6 +152,33 @@ The figures above are one run of each case. The display results show that LCD
 transfers resume without errors after wake. They are counters, not a view of the
 panel.
 
+## Blank panel after a touch wake, 2026-11-04
+
+**Verified fact (device, 0.3.33, user and log):** after "Uśpij" from quick
+settings and a touch wake, the backlight was lit but the panel stayed blank.
+The board was awake: RP1 answered, the log showed `wake causes 0x80` (GPIO),
+the home application restarted 120 ms later and touches were read. LCD
+flush counters kept rising with no errors, and a full repaint, RW1 screen
+off/on and another timed sleep did not bring the picture back. Only a restart
+did. This contradicts the 2026-11-03 reading of "touch wake turned the screen
+on": the counters above never showed the panel itself, and that note may have
+meant the backlight only.
+
+**Architectural decision (a fix for an unconfirmed cause):** after a wake that
+turns the screen on (touch or BOOT), the GUI task resets and initialises the
+ST77916 again (`roundie_board_display_reinit`: reset, init table, DISPON),
+turns the backlight on and invalidates the active screen. A timer-only wake
+keeps the screen off and does not do it.
+
+**Device, 0.3.34:** one touch wake after "Uśpij" (sleep 7,974 ms, cause
+0x80); the log shows `Display re-initialised after wake: ESP_OK` 260 ms after
+the wake. User-reported: "Ekran wrócił" (the picture returned). One attempt.
+The cause (for example the QSPI lines or the panel losing state in light
+sleep) is not identified, and the re-initialisation is a workaround that
+cannot say why it works. PENDING: BOOT wake, repeated sleeps, a sleep with a
+longer duration, and a cheaper fix (for example only DISPON, or only the
+init table) if the 260 ms is visible.
+
 ## Pending experiments
 
 | Question | Method | Acceptance |
