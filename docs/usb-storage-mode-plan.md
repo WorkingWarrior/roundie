@@ -1,6 +1,12 @@
-# USB storage mode — integration plan (proposal, not approved)
+# USB storage mode — integration plan
 
-**Status: plan only.** No firmware, partition, ABI or protocol changes are made
+**Status: D0 approved by the user on 2026-11-04** (spec §16 and §23 stage 7
+amended). The user did not answer D1–D4 separately, so the recommendations in
+section 5 are in force as defaults and can be changed. Gates G1 onward are
+implemented one at a time; the text below was written as a proposal and is kept
+as written.
+
+**Plan only until a gate says otherwise.** No firmware, partition, ABI or protocol changes are made
 by this page. It builds on the [MSC probe results](usb-msc.md), the
 [USB architecture gate](usb-architecture.md) and the [PackageManager](package-manager.md).
 Labels follow AGENTS.md: **fact** (source or device evidence), **proposal**

@@ -1184,6 +1184,15 @@ Nie wolno zakładać, że coredump obejmujący wszystkie dane PSRAM będzie ekon
 
 # 16. USB i MTP Responder
 
+**Decyzja architektoniczna, 2026-11-04:** transfer paczek przez USB ma być
+realizowany jako **tryb pamięci masowej USB (MSC)**, a nie MTP. Jest to
+jednorazowy tryb rozruchu z dyskiem FAT w PSRAM; import `.rpk` odbywa się
+wyłącznie przez PackageManager. Normalny tryb zachowuje USB Serial/JTAG.
+Uzasadnienie, wyniki sond i bramki: [usb-storage-mode-plan.md](usb-storage-mode-plan.md),
+[usb-msc.md](usb-msc.md). Poniższy opis MTP zostaje jako rozważona alternatywa
+i punkt odniesienia; MTP nie jest planowane. Wymagania dotyczące ochrony danych
+systemowych (§16.4) i ROM Recovery (§16.5) pozostają w mocy.
+
 ## 16.1. Cel
 
 USB MTP ma umożliwiać zarządzanie plikami REP bez udostępniania hostowi surowej partycji Flash.
@@ -1848,6 +1857,10 @@ Jeżeli bramka nie zostanie spełniona, należy przeprowadzić przegląd archite
 
 ## Etap 7 — USB MTP
 
+**Zmiana 2026-11-04:** etap realizowany jako tryb pamięci masowej USB (MSC)
+według [planu](usb-storage-mode-plan.md), bramki G0–G5. Lista poniżej to stan
+pierwotny; "MTP Responder" i "Mapowanie katalogów logicznych" nie są planowane.
+
 - Integracja esp_tinyusb.
 - MTP Responder.
 - Mapowanie katalogów logicznych.
@@ -1968,7 +1981,8 @@ Następujące zagadnienia wymagają pomiarów lub osobnego rozstrzygnięcia:
 17. Zachowanie RTC po brownoucie.
 18. Dostępność sygnału LCD_TE.
 19. Docelowa konfiguracja buforowania LVGL.
-20. Stabilność MTP w wybranej wersji esp_tinyusb.
+20. Stabilność MTP w wybranej wersji esp_tinyusb. (Zastąpione decyzją MSC z
+    2026-11-04; otwarte pozostają Windows/macOS/Android i nieczyste odłączenie.)
 21. Procedura ROM Recovery przy zasilaniu bateryjnym.
 22. Zachowanie BOOT jako źródła wybudzania: light sleep zweryfikowany 2026-11-03
     ([PowerManager](power-manager.md)); deep sleep i strapping przy wybudzeniu otwarte.
