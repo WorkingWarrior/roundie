@@ -21,3 +21,7 @@ __pycache__/
 /examples/usb_otg_recovery_probe/managed_components/
 /examples/usb_otg_recovery_probe/sdkconfig
 /examples/usb_otg_recovery_probe/sdkconfig.old
+/examples/usb_msc_ramdisk_probe/build*/
+/examples/usb_msc_ramdisk_probe/managed_components/
+/examples/usb_msc_ramdisk_probe/sdkconfig
+/examples/usb_msc_ramdisk_probe/sdkconfig.old

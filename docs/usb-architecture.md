@@ -203,6 +203,9 @@ the same sequence with the battery removed, and any behaviour with MTP loaded
 are untested. VBUS removal events were not exercised (no cable pull during the
 run). Neither the gate on VBUS nor the backend blocker changes.
 
+**Mass-storage alternative.** [usb-msc.md](usb-msc.md) records a probe of a FAT
+volume in PSRAM exposed as a drive, with device results and a comparison to MTP.
+
 ## Composite endpoint and identity design
 
 **Verified host/target structure:** the compile-only probe uses real pinned
