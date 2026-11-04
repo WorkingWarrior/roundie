@@ -287,3 +287,19 @@ packages is allowed in storage mode while applications stay inhibited.
 - Windows, macOS and Android; the drive texts in the host's language.
 - A package larger than the typical one: only a 1.9 KB package was imported.
 
+### G3 finger results, 2026-11-04 (firmware 0.3.39)
+
+Two runs with the user at the board, nothing sent by the development words.
+
+| Case | Observation |
+|---|---|
+| Dialog and "Instaluj" | User-reported: the dialog showed and the package was installed. Status port: `IMPORTRESULT 0 file=MSCTEST.RPK result=installed name=MSC test version=1.0.0` |
+| Dialog and "Pomiń" | User-reported: "Pominięto". Status port: `result=skipped name=MSC test two version=1.0.0`; normal mode returned (`storage=0`, `failures=0`, VALID) |
+
+Not recorded: whether every Polish character and line fitted the circle on both
+screens (asked, not answered). The test package was removed afterwards, so the
+device holds hello, round, stopwatch, ui and watch.
+
+**Still open for G3:** a re-attach during a run on the device, flash wear and
+latency for repeated installs, Windows, macOS and Android.
+
