@@ -157,6 +157,35 @@ pending a decision: (a) accept the bus-powered mode and measure the cases
 above on the unit; (b) add a divider from `USB_5V` to GPIO7 (hardware change,
 soldering). Neither is approved here.
 
+## OTG recovery probe, 2026-11-04
+
+**Method.** `examples/usb_otg_recovery_probe` is a minimal image (TinyUSB, one
+CDC port, event counters) installed through RO1 into the spare OTA slot while
+0.3.34 was confirmed in the other. It never confirms itself, so the bootloader
+rolls back at the next reset. Authorization: the user chose this test; it
+changes no partition, bootloader or eFuse.
+
+**Device results (one run each, user at the board for the manual one):**
+
+| Case | Observation |
+|---|---|
+| OTG start | After `activate --restart` the host saw `303a:4001` and a CDC port; the probe reported `attached=1`, no resets in 100+ s |
+| Manual ROM entry from OTG | Procedure from [rom-recovery.md](rom-recovery.md): PWR 2 s with USB attached (probe kept running), USB removed (host lost the device), BOOT held while reconnecting. esptool `--no-stub chip-id` connected: ESP32-S3 rev v0.2, MAC `28:84:85:87:98:7c`, "Staying in bootloader". Read-only |
+| Return from ROM | USB removed, reconnected without BOOT or PWR: 0.3.34 on ota_0 VALID, probe slot ABORTED, reset class power-on, RO1 and RP1 answered over USB Serial/JTAG |
+| Software restart from OTG | Twice (once by accident): after `esp_restart()` the board rolled back to 0.3.34 and `303a:1001` reappeared 0.4 s after the OTG device vanished; RO1 answered |
+
+**What this settles.** The recovery gate above is **passed for this unit and
+procedure**: ROM Download is reachable from OTG ownership, and a software
+restart into a USB Serial/JTAG image restores that path, so the PHY mux does
+not stay stuck across a restart in this case. The pinned `usb_del_phy()`
+limitation is untouched; the observation says restart works, not why.
+
+**What it does not settle.** Only one unit and one battery state. A hung or
+crashed OTG image that never restarts, rollback after a panic inside TinyUSB,
+the same sequence with the battery removed, and any behaviour with MTP loaded
+are untested. VBUS removal events were not exercised (no cable pull during the
+run). Neither the gate on VBUS nor the backend blocker changes.
+
 ## Composite endpoint and identity design
 
 **Verified host/target structure:** the compile-only probe uses real pinned

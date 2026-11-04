@@ -17,3 +17,7 @@ __pycache__/
 /examples/usb_mtp_probe/managed_components/
 /examples/usb_mtp_probe/sdkconfig*
 !/examples/usb_mtp_probe/sdkconfig.defaults
+/examples/usb_otg_recovery_probe/build*/
+/examples/usb_otg_recovery_probe/managed_components/
+/examples/usb_otg_recovery_probe/sdkconfig
+/examples/usb_otg_recovery_probe/sdkconfig.old
