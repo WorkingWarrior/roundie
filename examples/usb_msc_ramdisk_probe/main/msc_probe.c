@@ -251,21 +251,27 @@ void app_main(void)
         if (storage != NULL) {
             tinyusb_msc_get_storage_mount_point(storage, &mount_point);
         }
+        /* The host can vanish while the application owns the volume, so keep the
+         * last listing taken in that state and the number of such seconds. */
+        static char last_app_inbox[200] = "none";
+        static uint32_t app_seconds;
         char inbox[200] = "inbox=host-owned";
         if (mount_point == TINYUSB_MSC_STORAGE_MOUNT_APP) {
             list_inbox(inbox, sizeof(inbox));
+            snprintf(last_app_inbox, sizeof(last_app_inbox), "%s", inbox);
+            app_seconds++;
         }
-        char line[480];
+        char line[640];
         int length = snprintf(line, sizeof(line),
             "MSCPROBE up=%" PRIu32 " init=%d/%d/%d/%d dirs=%d att=%" PRIu32 " det=%" PRIu32
             " susp=%" PRIu32 " res=%" PRIu32 " owner=%s ev=%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32
-            " rd=%" PRIu32 ":%" PRIu64 " wr=%" PRIu32 ":%" PRIu64 " psram_free=%u %s\r\n",
+            " rd=%" PRIu32 ":%" PRIu64 " wr=%" PRIu32 ":%" PRIu64 " psram_free=%u app_s=%" PRIu32 " last_app_%s | %s\r\n",
             uptime_s, (int)driver_error, (int)storage_error, (int)usb_error, (int)cdc_error, folders_error,
             attached_events, detached_events, suspended_events, resumed_events,
             mount_point == TINYUSB_MSC_STORAGE_MOUNT_USB ? "USB" : "APP",
             msc_event_count[0], msc_event_count[1], msc_event_count[2], msc_event_count[3], msc_event_count[4],
             read_calls, read_bytes, write_calls, write_bytes,
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), inbox);
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), app_seconds, last_app_inbox, inbox);
         if (length > 0 && tinyusb_cdcacm_initialized(TINYUSB_CDC_ACM_0)) {
             tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)line, (size_t)length);
             tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);

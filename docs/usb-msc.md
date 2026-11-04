@@ -46,10 +46,30 @@ cannot show cache or ordering behaviour.
 | `SYNCHRONIZE CACHE` | Returns an error status. Linux tolerates this; other hosts are unmeasured |
 | PSRAM | 4 MB volume leaves 4,188,860 B of the 8 MB free |
 
+## Real operating system, same day (Linux 7.3.1, one run)
+
+After the computer restarted into a kernel with `usb_storage`, the probe
+(rebuilt to keep the last Inbox listing taken while the application owned the
+volume) was tested through the desktop's normal storage stack (udisks).
+
+| Case | Observation |
+|---|---|
+| Recognition | `sdc`, 4 MB, one vfat partition; mounted by udisks without any option |
+| Copy | Two files (100 KiB and 64 KiB) copied into `Inbox` with `cp`; `sync` took 0.3 s; SHA-256 read back from the mount matched the originals |
+| Persistence across a cable pull | A file written in an earlier session was still there, with the same SHA-256, after the cable was removed and replugged |
+| Eject (udisks D-Bus `Drive.Eject`) | The media size became 0 B, the USB device stayed on the bus with its CDC port; the log showed owner `APP` and `inbox=REAL_OS.RPK:102400,SECOND.RPK:65536`, equal to the file sizes |
+| "Safely remove" (`udisksctl power-off`) | The whole USB device left the bus, CDC included; the log kept no APP-owned window to read, hence the rebuilt probe. One `detached` event was counted in a window that also held a cable pull, so it is not attributed |
+| Stray `eject` / `sg_start` | Not permitted for this user (no SG_IO access); no inference |
+
+**Still not measured:** Windows and macOS; an unclean unplug while the host
+holds dirty data (the cache); the cost of 4 MB of PSRAM against the GUI and
+XIP budget; integration with PackageManager, Safe Mode, sleep and home
+parking.
+
 ## What this does not settle
 
-- Behaviour with a real operating system: write caching, flush before eject,
-  Windows and macOS, and an unclean unplug while the host holds dirty data.
+- Windows and macOS, and an unclean unplug while the host holds dirty data
+  (Linux write caching with a clean eject is covered below).
 - Time to hand the volume back after a cable pull without eject: no detach
   event arrives ([cable-removal result](usb-architecture.md)), so the design
   needs a policy, for example taking it back after a suspend timeout.
