@@ -112,6 +112,25 @@ config ROUNDIE_DEV_PACKAGES
         together with the other development interfaces for production; the
         launcher stays available through ROUNDIE_APP_RUNTIME.
 
+config ROUNDIE_USB_STORAGE
+    bool "USB storage mode: a FAT drive in PSRAM over USB-OTG mass storage"
+    default n
+    depends on ROUNDIE_APP_RUNTIME
+    help
+        Gate G2 of docs/usb-storage-mode-plan.md. A one-shot boot mode (RS1
+        STORAGE) takes the internal USB PHY for mass storage and returns to
+        USB Serial/JTAG with a planned restart. Normal mode is unchanged.
+
+config ROUNDIE_DEV_STORAGE_CDC
+    bool "Development: CDC status port in USB storage mode"
+    default n
+    depends on ROUNDIE_USB_STORAGE
+    help
+        Adds a CDC port that prints one status line a second and accepts the
+        word EXITNOW to leave the mode. The USB Serial/JTAG diagnostics are
+        off in this mode, so this is the only way to observe it from a host.
+        Disable for production.
+
 config ROUNDIE_BOOT_STABILITY_SECONDS
     int "BootGuard operational stability window (seconds)"
     range 5 30

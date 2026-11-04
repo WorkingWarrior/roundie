@@ -1,4 +1,5 @@
 #include "power_manager.h"
+#include "roundie_storage_mode.h"
 #if CONFIG_ROUNDIE_POWER
 
 #include <inttypes.h>
@@ -380,7 +381,7 @@ static roundie_power_refusal_t sleep_refusal(roundie_board_t *board, bool check_
         .safe = boot.safe,
         .stable = boot.stage == ROUNDIE_BOOT_STABLE,
         .ota_idle = ota_idle(),
-        .runtime_busy = runtime_busy(),
+        .runtime_busy = runtime_busy() || roundie_storage_mode_active(), /* USB would drop */
         .wake_source_active = check_wake_source && roundie_board_wake_source_active(board),
     };
     return roundie_power_sleep_refusal(&conditions);

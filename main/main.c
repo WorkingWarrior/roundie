@@ -415,9 +415,14 @@ static void sensor_worker(void *argument)
     usb_config.rx_buffer_size = 2048;
     usb_config.tx_buffer_size = 2048;
 #endif
-    esp_err_t usb_error = usb_serial_jtag_driver_install(&usb_config);
+    /* In storage mode the internal PHY belongs to USB-OTG: no USB Serial/JTAG
+     * driver, no RT1/RO1/RS1/RP1 service. A restart brings both back. */
+    const bool storage_mode = roundie_storage_mode_active();
+    esp_err_t usb_error = storage_mode ? ESP_OK : usb_serial_jtag_driver_install(&usb_config);
     int serial_fd = -1;
-    if (usb_error == ESP_OK) {
+    if (storage_mode) {
+        ESP_LOGI(TAG, "USB Serial/JTAG services off in storage mode");
+    } else if (usb_error == ESP_OK) {
         usb_serial_jtag_vfs_use_driver();
         usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
         serial_fd = open("/dev/secondary", O_RDWR | O_NONBLOCK);
@@ -428,7 +433,7 @@ static void sensor_worker(void *argument)
     int64_t started_us = 0;
     ESP_LOGI(TAG, "Development RTC protocol RT1 %s",
              serial_fd >= 0 ? "enabled on USB Serial/JTAG" : "unavailable");
-    if (serial_fd < 0) {
+    if (serial_fd < 0 && !storage_mode) {
         roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);
         roundie_ota_gui_health(false);
         ESP_LOGE(TAG, "USB recovery unavailable; no new-image confirmation, ROM recovery required");
@@ -998,7 +1003,7 @@ void app_main(void)
     const bool storage_mode = roundie_storage_mode_begin(
         boot.reset == ROUNDIE_RESET_SOFTWARE && !boot.safe, description->app_elf_sha256);
     if (storage_mode) {
-        ESP_LOGW(TAG, "USB storage mode (gate G1: screen only, no USB yet); applications are inhibited");
+        ESP_LOGW(TAG, "USB storage mode: the USB PHY belongs to the storage drive; applications are inhibited");
     }
     roundie_ota_status_t startup_ota;
     roundie_ota_snapshot(&startup_ota);
@@ -1162,7 +1167,7 @@ void app_main(void)
 #endif
 
     if (storage_mode) {
-        roundie_storage_screen_start();
+        roundie_storage_screen_start(esp_timer_get_time());
     }
     error = roundie_board_backlight_set(board, 60);
     if (error != ESP_OK) {

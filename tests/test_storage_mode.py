@@ -19,5 +19,16 @@ class StorageModeTests(unittest.TestCase):
             ], check=True)
             subprocess.run([executable], check=True, timeout=10)
 
+    def test_session_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = str(Path(directory) / "storage_session")
+            subprocess.run([
+                "cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
+                "-fsanitize=address,undefined",
+                "-I" + str(ROOT / "components/roundie_storage_mode/include"),
+                str(ROOT / "tests/test_storage_session.c"), "-o", executable,
+            ], check=True)
+            subprocess.run([executable], check=True, timeout=10)
+
 if __name__ == "__main__":
     unittest.main()
