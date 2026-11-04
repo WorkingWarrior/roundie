@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -69,7 +70,10 @@ esp_err_t roundie_board_start_recovery(roundie_board_t **out_board,
                                       roundie_board_status_t *status);
 void roundie_board_stop(roundie_board_t *board);
 
-/* Borrowed handles remain valid until roundie_board_stop(). */
+/* Borrowed handles remain valid until roundie_board_stop(). The I2C master is the
+ * board's single managed bus: other devices (the audio codec) are added to it, never
+ * given a second master. NULL in the recovery display start. */
+i2c_master_bus_handle_t roundie_board_i2c_bus(roundie_board_t *board);
 esp_lcd_panel_handle_t roundie_board_panel(roundie_board_t *board);
 esp_lcd_panel_io_handle_t roundie_board_panel_io(roundie_board_t *board);
 

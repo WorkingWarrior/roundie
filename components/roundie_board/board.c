@@ -586,6 +586,11 @@ esp_err_t roundie_board_wake_arm(roundie_board_t *board)
     return error;
 }
 
+i2c_master_bus_handle_t roundie_board_i2c_bus(roundie_board_t *board)
+{
+    return board != NULL ? board->i2c_bus : NULL;
+}
+
 void roundie_board_wake_disarm(roundie_board_t *board)
 {
     if (board == NULL || !board->wake_armed) {

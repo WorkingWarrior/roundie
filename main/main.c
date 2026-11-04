@@ -40,6 +40,8 @@
 #include "roundie_storage_mode.h"
 #include "storage_mode_screen.h"
 #include "storage_import.h"
+#include "audio_diagnostics.h"
+#include "roundie_audio.h"
 #include "local_time.h"
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
 #include "driver/usb_serial_jtag.h"
@@ -372,6 +374,11 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
 #if CONFIG_ROUNDIE_DEV_OTA
                 if (strncmp(frame->line, "!RO1 ", 5) == 0) {
                     roundie_ota_command(frame->line, frame->discard);
+                } else
+#endif
+#if CONFIG_ROUNDIE_DEV_AUDIO
+                if (strncmp(frame->line, "!RA1 ", 5) == 0) {
+                    roundie_audio_command(frame->line, frame->discard);
                 } else
 #endif
 #if CONFIG_ROUNDIE_DEV_ELF
@@ -1061,6 +1068,12 @@ void app_main(void)
         headless_recovery();
     }
 
+#if CONFIG_ROUNDIE_AUDIO
+    /* Speaker output: normal mode only; a failure leaves audio off and changes nothing else. */
+    if (!roundie_recovery_active() && !storage_mode) {
+        roundie_audio_init(roundie_board_i2c_bus(board));
+    }
+#endif
     /* Startup samples remain private until the complete board is published. */
     roundie_rtc_sample_t initial_rtc;
     roundie_battery_sample_t initial_battery;

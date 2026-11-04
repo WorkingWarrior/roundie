@@ -131,6 +131,21 @@ config ROUNDIE_DEV_STORAGE_CDC
         off in this mode, so this is the only way to observe it from a host.
         Disable for production.
 
+config ROUNDIE_AUDIO
+    bool "Speaker output: ES8311 codec and amplifier"
+    default n
+    help
+        docs/audio.md. Starts the audio system task and the codec in normal
+        mode; never in Safe Mode or USB storage mode. Needs a speaker on H1.
+
+config ROUNDIE_DEV_AUDIO
+    bool "Development: RA1 audio diagnostics"
+    default n
+    depends on ROUNDIE_AUDIO
+    help
+        RA1 STATUS, TONE and STOP on USB Serial/JTAG. No authentication.
+        Disable for production.
+
 config ROUNDIE_BOOT_STABILITY_SECONDS
     int "BootGuard operational stability window (seconds)"
     range 5 30

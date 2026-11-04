@@ -1,5 +1,9 @@
 #include "power_manager.h"
 #include "roundie_storage_mode.h"
+#include "sdkconfig.h"
+#if CONFIG_ROUNDIE_AUDIO
+#include "roundie_audio.h"
+#endif
 #if CONFIG_ROUNDIE_POWER
 
 #include <inttypes.h>
@@ -390,6 +394,15 @@ static bool runtime_busy(void)
 #endif
 }
 
+static bool audio_busy(void)
+{
+#if CONFIG_ROUNDIE_AUDIO
+    return roundie_audio_busy();
+#else
+    return false;
+#endif
+}
+
 static roundie_power_refusal_t sleep_refusal(roundie_board_t *board, bool check_wake_source)
 {
     roundie_boot_status_t boot;
@@ -398,7 +411,7 @@ static roundie_power_refusal_t sleep_refusal(roundie_board_t *board, bool check_
         .safe = boot.safe,
         .stable = boot.stage == ROUNDIE_BOOT_STABLE,
         .ota_idle = ota_idle(),
-        .runtime_busy = runtime_busy() || roundie_storage_mode_active(), /* USB would drop */
+        .runtime_busy = runtime_busy() || roundie_storage_mode_active() || audio_busy(), /* USB would drop; audio would cut */
         .wake_source_active = check_wake_source && roundie_board_wake_source_active(board),
     };
     return roundie_power_sleep_refusal(&conditions);
