@@ -115,6 +115,48 @@ exists, standards-compatible self-powered OTG may need a hardware change or
 an explicit narrower, measured operating scope. Neither is silently approved
 here. This blocks an unconditional “MTP on this board without changes” claim.
 
+## Schematic re-check, 2026-11-04
+
+The user supplied the Rev1.1 PDF again; its SHA-256 equals the one reviewed
+above (`d4333dcc…9b6d`), so no new revision is involved. Read from the
+rendered sheet at 400 dpi (**verified source**, drawing only, no measurement):
+
+- **USB-C.** CC1 (R8) and CC2 (R13) have 5.1 kΩ to GND each: a sink with 5 V
+  default current, no Power Delivery. Both D+/D− pairs of the receptacle are
+  tied together, so either plug orientation works. D−/D+ go through 22 Ω
+  (R24, R25) to GPIO19/GPIO20 and nowhere else. I see no TVS on D+/D−; the
+  only ESD part (ESD5451N) is at the PWR key.
+- **VBUS.** Connector `USB_5V` → D4 (MBR230LSFT1G) → `VBUS` rail. `VBUS`
+  feeds the ETA6098 charger VIN, and through D3 the `VCC` rail. The battery
+  reaches `VCC` through D1 and Q2 (a P-FET whose gate is `VBUS`, pulled down by
+  10 MΩ). No net from `USB_5V` or `VBUS` goes to an ESP32 pin.
+- **Pins for a sense line.** The IO table lists GPIO7 and GPIO8 on header J6
+  (3V3, GND beside them); GPIO8 carries a note to remove a 0 Ω resistor before
+  use, GPIO7 does not. Header J8 is UART RX/TX. No header carries 5 V.
+  Reaching `USB_5V` needs a wire to the connector or D4 pad.
+- **Note in the IO table (Chinese, my reading):** if GPIO19/20 are used for
+  USB, flashing needs download mode every time. This matches the pinned
+  limitation above: no esptool auto-reset after OTG takeover.
+- **Other storage.** A microSD slot (TF1) wires SDIO to GPIO12–17, unused today.
+
+**Verified source, IDF v6.1 `usb_phy.c:171-176`:** in device mode the PHY code
+forces `iddig`, `bvalid` and `vbusvalid` to constant 1 through the GPIO
+matrix. esp_tinyusb 3.0.0 `tinyusb.c:297-322` offers `phy.self_powered` with
+`vbus_monitor_io`, which needs a real GPIO. So without a sense line the
+stack runs as bus-powered with VBUS always "valid": the host sees attach and
+detach itself, but the firmware gets no VBUS-removal event.
+
+**Assumption (not measured):** cable removal during a transfer is then seen
+only as suspend or reset, and the MTP session is retired from those. Also
+unmeasured: the D+ pull-up staying on with the cable plugged into an
+unpowered host, and light sleep while USB is plugged.
+
+**Conclusion for the VBUS gate:** the drawing does not block a USB device, it
+blocks a *standards-compliant self-powered* one. Two ways forward, both
+pending a decision: (a) accept the bus-powered mode and measure the cases
+above on the unit; (b) add a divider from `USB_5V` to GPIO7 (hardware change,
+soldering). Neither is approved here.
+
 ## Composite endpoint and identity design
 
 **Verified host/target structure:** the compile-only probe uses real pinned
