@@ -29,7 +29,12 @@ esp_err_t roundie_audio_init(i2c_master_bus_handle_t bus);
 /* A tone from the system. volume_percent 0..100 is a share of the system cap.
  * Refused while a tone plays or when audio is unavailable. */
 esp_err_t roundie_audio_play_tone(uint32_t frequency_hz, uint32_t duration_ms, uint8_t volume_percent);
+/* Development: a built-in single-voice melody (the theme of Pachelbel's Canon, simplified,
+ * about 19 s) so the output can be judged by ear. Same volume rule as a tone. */
+esp_err_t roundie_audio_play_melody(uint8_t volume_percent);
 /* Ends the tone in progress at its next chunk. */
 void roundie_audio_stop(void);
 bool roundie_audio_busy(void);
+/* Development: one codec register over I2C, independent of whether a stream is open. */
+esp_err_t roundie_audio_read_register(uint8_t reg, uint8_t *value);
 void roundie_audio_status(roundie_audio_status_t *out);

@@ -1,6 +1,6 @@
 # Audio output — plan and results
 
-**Status, 2026-11-04: A0 and A1 in progress.** The user chose the speaker only
+**Status, 2026-11-04: A0 done; A1 met except the sound quality details (see the results below).** The user chose the speaker only
 (no microphone in this milestone) and an application API from the start
 (`rep_audio_v1`). Audio is named in the specification only as a system worker
 (§5.2) and in the hardware list (§3); this page is the design record. Labels
@@ -57,3 +57,33 @@ follow AGENTS.md: **fact**, **proposal**, **assumption**, **experiment**.
 | Safe maximum volume | Step the codec volume from low with the speaker attached | Documented value, no clipping or audible distortion |
 | I²S and the codec across light sleep | Play, sleep, wake, play again | Works or is re-initialised after wake |
 | Timing of start and stop (pops) | Listen; scope if needed | No audible pop, or a documented mute sequence |
+
+## Gate A1 results, 2026-11-04 (firmware 0.3.44)
+
+**Implemented.** `components/roundie_audio`: `tone.c` (integer sine generator, 5 ms
+fades), `audio.c` (the system task, I2S transmit channel, ES8311 and the amplifier
+through `esp_codec_dev` 1.6.2), `roundie_board_i2c_bus` so the codec joins the board's
+managed master. RA1 (`tools/roundie_audio.py`, development only): `status`, `tone`,
+`stop`, `regs` (the codec registers 0x00..0x45 as hex) and `melody` (the theme of
+Pachelbel's Canon, one voice, about 19 s, so the output can be judged by ear).
+
+**Verified**
+
+| Evidence | Result |
+|---|---|
+| Host | Tone generator: out-of-range requests, frequency (880 zero crossings in one second at 440 Hz), peak within the request, chunk size does not change the samples, fades, clamping. Full suite: 89 tests OK |
+| Target build | 0.3.42 to 0.3.44, no new warnings; the audio component adds about 44 KB |
+| Device, codec identity | The ES8311 answers at 0x18; its ID registers 0xFD..0xFF read `83 11 01` |
+| Device, register state | Idle versus during a tone: register 0x12 goes from 0x02 to 0x00 and 0x0D from 0x02 to 0x01 (power-up of the DAC path), and the DAC volume register 0x17 reads 0xBF during playback. The dump is not compared with the datasheet |
+| Device, by ear (user-reported) | A tone requested at 10 % of the cap (codec volume 5, about -47 dB on the library's curve) was silent or crackled; a 3 s tone at 100 % of the cap (codec volume 50) was heard as a steady tone; the melody was heard ("Słyszałem melodię") |
+| No faults | Status after every run: `errors=0`; home application kept running; light sleep refused while a tone plays (by design) |
+
+**Fact learned:** the library's volume scale is logarithmic. Volume 5 is nearly
+inaudible, and the cap of 50 is about -25 dB. The cap is still an assumption:
+the user did not report the level as too loud or too quiet.
+
+**Not verified (PENDING).** Whether the melody is clean (no crackles between notes,
+no clipping at the cap) and whether the level suffices. Behaviour of I2S and the
+codec across light sleep. Pops at the start and end of a tone. The register
+dump against the ES8311 datasheet.
+

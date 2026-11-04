@@ -36,6 +36,19 @@ def parse_reply(line, request_id):
     return status
 
 
+def parse_registers(line, request_id):
+    prefix = f"!RA1 {request_id} 0 ".encode()
+    if not line.startswith(prefix):
+        return None
+    try:
+        regs = json.loads(line[len(prefix):])["regs"]
+    except (ValueError, KeyError) as error:
+        raise TransportError(f"malformed register dump: {error}") from error
+    if re.fullmatch(r"([0-9a-f]{2}){70}", regs) is None:
+        raise DeviceError(f"register dump failed: {regs}")
+    return {f"{index:02x}": regs[2 * index:2 * index + 2] for index in range(70)}
+
+
 def request(port, operation, timeout=4.0):
     if len(operation) > 40 or re.fullmatch(r"[A-Z0-9 ]+", operation) is None:
         raise DeviceError("invalid bounded audio command")
@@ -43,6 +56,8 @@ def request(port, operation, timeout=4.0):
     deadline = time.monotonic() + timeout
     write_command(port, f"!RA1 {request_id} {operation}")
     line = read_serial_reply(port, f"!RA1 {request_id} ".encode(), deadline, 320)
+    if operation == "REGS":
+        return parse_registers(line, request_id)
     return parse_reply(line, request_id)
 
 
@@ -52,13 +67,18 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     commands.add_parser("stop")
+    commands.add_parser("regs", help="ES8311 registers 0x00..0x45 as hex")
+    melody = commands.add_parser("melody", help="a built-in melody, about 19 s, to judge the output by ear")
+    melody.add_argument("volume", type=int, help="0..100, a share of the system cap")
     tone = commands.add_parser("tone")
     tone.add_argument("frequency", type=int, help="50..8000 Hz")
     tone.add_argument("duration_ms", type=int, help="10..5000 ms")
     tone.add_argument("volume", type=int, help="0..100, a share of the system cap")
     args = parser.parse_args(argv)
     try:
-        operation = {"status": "STATUS", "stop": "STOP"}.get(args.command)
+        operation = {"status": "STATUS", "stop": "STOP", "regs": "REGS"}.get(args.command)
+        if args.command == "melody":
+            operation = f"MELODY {args.volume}"
         if args.command == "tone":
             operation = f"TONE {args.frequency} {args.duration_ms} {args.volume}"
         with open_serial(args.port) as port:

@@ -30,6 +30,29 @@ void roundie_audio_command(char *line, bool discard)
         } else if (strcmp(operation, "STOP") == 0) {
             roundie_audio_stop();
             error = ESP_OK;
+        } else if (strncmp(operation, "MELODY ", 7) == 0) {
+            char *end = NULL;
+            long volume = strtol(operation + 7, &end, 10);
+            error = end != NULL && *end == '\0' && volume >= 0 ?
+                roundie_audio_play_melody((uint8_t)(volume > 255 ? 255 : volume)) : ESP_ERR_INVALID_ARG;
+        } else if (strcmp(operation, "REGS") == 0) {
+            /* Codec registers 0x00..0x45 as hex, for comparing with the datasheet. */
+            char dump[2 * 0x46 + 1];
+            for (unsigned reg = 0; reg < 0x46; reg++) {
+                uint8_t value = 0xff;
+                if (roundie_audio_read_register((uint8_t)reg, &value) != ESP_OK) {
+                    memcpy(dump, "READFAIL", 8);
+                    dump[8] = '\0';
+                    break;
+                }
+                snprintf(dump + 2 * reg, 3, "%02x", value);
+            }
+            char reply[2 * 0x46 + 64];
+            int out = snprintf(reply, sizeof(reply), "\n!RA1 %s 0 {\"regs\":\"%s\"}\n", id, dump);
+            if (out > 0 && (size_t)out < sizeof(reply)) {
+                usb_serial_jtag_write_bytes(reply, (size_t)out, pdMS_TO_TICKS(100));
+            }
+            return;
         } else if (strncmp(operation, "TONE ", 5) == 0) {
             char *end = NULL;
             long frequency = strtol(operation + 5, &end, 10);

@@ -29,9 +29,34 @@ typedef struct {
     uint32_t frequency_hz;
     uint32_t duration_ms;
     uint8_t volume_percent;
+    bool melody;
 } tone_request_t;
 
+typedef struct {
+    uint16_t frequency_hz;
+    uint16_t duration_ms;
+} note_t;
+
+/* Pachelbel's Canon in D, the theme only, one voice. Eighth, quarter and half notes at 120 ms,
+ * 240 ms and 480 ms; pitches in D major (F#5 740, E5 659, D5 587, C#5 554, B4 494, A4 440,
+ * G4 392, F#4 370, E4 330). */
+#define HALF 480
+#define QUARTER 240
+#define EIGHTH 120
+static const note_t melody[] = {
+    {740, HALF}, {659, HALF}, {587, HALF}, {554, HALF}, {494, HALF}, {440, HALF}, {494, HALF}, {554, HALF},
+    {587, HALF}, {554, HALF}, {494, HALF}, {440, HALF}, {392, HALF}, {370, HALF}, {392, HALF}, {330, HALF},
+    {740, QUARTER}, {659, QUARTER}, {587, QUARTER}, {554, QUARTER}, {494, QUARTER}, {440, QUARTER},
+    {494, QUARTER}, {554, QUARTER}, {587, QUARTER}, {554, QUARTER}, {494, QUARTER}, {440, QUARTER},
+    {392, QUARTER}, {370, QUARTER}, {392, QUARTER}, {330, QUARTER},
+    {740, EIGHTH}, {659, EIGHTH}, {587, EIGHTH}, {554, EIGHTH}, {494, EIGHTH}, {440, EIGHTH}, {494, EIGHTH},
+    {554, EIGHTH}, {587, EIGHTH}, {554, EIGHTH}, {494, EIGHTH}, {440, EIGHTH}, {392, EIGHTH}, {370, EIGHTH},
+    {392, EIGHTH}, {330, EIGHTH}, {587, 960},
+};
+#define NOTE_GAP_FRAMES 320U /* 20 ms of silence between notes */
+
 static esp_codec_dev_handle_t device;
+static const audio_codec_ctrl_if_t *codec_control;
 static QueueHandle_t requests;
 static roundie_audio_status_t status;
 static portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -55,6 +80,26 @@ static void count_error(void)
     portEXIT_CRITICAL(&status_lock);
 }
 
+/* One note through the open codec. False after a write failure. */
+static bool play_note(uint32_t frequency_hz, uint32_t duration_ms, int16_t *chunk)
+{
+    roundie_tone_t tone;
+    if (roundie_tone_init(&tone, frequency_hz, ROUNDIE_AUDIO_SAMPLE_RATE, duration_ms, TONE_AMPLITUDE) == 0) {
+        return true;
+    }
+    while (!atomic_load(&stop_requested)) {
+        uint32_t frames = roundie_tone_fill(&tone, chunk, CHUNK_FRAMES);
+        if (frames == 0) {
+            break;
+        }
+        if (esp_codec_dev_write(device, chunk, (int)(frames * 2U * sizeof(int16_t))) != ESP_CODEC_DEV_OK) {
+            count_error();
+            return false;
+        }
+    }
+    return true;
+}
+
 static void play(const tone_request_t *request)
 {
     uint8_t volume = (uint8_t)((uint32_t)request->volume_percent * ROUNDIE_AUDIO_MAX_PERCENT / 100U);
@@ -75,24 +120,21 @@ static void play(const tone_request_t *request)
         if (esp_codec_dev_set_out_vol(device, (float)volume) != ESP_CODEC_DEV_OK) {
             count_error();
         }
-        roundie_tone_t tone;
         static int16_t chunk[2U * CHUNK_FRAMES];
-        if (roundie_tone_init(&tone, request->frequency_hz, ROUNDIE_AUDIO_SAMPLE_RATE, request->duration_ms,
-                              TONE_AMPLITUDE) != 0) {
-            while (!atomic_load(&stop_requested)) {
-                uint32_t frames = roundie_tone_fill(&tone, chunk, CHUNK_FRAMES);
-                if (frames == 0) {
+        if (request->melody) {
+            for (size_t index = 0; index < sizeof(melody) / sizeof(melody[0]) && !atomic_load(&stop_requested); index++) {
+                if (!play_note(melody[index].frequency_hz, melody[index].duration_ms, chunk)) {
                     break;
                 }
-                if (esp_codec_dev_write(device, chunk, (int)(frames * 2U * sizeof(int16_t))) != ESP_CODEC_DEV_OK) {
-                    count_error();
-                    break;
-                }
+                memset(chunk, 0, sizeof(chunk));
+                esp_codec_dev_write(device, chunk, (int)(NOTE_GAP_FRAMES * 2U * sizeof(int16_t)));
             }
-            /* A little silence keeps the end of the tone from being cut by the close. */
-            memset(chunk, 0, sizeof(chunk));
-            esp_codec_dev_write(device, chunk, (int)sizeof(chunk));
+        } else {
+            play_note(request->frequency_hz, request->duration_ms, chunk);
         }
+        /* A little silence keeps the end from being cut by the close. */
+        memset(chunk, 0, sizeof(chunk));
+        esp_codec_dev_write(device, chunk, (int)sizeof(chunk));
         esp_codec_dev_close(device);
     }
     portENTER_CRITICAL(&status_lock);
@@ -167,6 +209,7 @@ esp_err_t roundie_audio_init(i2c_master_bus_handle_t bus)
 
     audio_codec_i2c_cfg_t i2c_config = {.addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = bus};
     const audio_codec_ctrl_if_t *control = audio_codec_new_i2c_ctrl(&i2c_config);
+    codec_control = control;
     audio_codec_i2s_cfg_t i2s_config = {.port = I2S_NUM_0, .tx_handle = transmit, .rx_handle = NULL};
     const audio_codec_data_if_t *data = audio_codec_new_i2s_data(&i2s_config);
     const audio_codec_gpio_if_t *gpio = audio_codec_new_gpio();
@@ -221,7 +264,28 @@ esp_err_t roundie_audio_play_tone(uint32_t frequency_hz, uint32_t duration_ms, u
         return ESP_ERR_INVALID_STATE;
     }
     atomic_store(&stop_requested, false);
-    const tone_request_t request = {frequency_hz, duration_ms, volume_percent};
+    const tone_request_t request = {frequency_hz, duration_ms, volume_percent, false};
+    if (xQueueSend(requests, &request, 0) != pdTRUE) {
+        atomic_store(&busy, false);
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ESP_OK;
+}
+
+esp_err_t roundie_audio_play_melody(uint8_t volume_percent)
+{
+    if (!status.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (volume_percent > 100U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&busy, &expected, true)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    atomic_store(&stop_requested, false);
+    const tone_request_t request = {0, 0, volume_percent, true};
     if (xQueueSend(requests, &request, 0) != pdTRUE) {
         atomic_store(&busy, false);
         return ESP_ERR_INVALID_STATE;
@@ -232,6 +296,14 @@ esp_err_t roundie_audio_play_tone(uint32_t frequency_hz, uint32_t duration_ms, u
 void roundie_audio_stop(void)
 {
     atomic_store(&stop_requested, true);
+}
+
+esp_err_t roundie_audio_read_register(uint8_t reg, uint8_t *value)
+{
+    if (codec_control == NULL || codec_control->read_reg == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return codec_control->read_reg(codec_control, reg, 1, value, 1) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
 }
 
 bool roundie_audio_busy(void)
