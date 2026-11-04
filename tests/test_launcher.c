@@ -305,7 +305,7 @@ int main(int argc, char **argv)
     assert(nav.result_request == nav.request && nav.completed == runtime.completed);
     assert(strcmp(nav.selected_name, "org.roundie.hello") == 0);
     assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 4)), "42") == 0);
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 1)), "Application finished") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 1)), "Aplikacja zakończona") == 0);
     uint32_t result_request = nav.request;
     clock_us += 10000000;
     poll(true, false);
@@ -324,7 +324,7 @@ int main(int argc, char **argv)
     strcpy(runtime.error, "loader-relocation");
     finish();
     assert(!nav.result_success && !nav.executed && nav.loader_result == -7);
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 4)), "No application result") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(root, 4)), "Brak wyniku aplikacji") == 0);
     back();
     select_id("org.roundie.hello");
     runtime.executed = true;
@@ -412,7 +412,7 @@ int main(int argc, char **argv)
     poll(true, false);
     assert(controls == 1 && nav.state == ROUNDIE_NAV_EXITING);
     assert(lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_flag(pill, LV_OBJ_FLAG_HIDDEN));
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), "Closing...") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), "Zamykanie...") == 0);
     runtime.state = ROUNDIE_ELF_UNLOADED;
     input_busy = false;
     poll(true, false);
@@ -460,7 +460,7 @@ int main(int argc, char **argv)
     assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_SETTINGS " Ustawienia") == 0);
     touch(180, 120, false);
     assert(!lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN));
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(quick, 0)), "Bateria 78% · ładuje") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(quick, 0)), "Bateria 78% • ładuje") == 0);
     lv_obj_t *brightness = lv_obj_get_child(quick, 2);
     assert(strcmp(lv_label_get_text(lv_obj_get_child(brightness, 0)), "Jasność 60%") == 0);
     swipe(180, 110, 180, 120); /* a tap on Brightness: one step */
@@ -478,7 +478,7 @@ int main(int argc, char **argv)
     assert(!nav.exit_pending); /* too short and too slanted */
     touch(180, 340, true);
     touch(180, 250, true);
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_LIST " Apps") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_LIST " Aplikacje") == 0);
     assert(lv_color_to_u32(lv_obj_get_style_bg_color(pill, 0)) == lv_color_to_u32(lv_color_hex(0x2f6fd0)));
     touch(180, 250, false);
     roundie_launcher_status(&nav);
@@ -486,7 +486,7 @@ int main(int argc, char **argv)
     poll(true, false);
     assert(nav.state == ROUNDIE_NAV_EXITING && lv_obj_has_flag(bottom, LV_OBJ_FLAG_HIDDEN));
     assert(lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(top, LV_OBJ_FLAG_HIDDEN));
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), "Apps...") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), "Aplikacje...") == 0);
     runtime.state = ROUNDIE_ELF_UNLOADED;
     finish();
     poll(true, false);
@@ -496,7 +496,7 @@ int main(int argc, char **argv)
     touch(6, 150, false); /* the repaint waits for a release */
     touch(6, 150, true);
     touch(100, 150, true);
-    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_HOME " Home") == 0);
+    assert(strcmp(lv_label_get_text(lv_obj_get_child(pill, 0)), LV_SYMBOL_HOME " Zegarek") == 0);
     assert(lv_color_to_u32(lv_obj_get_style_bg_color(pill, 0)) == lv_color_to_u32(lv_color_hex(0x2f6fd0)));
     touch(140, 150, false);
     roundie_launcher_status(&nav);
@@ -609,7 +609,7 @@ int main(int argc, char **argv)
     lv_obj_t *refresh = lv_obj_get_child(list, ROUNDIE_PACKAGES_MAX + 2);
     lv_obj_update_layout(list);
     assert(lv_obj_has_flag(lv_obj_get_child(lv_screen_active(), 0), LV_OBJ_FLAG_HIDDEN));
-    assert(strcmp(lv_label_get_text(header), "Roundie / Applications") == 0);
+    assert(strcmp(lv_label_get_text(header), "Roundie / Aplikacje") == 0);
     assert(lv_obj_get_width(lv_obj_get_child(list, 0)) == 250 && lv_obj_get_style_opa(lv_obj_get_child(list, 1), 0) == LV_OPA_COVER);
     lv_obj_t *lower = lv_obj_get_child(list, 2); /* centre 122 px below the screen centre */
     assert(lv_obj_get_width(lower) == 150 && lv_obj_get_x(lower) == 105);

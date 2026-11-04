@@ -16,7 +16,7 @@ static lv_obj_t *message;
 static lv_obj_t *retry;
 static lv_obj_t *edge;      /* left-edge swipe zone on the top layer */
 static lv_obj_t *bottom;    /* bottom-edge swipe zone on the top layer, home only */
-static lv_obj_t *exit_pill; /* swipe feedback, then "Closing..." */
+static lv_obj_t *exit_pill; /* swipe feedback, then "Zamykanie..." */
 static lv_obj_t *top;       /* top-edge swipe zone on the top layer, home only */
 static lv_obj_t *quick;     /* quick settings panel on the top layer */
 static lv_obj_t *quick_battery;
@@ -177,7 +177,7 @@ static void quick_show(bool shown)
     uint8_t percent = 0;
     bool charging = false;
     if (quick_actions->battery(&percent, &charging)) {
-        lv_label_set_text_fmt(quick_battery, "Bateria %u%%%s", percent, charging ? " · ładuje" : "");
+        lv_label_set_text_fmt(quick_battery, "Bateria %u%%%s", percent, charging ? " • ładuje" : "");
     } else {
         lv_label_set_text(quick_battery, "Bateria: brak odczytu");
     }
@@ -242,8 +242,8 @@ static void edge_swiped(lv_event_t *event)
         swipe_start = point;
         swipe_armed = true;
         lv_label_set_text(lv_obj_get_child(exit_pill, 0), kind == SWIPE_TOP_EDGE ? LV_SYMBOL_SETTINGS " Ustawienia" :
-            kind == SWIPE_BOTTOM_EDGE ? LV_SYMBOL_LIST " Apps" :
-            model.state == ROUNDIE_NAV_LIST ? LV_SYMBOL_HOME " Home" : LV_SYMBOL_CLOSE " Close");
+            kind == SWIPE_BOTTOM_EDGE ? LV_SYMBOL_LIST " Aplikacje" :
+            model.state == ROUNDIE_NAV_LIST ? LV_SYMBOL_HOME " Zegarek" : LV_SYMBOL_CLOSE " Zamknij");
         swipe_feedback(kind, &point);
     } else if (code == LV_EVENT_PRESSING && swipe_armed) {
         swipe_feedback(kind, &point);
@@ -371,7 +371,7 @@ static bool create(void)
         return false;
     }
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(title, "Roundie / Applications");
+    lv_label_set_text(title, "Roundie / Aplikacje");
     lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(list, 0, 0);
     lv_obj_set_size(list, 360, 360);
@@ -452,9 +452,9 @@ static bool create(void)
         return false;
     }
     lv_obj_set_style_text_color(exit_text, lv_color_hex(0xffffff), 0);
-    lv_label_set_text(exit_text, LV_SYMBOL_CLOSE " Close");
+    lv_label_set_text(exit_text, LV_SYMBOL_CLOSE " Zamknij");
     lv_obj_center(exit_text);
-    lv_label_set_text(back_text, "Back");
+    lv_label_set_text(back_text, "Wstecz");
     lv_obj_center(back_text);
     lv_obj_add_flag(back_button, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(result_value, LV_OBJ_FLAG_HIDDEN);
@@ -494,9 +494,9 @@ static bool create(void)
     }
     lv_obj_set_style_text_align(list_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_align(list_message, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(list_title, "Roundie / Applications");
+    lv_label_set_text(list_title, "Roundie / Aplikacje");
     lv_obj_set_size(retry, 140, 44);
-    lv_label_set_text(text, "Refresh");
+    lv_label_set_text(text, "Odśwież");
     lv_obj_center(text);
     create_time = (uint32_t)(esp_timer_get_time() - started);
     return true;
@@ -593,17 +593,17 @@ void roundie_launcher_gui_pump(bool safe)
         painted_change = model.changed_us;
         painted_generation = model.generation;
         bool result = model.state == ROUNDIE_NAV_RESULT;
-        lv_label_set_text(title, result ? model.selected_name : "Roundie / Applications");
+        lv_label_set_text(title, result ? model.selected_name : "Roundie / Aplikacje");
         if (result) {
             if (model.executed) {
                 lv_label_set_text_fmt(result_value, "%" PRId32, model.app_result);
             } else {
-                lv_label_set_text(result_value, "No application result");
+                lv_label_set_text(result_value, "Brak wyniku aplikacji");
             }
             if (model.result_success) {
-                lv_label_set_text(result_detail, "Native execution completed");
+                lv_label_set_text(result_detail, "Wykonanie zakończone");
             } else {
-                lv_label_set_text_fmt(result_detail, "Load: %" PRId32 "  Runtime: %" PRId32 "\n%s",
+                lv_label_set_text_fmt(result_detail, "Ładowanie: %" PRId32 "  Działanie: %" PRId32 "\n%s",
                     model.loader_result, model.launch_result != 0 ? model.launch_result : model.unload_result, model.error);
             }
             lv_obj_remove_flag(result_value, LV_OBJ_FLAG_HIDDEN);
@@ -623,7 +623,7 @@ void roundie_launcher_gui_pump(bool safe)
             lv_label_set_text(names[i], entry->name[0] != '\0' ? entry->name : entry->id);
             lv_label_set_text_fmt(versions[i], "%u.%u.%u  /  %s", entry->version[0],
                 entry->version[1], entry->version[2], entry->health == ROUNDIE_PACKAGE_OK ?
-                entry->id : entry->health == ROUNDIE_PACKAGE_INCOMPATIBLE ? "Incompatible" : "Unavailable");
+                entry->id : entry->health == ROUNDIE_PACKAGE_INCOMPATIBLE ? "Niezgodna" : "Niedostępna");
             lv_obj_remove_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
             if (model.state == ROUNDIE_NAV_LIST && entry->health == ROUNDIE_PACKAGE_OK) {
                 lv_obj_remove_state(rows[i], LV_STATE_DISABLED);
@@ -631,16 +631,16 @@ void roundie_launcher_gui_pump(bool safe)
                 lv_obj_add_state(rows[i], LV_STATE_DISABLED);
             }
         }
-        const char *text = result ? (model.result_success ? "Application finished" :
-                model.executed ? "Execution / cleanup failed" : "Application could not start") :
-            model.state == ROUNDIE_NAV_REFRESHING ? "Reading applications..." :
-            model.state == ROUNDIE_NAV_REQUESTED || model.state == ROUNDIE_NAV_LOADING ? "Loading..." :
-            model.state == ROUNDIE_NAV_EXITING ? "Closing application..." :
-            model.state == ROUNDIE_NAV_ACTIVE ? "Application running" :
-            model.state == ROUNDIE_NAV_ERROR ? "List unavailable. Tap Refresh." :
-            model.launch_result != 0 ? "Launch failed. Choose again." :
-            model.unload_result != 0 ? "Application error. Choose again." :
-            model.count == 0 ? "No applications installed" : "Choose an application";
+        const char *text = result ? (model.result_success ? "Aplikacja zakończona" :
+                model.executed ? "Błąd wykonania lub zwolnienia zasobów" : "Nie udało się uruchomić aplikacji") :
+            model.state == ROUNDIE_NAV_REFRESHING ? "Wczytywanie aplikacji..." :
+            model.state == ROUNDIE_NAV_REQUESTED || model.state == ROUNDIE_NAV_LOADING ? "Ładowanie..." :
+            model.state == ROUNDIE_NAV_EXITING ? "Zamykanie aplikacji..." :
+            model.state == ROUNDIE_NAV_ACTIVE ? "Aplikacja działa" :
+            model.state == ROUNDIE_NAV_ERROR ? "Lista niedostępna. Dotknij Odśwież." :
+            model.launch_result != 0 ? "Nie uruchomiono. Wybierz ponownie." :
+            model.unload_result != 0 ? "Błąd aplikacji. Wybierz ponownie." :
+            model.count == 0 ? "Brak zainstalowanych aplikacji" : "Wybierz aplikację";
         lv_label_set_text(message, text);
         lv_label_set_text(list_message, text);
         if (idle) {
@@ -684,15 +684,15 @@ void roundie_launcher_gui_pump(bool safe)
         if (running && model.generation != 0 && model.state != ROUNDIE_NAV_EXITING) {
             /* Home has no Close: a swipe up from the bottom opens the list. */
             lv_obj_remove_flag(model.home_active ? bottom : edge, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(pill_text, model.home_active ? LV_SYMBOL_LIST " Apps" : LV_SYMBOL_CLOSE " Close");
+            lv_label_set_text(pill_text, model.home_active ? LV_SYMBOL_LIST " Aplikacje" : LV_SYMBOL_CLOSE " Zamknij");
         } else if (running && model.generation != 0) {
             /* Accepted: the pill stays at the top centre until unloaded. */
             lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, 12);
-            lv_label_set_text(pill_text, model.home_active ? "Apps..." : "Closing...");
+            lv_label_set_text(pill_text, model.home_active ? "Aplikacje..." : "Zamykanie...");
             lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
         } else if (model.state == ROUNDIE_NAV_LIST && model.home_available) {
             lv_obj_remove_flag(edge, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(pill_text, LV_SYMBOL_HOME " Home");
+            lv_label_set_text(pill_text, LV_SYMBOL_HOME " Zegarek");
         }
         if (!running || idle) {
             lv_screen_load(screen);
@@ -703,7 +703,7 @@ void roundie_launcher_gui_pump(bool safe)
             snprintf(expected, sizeof(expected), "%" PRId32, model.app_result);
             roundie_launcher_result_report(model.result_request,
                 lv_screen_active() == screen && strcmp(lv_label_get_text(title), model.selected_name) == 0 &&
-                    strcmp(lv_label_get_text(result_value), model.executed ? expected : "No application result") == 0 &&
+                    strcmp(lv_label_get_text(result_value), model.executed ? expected : "Brak wyniku aplikacji") == 0 &&
                     !lv_obj_has_flag(back_button, LV_OBJ_FLAG_HIDDEN),
                 elapsed_us(applied_at, apply_started), model.completed_us > 0 ?
                     elapsed_us(applied_at, model.completed_us) : 0);

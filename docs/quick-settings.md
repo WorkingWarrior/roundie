@@ -28,8 +28,7 @@ face ([system navigation](system-navigation.md)). This is the spec's
 - **Ownership.** `main.c` passes the actions as a `roundie_launcher_quick_t`
   table, so the launcher has no board or power dependency. Brightness is not
   persisted; it starts at 60 % after each boot, as before.
-- **Language.** The new strings are Polish. The older system strings
-  ("Apps", "Home", "Close", the power menu) are still English.
+- **Language.** System strings are Polish (see below).
 
 ## Sleep and restart with home loaded
 
@@ -67,3 +66,20 @@ loaded, so without a change they would always be refused.
   - screen off;
   - Uśpij from the panel, then wake by touch: the watch face returns;
   - Restart from the BOOT menu with home loaded.
+
+## Polish system strings
+
+**Decision, 2026-11-04.** The launcher, the swipe pills and the BOOT power menu
+are Polish: "Aplikacje", "Zamknij", "Zegarek", "Zamykanie...", "Odśwież",
+"Wstecz", the status messages, and the menu items "Uśpij", "Wygaś ekran",
+"Restart", "Tryb awaryjny", "Anuluj". Not translated: the developer diagnostic
+screen, the result screen's technical lines apart from their labels, logs,
+RP1/RW1 protocol text, and the package names, which belong to the packages.
+
+- **Fonts.** The LVGL fonts (`components/roundie_fonts`) cover the Polish
+  letters (U+0104-0107, 0118-0119, 0141-0144, 015A-015B, 0179-017C, Ó, ó) but
+  not U+00B7. The battery line therefore separates with "•" (U+2022), which
+  they do include. Any new string must stay inside those ranges.
+- **Verification.** Host: `tests/test_launcher.c` asserts the pill, status and
+  result texts. Device 0.3.33: OTA VALID. PENDING (by eye): that every Polish
+  glyph renders, and that the power menu and the pills fit.

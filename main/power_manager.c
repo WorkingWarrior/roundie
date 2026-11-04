@@ -188,13 +188,13 @@ static void menu_clicked(lv_event_t *event)
         }
         portEXIT_CRITICAL(&shared.lock);
     }
-    lv_label_set_text(menu_title, accepted ? "Please wait..." : "Busy");
+    lv_label_set_text(menu_title, accepted ? "Proszę czekać..." : "Zajęty");
 }
 
 static void open_menu(void)
 {
     static const char *const labels[MENU_ITEMS] = {
-        "Sleep", "Screen off", "Restart", "Safe Mode", "Cancel",
+        "Uśpij", "Wygaś ekran", "Restart", "Tryb awaryjny", "Anuluj",
     };
     /* Full-screen backdrop on the top layer: above applications and system
      * chrome, and it absorbs touches outside the buttons. */
@@ -209,7 +209,7 @@ static void open_menu(void)
     lv_obj_remove_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
 
     menu_title = lv_label_create(menu);
-    lv_label_set_text(menu_title, "Power");
+    lv_label_set_text(menu_title, "Zasilanie");
     lv_obj_set_width(menu_title, 180);
     lv_obj_set_style_text_align(menu_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(menu_title, lv_color_hex(0xffffff), 0);
