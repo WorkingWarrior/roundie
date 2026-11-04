@@ -87,3 +87,63 @@ no clipping at the cap) and whether the level suffices. Behaviour of I2S and the
 codec across light sleep. Pops at the start and end of a tone. The register
 dump against the ES8311 datasheet.
 
+## Gate A2 results, 2026-11-04 (firmware 0.3.47)
+
+**Implemented.** `stream.c` (host-tested, no ESP-IDF dependency): a single-producer
+single-consumer byte ring, the playback policy and PCM conversion to stereo with a
+per-stream Q15 gain. `audio.c`: one stream at a time, owned by the audio task.
+
+- **Ring:** 16,384 B in PSRAM, about 256 ms of 16 kHz stereo. Only the audio task
+  frees it.
+- **Policy:** WAITING until 100 ms are buffered, then PLAYING. An empty ring plays
+  silence (UNDERRUN). After 500 ms of underrun the codec is closed and the
+  amplifier turned off (PAUSED). Playback resumes after another 100 ms prebuffer.
+  Close either drains the ring or stops at once.
+- **Handles and ownership:** each open stream gets a new generation. Write and
+  close check it. `roundie_audio_release_owner` stops an owner's stream for an
+  application unload (gate A3 will call it).
+- **Volume:** master 70 % of the cap by default (`roundie_audio_set_master`);
+  stream gain on top. Rates 8 to 48 kHz; mono or stereo, 16-bit.
+- **Busy:** a tone, the melody and a stream share one busy flag, so light sleep
+  is refused while any of them plays.
+- **RA1 additions:** `STREAM <hz> <ms> <vol> <stall_ms>` starts a producer task that
+  writes a tone into a stream and goes quiet for `stall_ms` half-way; `RELEASE`
+  stops it as an unload would.
+
+**Defects found on the device and fixed**
+
+| Version | Observation | Cause and fix |
+|---|---|---|
+| 0.3.45 | The stream never left WAITING with a full ring | The audio task chose an unbounded queue wait before the stream opened. Opening a stream now posts a wake request |
+| 0.3.46 | The GUI loop stopped during a stream (0 iterations/s against 100 idle and 100 during the melody); unloading home waited for the stream's end and failed with `ui-teardown-pending`; after a sleep refused because of audio, home did not return | `CONFIG_FREERTOS_HZ` is 100, so `pdMS_TO_TICKS(2)` and `(5)` are 0 ticks. The producer polling a full ring (priority 2) and the release wait busy-looped and starved the GUI (main task, priority 1). Every short wait is now one tick (10 ms) |
+
+A misleading `dropped` counter (it counted each retry of a full ring) was
+removed.
+
+**Unexplained reset (hypothesis).** During the 0.3.46 installation the board
+restarted unplanned after reaching STABLE. Safe Mode (reason `core`) then rolled
+back the pending 0.3.46. Whether 0.3.45 or 0.3.46 faulted is unknown, and no core
+dump is configured. Hypothesis: the busy loop above starved the GUI until its
+watchdog fired; the stream left open on 0.3.45 would have kept it running.
+After `roundie_safe.py clear` the reinstall of 0.3.46, and 0.3.47 afterwards,
+started normally.
+
+**Verified (0.3.47, OTA from `ota_0`, running `ota_1`, VALID, self-test passed)**
+
+| Evidence | Result |
+|---|---|
+| Host | Ring (wrap, partial writes, two-thread order), policy (prebuffer, underrun, pause, resume, drain), PCM conversion and gain. Full suite: 90 tests OK |
+| Target build | No new warnings |
+| Device, 3 s stream | Phase PLAYING with the ring near full; closed after about 3.3 s with the ring drained; 0 underruns |
+| Device, 800 ms producer stall | 1 underrun and 1 pause, playback resumed and the stream drained and closed |
+| Device, `RELEASE` mid-stream | Stream closed within 0.5 s |
+| Device, GUI | 93 GUI iterations/s during a stream, 92 idle |
+| Device, unload during a stream | Home exit reached the list within 1 s, no runtime error |
+| Device, sleep during a stream | Refused (`app`), home relaunched (generation 2). Without audio, a 3 s sleep was entered |
+| Device, by ear (user-reported) | Two 5 s streams with a 1.5 s producer stall, at codec volume 35 (master 70 % of the cap): not heard on the first play; after a replay, "Ok, słyszałem". Whether the gap itself was heard was not stated |
+| No faults | `errors=0` after 10 plays; no Safe Mode; no reset |
+
+**Not verified (PENDING).** Pops at pause and resume. Whether the default master
+level of 70 % is loud enough (the first play was not heard). Streams at rates
+other than 16 kHz and mono input on the device (host-tested only). Long streams
+and repeated open and close (gate A4). Audio across light sleep.

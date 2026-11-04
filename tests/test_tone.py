@@ -18,5 +18,16 @@ class ToneTests(unittest.TestCase):
             ], check=True)
             subprocess.run([executable], check=True, timeout=10)
 
+    def test_stream_parts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = str(Path(directory) / "stream")
+            subprocess.run([
+                "cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
+                "-fsanitize=address,undefined", "-pthread",
+                "-I" + str(ROOT / "components/roundie_audio/include"),
+                str(ROOT / "tests/test_stream.c"), "-o", executable,
+            ], check=True)
+            subprocess.run([executable], check=True, timeout=30)
+
 if __name__ == "__main__":
     unittest.main()

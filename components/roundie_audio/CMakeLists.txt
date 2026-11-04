@@ -1,4 +1,4 @@
-idf_component_register(SRCS "audio.c" "tone.c"
+idf_component_register(SRCS "audio.c" "tone.c" "stream.c"
                        INCLUDE_DIRS "include"
                        REQUIRES esp_driver_i2c
-                       PRIV_REQUIRES esp_driver_i2s esp_driver_gpio esp_codec_dev freertos)
+                       PRIV_REQUIRES esp_driver_i2s esp_driver_gpio esp_codec_dev freertos esp_timer heap)

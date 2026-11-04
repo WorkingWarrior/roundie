@@ -4,10 +4,14 @@
 #include "driver/i2s_std.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "roundie_stream.h"
 #include "roundie_tone.h"
 
 #define I2S_MCLK_GPIO GPIO_NUM_2
@@ -30,6 +34,7 @@ typedef struct {
     uint32_t duration_ms;
     uint8_t volume_percent;
     bool melody;
+    bool wake; /* only wakes the task: a stream was opened */
 } tone_request_t;
 
 typedef struct {
@@ -60,8 +65,36 @@ static const audio_codec_ctrl_if_t *codec_control;
 static QueueHandle_t requests;
 static roundie_audio_status_t status;
 static portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
-static _Atomic bool busy;
+static _Atomic bool busy; /* a tone, the melody or a stream owns the codec */
 static _Atomic bool stop_requested;
+static _Atomic uint8_t master_percent = ROUNDIE_AUDIO_MASTER_DEFAULT;
+
+/* The one PCM stream. Fields below the mutex line are written under stream_mutex; the ring is lock-free
+ * (the owner writes, the audio task reads) and its storage is freed only by the audio task. */
+typedef struct {
+    bool open;
+    bool closing;
+    bool drain;
+    uint32_t owner;
+    uint32_t generation;
+    uint32_t sample_rate;
+    uint8_t channels;
+    uint32_t gain_q15;
+    uint8_t *storage;
+    roundie_ring_t ring;
+    roundie_playback_t playback;
+    bool codec_open;
+} stream_t;
+
+static stream_t stream;
+static uint32_t generation_counter;
+static SemaphoreHandle_t stream_mutex;
+static uint32_t total_underruns;
+static uint32_t total_pauses;
+#define MUTEX_WAIT_MS 50
+/* One tick (10 ms at CONFIG_FREERTOS_HZ=100). pdMS_TO_TICKS() of a shorter time is 0,
+ * which turns a wait into a busy loop that starves lower-priority tasks such as the GUI. */
+#define POLL_TICKS ((TickType_t)1)
 
 static esp_err_t fail(const char *step, esp_err_t error)
 {
@@ -143,15 +176,123 @@ static void play(const tone_request_t *request)
     portEXIT_CRITICAL(&status_lock);
 }
 
+static bool valid_rate(uint32_t rate)
+{
+    return rate == 8000U || rate == 16000U || rate == 24000U || rate == 32000U || rate == 48000U;
+}
+
+static uint8_t codec_volume_for_master(void)
+{
+    return (uint8_t)((uint32_t)atomic_load(&master_percent) * ROUNDIE_AUDIO_MAX_PERCENT / 100U);
+}
+
+/* Audio task only. Gives the codec and the ring back and clears the stream. */
+static void stream_release(void)
+{
+    if (stream.codec_open) {
+        static int16_t silence[2U * CHUNK_FRAMES];
+        memset(silence, 0, sizeof(silence));
+        esp_codec_dev_write(device, silence, (int)sizeof(silence));
+        esp_codec_dev_close(device);
+        stream.codec_open = false;
+    }
+    xSemaphoreTake(stream_mutex, portMAX_DELAY);
+    total_underruns += stream.playback.underruns;
+    total_pauses += stream.playback.pauses;
+    heap_caps_free(stream.storage);
+    stream.storage = NULL;
+    stream.open = false;
+    stream.closing = false;
+    stream.drain = false;
+    stream.owner = 0;
+    portENTER_CRITICAL(&status_lock);
+    status.playing = false;
+    status.plays++;
+    portEXIT_CRITICAL(&status_lock);
+    atomic_store(&busy, false);
+    xSemaphoreGive(stream_mutex);
+}
+
+/* Audio task only: decides and plays chunks until it has to wait. */
+static void stream_service(void)
+{
+    static int16_t stereo[2U * CHUNK_FRAMES];
+    static int16_t pcm[2U * CHUNK_FRAMES];
+    const size_t chunk_bytes = (size_t)CHUNK_FRAMES * stream.channels * sizeof(int16_t);
+    for (;;) {
+        if (stream.closing && !stream.drain) {
+            stream_release();
+            return;
+        }
+        stream.playback.drain = stream.closing && stream.drain;
+        roundie_playback_action_t action = roundie_playback_step(&stream.playback, roundie_ring_used(&stream.ring),
+                                                                 chunk_bytes, esp_timer_get_time());
+        if (action == ROUNDIE_PLAYBACK_ACTION_START) {
+            esp_codec_dev_sample_info_t format = {
+                .bits_per_sample = 16,
+                .channel = 2,
+                .sample_rate = stream.sample_rate,
+            };
+            uint8_t volume = codec_volume_for_master();
+            if (esp_codec_dev_open(device, &format) != ESP_CODEC_DEV_OK) {
+                count_error();
+                stream_release();
+                return;
+            }
+            stream.codec_open = true;
+            portENTER_CRITICAL(&status_lock);
+            status.playing = true;
+            status.last_volume = volume;
+            portEXIT_CRITICAL(&status_lock);
+            if (esp_codec_dev_set_out_vol(device, (float)volume) != ESP_CODEC_DEV_OK) {
+                count_error();
+            }
+            action = ROUNDIE_PLAYBACK_ACTION_PLAY;
+        }
+        if (action == ROUNDIE_PLAYBACK_ACTION_PLAY) {
+            size_t got = roundie_ring_read(&stream.ring, pcm, chunk_bytes);
+            uint32_t frames = (uint32_t)(got / ((size_t)stream.channels * sizeof(int16_t)));
+            roundie_pcm_to_stereo(pcm, frames, stream.channels, stream.gain_q15, stereo);
+            if (frames > 0 && esp_codec_dev_write(device, stereo, (int)(frames * 2U * sizeof(int16_t))) != ESP_CODEC_DEV_OK) {
+                count_error();
+                stream_release();
+                return;
+            }
+        } else if (action == ROUNDIE_PLAYBACK_ACTION_SILENCE) {
+            memset(stereo, 0, sizeof(stereo));
+            if (esp_codec_dev_write(device, stereo, (int)sizeof(stereo)) != ESP_CODEC_DEV_OK) {
+                count_error();
+                stream_release();
+                return;
+            }
+        } else if (action == ROUNDIE_PLAYBACK_ACTION_PAUSE) {
+            esp_codec_dev_close(device);
+            stream.codec_open = false;
+            portENTER_CRITICAL(&status_lock);
+            status.playing = false;
+            portEXIT_CRITICAL(&status_lock);
+        } else if (action == ROUNDIE_PLAYBACK_ACTION_FINISH) {
+            stream_release();
+            return;
+        } else {
+            return; /* WAIT: look at the queue again after one tick */
+        }
+    }
+}
+
 static void audio_task(void *argument)
 {
     (void)argument;
     tone_request_t request;
     for (;;) {
-        if (xQueueReceive(requests, &request, portMAX_DELAY) == pdTRUE) {
+        TickType_t wait = stream.open ? POLL_TICKS : portMAX_DELAY;
+        if (xQueueReceive(requests, &request, wait) == pdTRUE && !request.wake) {
             play(&request);
             atomic_store(&stop_requested, false);
             atomic_store(&busy, false);
+        }
+        if (stream.open) {
+            stream_service();
         }
     }
 }
@@ -236,8 +377,9 @@ esp_err_t roundie_audio_init(i2c_master_bus_handle_t bus)
         i2s_del_channel(transmit);
         return fail("codec device", ESP_FAIL);
     }
+    stream_mutex = xSemaphoreCreateMutex();
     requests = xQueueCreate(1, sizeof(tone_request_t));
-    if (requests == NULL || xTaskCreate(audio_task, "audio", TASK_STACK, NULL, TASK_PRIORITY, NULL) != pdPASS) {
+    if (stream_mutex == NULL || requests == NULL || xTaskCreate(audio_task, "audio", TASK_STACK, NULL, TASK_PRIORITY, NULL) != pdPASS) {
         return fail("audio task", ESP_ERR_NO_MEM);
     }
     portENTER_CRITICAL(&status_lock);
@@ -264,7 +406,7 @@ esp_err_t roundie_audio_play_tone(uint32_t frequency_hz, uint32_t duration_ms, u
         return ESP_ERR_INVALID_STATE;
     }
     atomic_store(&stop_requested, false);
-    const tone_request_t request = {frequency_hz, duration_ms, volume_percent, false};
+    const tone_request_t request = {frequency_hz, duration_ms, volume_percent, false, false};
     if (xQueueSend(requests, &request, 0) != pdTRUE) {
         atomic_store(&busy, false);
         return ESP_ERR_INVALID_STATE;
@@ -285,7 +427,7 @@ esp_err_t roundie_audio_play_melody(uint8_t volume_percent)
         return ESP_ERR_INVALID_STATE;
     }
     atomic_store(&stop_requested, false);
-    const tone_request_t request = {0, 0, volume_percent, true};
+    const tone_request_t request = {0, 0, volume_percent, true, false};
     if (xQueueSend(requests, &request, 0) != pdTRUE) {
         atomic_store(&busy, false);
         return ESP_ERR_INVALID_STATE;
@@ -316,4 +458,189 @@ void roundie_audio_status(roundie_audio_status_t *out)
     portENTER_CRITICAL(&status_lock);
     *out = status;
     portEXIT_CRITICAL(&status_lock);
+    out->stream_open = stream.open;
+    out->stream_phase = (uint8_t)stream.playback.phase;
+    out->ring_used = stream.open ? (uint32_t)roundie_ring_used(&stream.ring) : 0;
+    out->underruns = total_underruns + (stream.open ? stream.playback.underruns : 0);
+    out->pauses = total_pauses + (stream.open ? stream.playback.pauses : 0);
+    out->master_percent = atomic_load(&master_percent);
 }
+
+void roundie_audio_set_master(uint8_t percent)
+{
+    atomic_store(&master_percent, percent > 100U ? 100U : percent);
+}
+
+roundie_audio_stream_t roundie_audio_stream_open(uint32_t owner, uint32_t sample_rate, uint8_t channels,
+                                                 uint8_t volume_percent)
+{
+    if (!status.initialized || !valid_rate(sample_rate) || (channels != 1U && channels != 2U) ||
+        volume_percent > 100U) {
+        return 0;
+    }
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&busy, &expected, true)) {
+        return 0;
+    }
+    uint8_t *storage = heap_caps_malloc(ROUNDIE_AUDIO_RING_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (storage == NULL || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
+        heap_caps_free(storage);
+        atomic_store(&busy, false);
+        return 0;
+    }
+    stream.storage = storage;
+    roundie_ring_init(&stream.ring, storage, ROUNDIE_AUDIO_RING_BYTES);
+    stream.owner = owner;
+    stream.sample_rate = sample_rate;
+    stream.channels = channels;
+    stream.gain_q15 = (uint32_t)volume_percent * 32768U / 100U;
+    stream.closing = false;
+    stream.drain = false;
+    stream.codec_open = false;
+    size_t prebuffer = (size_t)sample_rate * channels * sizeof(int16_t) * ROUNDIE_AUDIO_PREBUFFER_MS / 1000U;
+    roundie_playback_init(&stream.playback, prebuffer, (int64_t)ROUNDIE_AUDIO_PAUSE_AFTER_MS * 1000);
+    stream.generation = ++generation_counter;
+    if (stream.generation == 0) {
+        stream.generation = ++generation_counter;
+    }
+    stream.open = true;
+    uint32_t handle = stream.generation;
+    xSemaphoreGive(stream_mutex);
+    /* The task may be blocked with no timeout: wake it. The queue is empty because busy was free. */
+    const tone_request_t wake = {.wake = true};
+    xQueueSend(requests, &wake, 0);
+    return handle;
+}
+
+int32_t roundie_audio_stream_write(roundie_audio_stream_t handle, const void *pcm, uint32_t bytes)
+{
+    if (handle == 0 || pcm == NULL || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
+        return -1;
+    }
+    int32_t accepted = -1;
+    if (stream.open && !stream.closing && stream.generation == handle) {
+        /* Whole samples only, so a mono or stereo frame never splits. */
+        uint32_t frame_bytes = (uint32_t)stream.channels * (uint32_t)sizeof(int16_t);
+        uint32_t whole = bytes - bytes % frame_bytes;
+        accepted = (int32_t)roundie_ring_write(&stream.ring, pcm, whole);
+    }
+    xSemaphoreGive(stream_mutex);
+    return accepted;
+}
+
+void roundie_audio_stream_close(roundie_audio_stream_t handle, bool drain)
+{
+    if (handle == 0 || xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
+        return;
+    }
+    if (stream.open && stream.generation == handle) {
+        stream.drain = drain;
+        stream.closing = true;
+    }
+    xSemaphoreGive(stream_mutex);
+}
+
+bool roundie_audio_release_owner(uint32_t owner, uint32_t timeout_ms)
+{
+    if (xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) != pdTRUE) {
+        return false;
+    }
+    bool mine = stream.open && stream.owner == owner;
+    if (mine) {
+        stream.drain = false;
+        stream.closing = true;
+    }
+    xSemaphoreGive(stream_mutex);
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    while (mine) {
+        if (xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(MUTEX_WAIT_MS)) == pdTRUE) {
+            bool still = stream.open && stream.owner == owner;
+            xSemaphoreGive(stream_mutex);
+            if (!still) {
+                return true;
+            }
+        }
+        if (esp_timer_get_time() > deadline) {
+            return false;
+        }
+        vTaskDelay(POLL_TICKS);
+    }
+    return true;
+}
+
+#if CONFIG_ROUNDIE_DEV_AUDIO
+typedef struct {
+    uint32_t frequency_hz;
+    uint32_t duration_ms;
+    uint8_t volume_percent;
+    uint32_t stall_ms;
+} selftest_t;
+
+static _Atomic bool selftest_running;
+
+static void selftest_task(void *argument)
+{
+    selftest_t test = *(selftest_t *)argument;
+    heap_caps_free(argument);
+    roundie_audio_stream_t handle = roundie_audio_stream_open(0xA2, ROUNDIE_AUDIO_SAMPLE_RATE, 2, test.volume_percent);
+    if (handle != 0) {
+        roundie_tone_t tone;
+        static int16_t buffer[2U * CHUNK_FRAMES];
+        roundie_tone_init(&tone, test.frequency_hz, ROUNDIE_AUDIO_SAMPLE_RATE, test.duration_ms, TONE_AMPLITUDE);
+        uint32_t half = tone.total_frames / 2U;
+        bool stalled = test.stall_ms == 0;
+        while (tone.frames_left > 0) {
+            if (!stalled && tone.frames_done >= half) {
+                stalled = true;
+                vTaskDelay(pdMS_TO_TICKS(test.stall_ms)); /* the producer goes quiet: an underrun */
+            }
+            uint32_t frames = roundie_tone_fill(&tone, buffer, CHUNK_FRAMES);
+            const uint8_t *cursor = (const uint8_t *)buffer;
+            uint32_t left = frames * 4U;
+            while (left > 0) {
+                int32_t put = roundie_audio_stream_write(handle, cursor, left);
+                if (put < 0) {
+                    left = 0;
+                    break;
+                }
+                cursor += put;
+                left -= (uint32_t)put;
+                if (left > 0) {
+                    vTaskDelay(POLL_TICKS); /* the ring is full: wait for the consumer */
+                }
+            }
+        }
+        roundie_audio_stream_close(handle, true);
+    }
+    atomic_store(&selftest_running, false);
+    vTaskDelete(NULL);
+}
+
+esp_err_t roundie_audio_stream_selftest(uint32_t frequency_hz, uint32_t duration_ms, uint8_t volume_percent,
+                                        uint32_t stall_ms)
+{
+    if (!status.initialized || atomic_load(&busy)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (frequency_hz < ROUNDIE_TONE_MIN_HZ || frequency_hz > ROUNDIE_TONE_MAX_HZ || duration_ms < 100U ||
+        duration_ms > TONE_MAX_MS || volume_percent > 100U || stall_ms > 3000U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&selftest_running, &expected, true)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    selftest_t *test = heap_caps_malloc(sizeof(*test), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (test == NULL) {
+        atomic_store(&selftest_running, false);
+        return ESP_ERR_NO_MEM;
+    }
+    *test = (selftest_t){frequency_hz, duration_ms, volume_percent, stall_ms};
+    if (xTaskCreate(selftest_task, "audio_feed", 3072, test, 2, NULL) != pdPASS) {
+        heap_caps_free(test);
+        atomic_store(&selftest_running, false);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+#endif

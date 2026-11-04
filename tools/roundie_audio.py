@@ -16,7 +16,7 @@ def parse_reply(line, request_id):
     if not line.startswith(prefix):
         return None
     try:
-        if not line.endswith(b"\n") or len(line) > 320:
+        if not line.endswith(b"\n") or len(line) > 420:
             raise ValueError("length/framing")
         code_text, payload = line[len(prefix):].split(b" ", 1)
         code = int(code_text)
@@ -24,7 +24,7 @@ def parse_reply(line, request_id):
         for key in ("ready", "ack", "playing"):
             if status[key] not in (0, 1):
                 raise ValueError(f"invalid {key}")
-        for key in ("plays", "errors", "volume", "cap"):
+        for key in ("plays", "errors", "volume", "cap", "stream", "phase", "ring", "underruns", "pauses", "master"):
             if type(status[key]) is not int or status[key] < 0:
                 raise ValueError(f"invalid {key}")
         if re.fullmatch(r"[0-9a-f]{6}", status["id"]) is None:
@@ -55,7 +55,7 @@ def request(port, operation, timeout=4.0):
     request_id = secrets.token_hex(4)
     deadline = time.monotonic() + timeout
     write_command(port, f"!RA1 {request_id} {operation}")
-    line = read_serial_reply(port, f"!RA1 {request_id} ".encode(), deadline, 320)
+    line = read_serial_reply(port, f"!RA1 {request_id} ".encode(), deadline, 420)
     if operation == "REGS":
         return parse_registers(line, request_id)
     return parse_reply(line, request_id)
@@ -67,6 +67,12 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     commands.add_parser("stop")
+    commands.add_parser("release", help="release the self-test stream, as an application unload would")
+    stream = commands.add_parser("stream", help="a producer writes a tone into a stream; stall_ms goes quiet mid-way")
+    stream.add_argument("frequency", type=int)
+    stream.add_argument("duration_ms", type=int)
+    stream.add_argument("volume", type=int)
+    stream.add_argument("stall_ms", type=int)
     commands.add_parser("regs", help="ES8311 registers 0x00..0x45 as hex")
     melody = commands.add_parser("melody", help="a built-in melody, about 19 s, to judge the output by ear")
     melody.add_argument("volume", type=int, help="0..100, a share of the system cap")
@@ -76,7 +82,9 @@ def main(argv=None):
     tone.add_argument("volume", type=int, help="0..100, a share of the system cap")
     args = parser.parse_args(argv)
     try:
-        operation = {"status": "STATUS", "stop": "STOP", "regs": "REGS"}.get(args.command)
+        operation = {"status": "STATUS", "stop": "STOP", "regs": "REGS", "release": "RELEASE"}.get(args.command)
+        if args.command == "stream":
+            operation = f"STREAM {args.frequency} {args.duration_ms} {args.volume} {args.stall_ms}"
         if args.command == "melody":
             operation = f"MELODY {args.volume}"
         if args.command == "tone":

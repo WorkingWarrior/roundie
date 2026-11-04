@@ -30,6 +30,22 @@ void roundie_audio_command(char *line, bool discard)
         } else if (strcmp(operation, "STOP") == 0) {
             roundie_audio_stop();
             error = ESP_OK;
+        } else if (strcmp(operation, "RELEASE") == 0) {
+            /* Releases the self-test stream as an application unload would. */
+            error = roundie_audio_release_owner(0xA2, 500) ? ESP_OK : ESP_ERR_TIMEOUT;
+        } else if (strncmp(operation, "STREAM ", 7) == 0) {
+            /* STREAM <hz> <ms> <volume> <stall ms>: a producer writes a tone into a stream. */
+            char *end = NULL;
+            long frequency = strtol(operation + 7, &end, 10);
+            long duration = end != NULL && *end == ' ' ? strtol(end + 1, &end, 10) : -1;
+            long volume = end != NULL && *end == ' ' ? strtol(end + 1, &end, 10) : -1;
+            long stall = end != NULL && *end == ' ' ? strtol(end + 1, &end, 10) : -1;
+            if (end == NULL || *end != '\0' || frequency < 0 || duration < 0 || volume < 0 || stall < 0) {
+                error = ESP_ERR_INVALID_ARG;
+            } else {
+                error = roundie_audio_stream_selftest((uint32_t)frequency, (uint32_t)duration,
+                                                      (uint8_t)(volume > 255 ? 255 : volume), (uint32_t)stall);
+            }
         } else if (strncmp(operation, "MELODY ", 7) == 0) {
             char *end = NULL;
             long volume = strtol(operation + 7, &end, 10);
@@ -67,14 +83,17 @@ void roundie_audio_command(char *line, bool discard)
     }
     roundie_audio_status_t status;
     roundie_audio_status(&status);
-    char response[320];
+    char response[420];
     int length_out = snprintf(response, sizeof(response),
         "\n!RA1 %s %d {\"ready\":%u,\"step\":\"%s\",\"error\":%d,\"ack\":%u,\"id\":\"%02x%02x%02x\","
-        "\"playing\":%u,\"plays\":%u,\"errors\":%u,\"volume\":%u,\"cap\":%u}\n",
+        "\"playing\":%u,\"plays\":%u,\"errors\":%u,\"volume\":%u,\"cap\":%u,"
+        "\"stream\":%u,\"phase\":%u,\"ring\":%u,\"underruns\":%u,\"pauses\":%u,\"master\":%u}\n",
         id, (int)error, status.initialized, status.init_step != NULL ? status.init_step : "none",
         (int)status.init_error, status.codec_ack, status.codec_id[0], status.codec_id[1], status.codec_id[2],
         status.playing || roundie_audio_busy(), (unsigned)status.plays, (unsigned)status.errors,
-        status.last_volume, (unsigned)ROUNDIE_AUDIO_MAX_PERCENT);
+        status.last_volume, (unsigned)ROUNDIE_AUDIO_MAX_PERCENT, status.stream_open, status.stream_phase,
+        (unsigned)status.ring_used, (unsigned)status.underruns, (unsigned)status.pauses,
+        status.master_percent);
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));
     }
