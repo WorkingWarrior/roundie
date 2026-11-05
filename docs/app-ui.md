@@ -63,7 +63,7 @@ submit ordinary UI work. Resume restores retained widgets after its callback.
 | Widget/update public payload | 132 / 116 bytes |
 | Geometry | positive dimensions, entire box within 360 × 360 |
 | Button minimum | 44 × 44 pixels |
-| Retained LVGL allocation admission | 16 KiB incremental ceiling; create refused above 12 KiB or below 8 KiB pool reserve |
+| Retained LVGL allocation admission | 16 KiB ceiling charged by widget creation only (since 0.3.49); create refused above 12 KiB or below 8 KiB pool reserve |
 | Absolute LVGL memory envelope | existing shared 64 KiB built-in pool |
 | Fixed UI component writable symbols | 3118 bytes plus linker alignment; budget below 4 KiB |
 | GUI lifecycle acknowledgment deadline | 1 second per attempt, outside native callbacks |
@@ -72,7 +72,25 @@ Fixed command/handle/GUI-text storage does not grow with updates. The small
 number of LVGL objects shares the existing pool; a button owns one additional
 label. The 16 KiB diagnostic is the immediate allocator delta during GUI
 operations, not an isolated allocator or a bound on renderer caches. A creation
-crossing it fails and triggers cleanup. The shared 64 KiB pool is the absolute
+crossing it fails and triggers cleanup.
+
+**Decision, 2026-11-05 (fix):** only widget creation is charged. Updates
+(text, value, color, visibility, enabled, list options) reuse fixed buffers,
+needle points and per-object style properties. Their allocator delta also
+contained LVGL work that rendering frees later, outside any operation, so the
+charge only grew.
+
+- **Device, 0.3.48:** the home watch face failed with `ui-gui-failure` after
+  about 9.7 hours. The UI charge peaked at 16,396 B, while the real pool was
+  39,224 B free before the face and 39,184 B after. The charge rose 28 B at
+  each minute while the free pool stayed constant.
+- **Host:** `tests/test_app_round.c` steps 14 hours of watch minutes with
+  rendering between them. The old code failed at minute 545 (24 B per minute).
+- **0.3.49:** the charge stays constant on the host, and the free pool after
+  1 hour equals the free pool after 14 hours. On the device, the charge stayed
+  at 1,916 B over three minute changes, with 0 failures. One drop of 92 B in the
+  shared free pool was seen and is not attributed.
+- **PENDING:** a run of the face on the device for more than 10 hours. The shared 64 KiB pool is the absolute
 bound including system objects, rendering and transient construction. Dynamic
 fonts/assets, animation and app-selected themes are unavailable. Built-in font
 coverage can be smaller than the accepted well-formed UTF-8 repertoire.

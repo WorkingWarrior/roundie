@@ -660,6 +660,12 @@ bool roundie_ui_render(const roundie_ui_command_t *command)
         } else {
             return false;
         }
+        /* Updates are not charged. They reuse fixed text buffers, needle points
+         * and per-object style properties, so they do not grow the UI. Their pool
+         * delta also includes LVGL work freed later by rendering; charging it
+         * crept about 24 B per minute on the watch and failed it after about
+         * 9.7 hours (docs/round-ui.md). */
+        return true;
     }
     return account(before);
 }

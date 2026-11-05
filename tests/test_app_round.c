@@ -706,6 +706,29 @@ static void watch_runtime_tests(void)
     assert(lv_color_to_u32(lv_obj_get_style_bg_color(root, LV_PART_MAIN)) == 0xff000000);
     assert(ui_status().failed == 0 && ui_status().error == 0);
 
+    /* Regression, device 0.3.48: after about 9.7 hours the watch's UI charge
+     * crept past 16 KiB (about 28 B per minute) and an update failed. Updates
+     * must not drift the charge; 14 hours of minutes with rendering between. */
+    uint32_t charged = ui_status().lvgl_bytes;
+    uint32_t pool_free = 0;
+    for (unsigned minute = 0; minute < 14U * 60U; minute++) {
+        test_clock.ms_of_day = (test_clock.ms_of_day + 60000U) % 86400000U;
+        test_clock.revision++;
+        step_after(1100000);
+        TaskHandle_t saved = current_task;
+        current_task = (void *)2;
+        lv_refr_now(NULL);
+        current_task = saved;
+        if (minute == 59U) {
+            pool_free = ui_status().pool_free; /* after the first hour's minutes */
+        }
+    }
+    printf("Watch over 14 h of minutes: UI charge %" PRIu32 " -> %" PRIu32 " B, LVGL pool free after 1 h %" PRIu32 ", after 14 h %" PRIu32 " B\n",
+           charged, ui_status().lvgl_bytes, pool_free, ui_status().pool_free);
+    assert(ui_status().failed == 0 && ui_status().error == 0 && status.state == ROUNDIE_ELF_RUNNING);
+    assert(ui_status().lvgl_bytes == charged);
+    assert(ui_status().pool_free >= pool_free); /* no real growth over the next 13 hours */
+
     control_step(ROUNDIE_ELF_UNLOAD);
     assert(status.state == ROUNDIE_ELF_UNLOADED && ui_status().outstanding == 0);
     assert(lv_screen_active() == home && live_bytes == 0);
