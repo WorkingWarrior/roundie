@@ -1,6 +1,8 @@
 # Audio output — plan and results
 
-**Status, 2026-11-04: A0 done; A1 met except the sound quality details (see the results below).** The user chose the speaker only
+**Status, 2026-11-04: A0–A3 implemented with host, target and device results
+recorded below; A4 and the remaining sound-quality, sample-rate and sleep
+checks are PENDING.** The user chose the speaker only
 (no microphone in this milestone) and an application API from the start
 (`rep_audio_v1`). Audio is named in the specification only as a system worker
 (§5.2) and in the hardware list (§3); this page is the design record. Labels

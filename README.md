@@ -8,20 +8,27 @@ Use the pinned ESP-IDF v6.1 checkout:
 ```sh
 cd /mnt/Dane/Development/roundie
 . /home/solve/.espressif/v6.1/esp-idf/export.sh
-# Installed REP development device:
-idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.24 build
+# REP development build (does not install the image):
+idf.py -B build-rep -DROUNDIE_PROFILE=rep -DPROJECT_VER=0.3.49 build
 # Historical manufacturer-layout diagnostic image, build only:
 idf.py -B build -DROUNDIE_PROFILE=legacy build
 ```
 
-**Current checkpoint, 2026-11-03:** normal 0.3.24 runs from `ota_1`, VALID
-under XIP from PSRAM; normal 0.3.23 is the VALID fallback in `ota_0`.
+**Documented checkpoint (device results recorded on 2026-11-04):** normal
+0.3.48 was VALID in `ota_0` under XIP from PSRAM; see the
+[audio A3 results](docs/audio.md#gate-a3-results-2026-11-04-firmware-0348-orgroundiesound-100).
+This records prior tests, not a fresh check of the connected board.
 REP stages 0–4 are done. Stage 5 has the launcher and the
 [Round UI widgets](docs/round-ui.md) (RoundList, ArcSlider, EdgeButton,
 RoundDialog, shadow state), verified on the device by injection and user touch. Stage 6's example is a
 [watch face](docs/watch-face.md) with local time, a time zone and clock hands
-instead of the calculator, plus a [stopwatch](docs/stopwatch.md). Stage 6 has packages without an SDK calculator example. Stage 7 USB
-MTP is NO-GO; Roundie Manager over Web Serial is used instead. Stage 8 has screen
+instead of the calculator, plus a [stopwatch](docs/stopwatch.md). Stage 6 has packages without an SDK calculator example. Stage 7 uses a
+[USB mass-storage boot mode](docs/usb-storage-mode-plan.md) instead of MTP:
+copy `.rpk` files to `Inbox`, eject, and confirm the import on the device.
+Gates G1–G4 have recorded results; G5 stabilisation and Windows, macOS and
+Android checks remain pending. Roundie Manager over Web Serial is also available.
+[Audio](docs/audio.md) has a PCM stream engine, `rep_audio_v1` and a sound
+application through A3; A4 validation remains pending. Stage 8 has screen
 off, the BOOT power menu and light sleep, verified on the device. Its current
 measurements and deep sleep remain open. See [PowerManager](docs/power-manager.md).
 
@@ -55,6 +62,7 @@ The historical bring-up updater rejects the physical REP table.
 - [Launcher and system navigation](docs/system-navigation.md)
 - [Packages](docs/package-manager.md)
 - [App storage (rep_storage_v1)](docs/app-storage.md)
+- [USB storage mode: decisions, gates and results](docs/usb-storage-mode-plan.md)
 - [Audio output and rep_audio_v1](docs/audio.md)
 - [PowerManager: screen off, power menu, light sleep](docs/power-manager.md)
 - [Quick settings](docs/quick-settings.md)
