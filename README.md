@@ -69,3 +69,8 @@ The historical bring-up updater rejects the physical REP table.
 - [Round UI widgets and shadow state](docs/round-ui.md)
 - [Watch face: local time, time zone, clock hands](docs/watch-face.md)
 - [Stopwatch example](docs/stopwatch.md)
+
+## License
+
+Roundie is licensed under the [MIT License](LICENSE). Third-party components
+and fonts retain their own licenses and copyright notices.
