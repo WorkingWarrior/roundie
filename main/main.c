@@ -78,7 +78,7 @@ _Static_assert(ROUNDIE_BOARD_DISPLAY_ALIGN == 1, "the direct path sends LVGL are
 _Static_assert((ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_ROUND_DISPLAY) != 0,
                "the launcher and round UI need a round panel");
 #define GUI_DELAY_MAX_MS 10U
-#define HOME_PACKAGE "org.roundie.watch" /* see docs/system-navigation.md */
+#define HOME_PACKAGE ROUNDIE_LAUNCHER_HOME_PACKAGE
 
 static const char *TAG = "roundie";
 

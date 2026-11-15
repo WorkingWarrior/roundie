@@ -244,7 +244,7 @@ static bool enqueue(roundie_ui_command_t *command)
 bool roundie_ui_open(uint32_t generation, roundie_ui_event_sink_t sink)
 {
     roundie_lock(&lock);
-    bool valid = gui != NULL && generation != 0 && status.generation == 0;
+    bool valid = gui != ROUNDIE_THREAD_NONE && generation != 0 && status.generation == 0;
     if (valid) {
         uint32_t flushes = status.flushes;
         uint32_t errors = status.flush_errors;

@@ -73,6 +73,8 @@ esp_err_t roundie_launcher_exit(uint32_t generation);
 /* Dismiss a copied, fully unloaded result; never submits native work. */
 esp_err_t roundie_launcher_back(uint32_t request);
 esp_err_t roundie_launcher_refresh(void);
+/* The home package of every platform: the watch face (docs/system-navigation.md). */
+#define ROUNDIE_LAUNCHER_HOME_PACKAGE "org.roundie.watch"
 /* Home (docs/system-navigation.md): the package launched when the list first
  * appears (autostart) and after any other application exits normally. Its
  * exit shows the list. Call once, before the worker polls; "" disables. */
