@@ -183,10 +183,16 @@ charge, current or temperature, and the PMIC's fuel gauge is not used.
 
 - Target builds pass with 0 warnings: 1.75C legacy and REP; 1.85B legacy and
   REP.
-- The 1.85B sdkconfig is identical to the previous build. Its loadable ELF
-  sections are byte-for-byte the same size; only debug info differs.
-- The offline REP validator accepts the 1.75C REP build (32MB chip, 16 MiB
-  layout).
+- The 1.85B sdkconfig and partition table are identical to the build before
+  this port. Its loadable ELF sections are the same size; only debug info
+  differs. Its bootloader differs only in the compile time and checksum.
+- The 1.75C image and bootloader headers say 16 MB at 80 MHz, without 32-bit
+  addressing. The offline REP validator accepts both boards' REP builds.
+- Host tests: the touch filter and the AXP2101 decoding (`board_logic.c`),
+  the canvas touch mapping, the scaled flush path, and resets and power loss
+  without an RTC. A short mutation check broke each new rule in turn, and the
+  tests failed every time except once. That one change (counting
+  unacknowledged reads while idle) has no visible effect.
 - The scaled flush path and its host harness:
   [display-rendering.md](display-rendering.md#scaled-panels).
 
