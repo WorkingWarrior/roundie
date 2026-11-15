@@ -208,7 +208,6 @@ int main(void)
 #define DISPLAY_HEIGHT 466
 #define DISPLAY_STRIP_LINES 24
 #define ROUNDIE_BOARD_DISPLAY_ALIGN 2
-#define ROUNDIE_BOARD_DISPLAY_SWAP_RGB565 0
 #define RENDER_ROWS 17
 typedef int BaseType_t;
 typedef int esp_err_t;
@@ -247,7 +246,13 @@ typedef gui_state_t lv_display_t;
 static gui_state_t state;
 static int64_t now;
 static unsigned notifications, releases, timeouts;
-static bool last_part, fail_draw, stall;
+static bool last_part, fail_draw, stall, early;
+static uint32_t random_state = 99;
+static uint32_t next_random(void)
+{
+    random_state = random_state * 1664525U + 1013904223U;
+    return random_state >> 8;
+}
 static jmp_buf restart;
 /* Queued draws in order; the "DMA" reads a buffer only when it completes. */
 typedef struct { int x1, y1, x2, y2; const uint16_t *pixels; } draw_t;
@@ -341,6 +346,10 @@ static void refresh(int32_t x1, int32_t y1, int32_t x2, int32_t y2, bool last_ar
         assert(releases == before + (last_part && !state.display_fault ? 0U : 1U));
         /* The strip buffer is free: scribbling over it changes nothing. */
         memset(strip, 0xA5, sizeof(strip));
+        /* DMA may finish while LVGL renders the next strip. */
+        if (early && queued > 0 && (next_random() & 1U) != 0) {
+            complete_oldest();
+        }
     }
 }
 static void check_panel(void)
@@ -349,7 +358,11 @@ static void check_panel(void)
         uint32_t sy = roundie_scale_source(y, CANVAS_HEIGHT, DISPLAY_HEIGHT);
         for (uint32_t x = 0; x < DISPLAY_WIDTH; x++) {
             uint32_t sx = roundie_scale_source(x, CANVAS_WIDTH, DISPLAY_WIDTH);
-            assert(panel[y][x] == canvas[sy][sx]);
+            uint16_t expected = canvas[sy][sx];
+            if (ROUNDIE_BOARD_DISPLAY_SWAP_RGB565 != 0) {
+                expected = (uint16_t)((expected >> 8) | (expected << 8));
+            }
+            assert(panel[y][x] == expected);
         }
     }
 }
@@ -396,6 +409,32 @@ int main(void)
     assert(state.work.dma_us >= 1000U * state.transfer_id && state.work.dma_us <= (uint64_t)now);
     assert(state.work.dma_max_us >= 1000U && state.work.scale_us > 0);
     assert(state.transfer_errors == 0 && timeouts == 0);
+    /* Many frames of random dirty areas, one to four per refresh, some one
+     * pixel wide or high, with DMA finishing at random points: the panel
+     * always equals the reference scaling of the whole canvas. */
+    early = true;
+    for (int frame = 0; frame < 300; frame++) {
+        int areas = 1 + (int)(next_random() % 4U);
+        for (int area = 0; area < areas; area++) {
+            int32_t ax1 = (int32_t)(next_random() % CANVAS_WIDTH);
+            int32_t ay1 = (int32_t)(next_random() % CANVAS_HEIGHT);
+            int32_t ax2 = ax1 + (int32_t)(next_random() % (frame % 3 == 0 ? 2U : 120U));
+            int32_t ay2 = ay1 + (int32_t)(next_random() % (frame % 5 == 0 ? 2U : 120U));
+            ax2 = ax2 < CANVAS_WIDTH ? ax2 : CANVAS_WIDTH - 1;
+            ay2 = ay2 < CANVAS_HEIGHT ? ay2 : CANVAS_HEIGHT - 1;
+            for (int32_t y = ay1; y <= ay2; y++) {
+                for (int32_t x = ax1; x <= ax2; x++) {
+                    canvas[y][x] = (uint16_t)next_random();
+                }
+            }
+            refresh(ax1, ay1, ax2, ay2, area == areas - 1);
+        }
+        wait_for_scaled_display(&state);
+        check_panel();
+    }
+    early = false;
+    assert(state.completed_transfers == state.transfer_id);
+    assert(state.transfer_errors == 0 && timeouts == 0);
     /* A transfer that never finishes restarts instead of reusing its buffer. */
     stall = true;
     if (setjmp(restart) == 0) {
@@ -423,12 +462,14 @@ int main(void)
             c = Path(temporary) / 'scaled.c'
             exe = Path(temporary) / 'scaled'
             c.write_text(harness)
-            for standard in ('c11', 'c23'):
+            # Byte swap off and on (the 1.75C sends RGB565 MSB first).
+            for standard, swap in (('c11', 0), ('c23', 1), ('c11', 1)):
                 subprocess.run(['cc', '-std=' + standard, '-Wall', '-Wextra', '-Werror',
+                                f'-DROUNDIE_BOARD_DISPLAY_SWAP_RGB565={swap}',
                                 '-fsanitize=address,undefined', '-g', '-I' + str(ROOT / 'main'),
                                 str(c), str(ROOT / 'main/display_scale.c'), '-o', str(exe)],
                                check=True, capture_output=True)
-                subprocess.run([str(exe)], check=True, timeout=30)
+                subprocess.run([str(exe)], check=True, timeout=60)
 
     def test_completed_dma_notifies_and_requests_deferred_switch(self):
         source = (ROOT / 'main/main.c').read_text()
