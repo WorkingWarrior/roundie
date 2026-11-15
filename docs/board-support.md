@@ -1,9 +1,25 @@
 # Board support (`roundie_board`)
 
-**Status, 2026-11-15:** one board implemented, the Waveshare
-ESP32-S3-Touch-LCD-1.85B. The boundary below is an architectural decision of
-this refactor. Host tests and both target builds pass; device results are
-recorded at the end.
+**Status, 2026-11-15:** two boards implemented, the Waveshare
+ESP32-S3-Touch-LCD-1.85B and ESP32-S3-Touch-AMOLED-1.75C. The boundary below is
+an architectural decision of this refactor. Host tests and target builds of
+both boards pass. The 1.85B device results are recorded at the end; the 1.75C
+has not been run on hardware ([hardware-audit-1.75c.md](hardware-audit-1.75c.md)).
+
+## Boards
+
+| | 1.85B (`waveshare_s3_touch_lcd_1_85b`) | 1.75C (`waveshare_s3_touch_amoled_1_75c`) |
+|---|---|---|
+| Panel | ST77916 360 × 360 LCD, QSPI, LEDC backlight | CO5300 466 × 466 AMOLED, QSPI, brightness by panel command |
+| UI canvas | 360 × 360, direct | 360 × 360, upscaled per strip ([details](display-rendering.md#scaled-panels)) |
+| Draw limit | 360 × 20 (or 60) pixels, align 1 | 466 × 24 pixels, align 2 |
+| Touch | CST816S | CST9217 |
+| RTC | PCF85063 (`ROUNDIE_BOARD_CAP_RTC`) | None; system clock and RTC timer |
+| Battery | BQ27220 fuel gauge | AXP2101, read only: presence, charge direction, voltage |
+| Speaker | ES8311 | ES8311 |
+| Wake | Touch INT, BOOT | Touch INT, BOOT |
+| Flash, PSRAM | 16 MB, 8 MB Octal | 32 MB (layout uses 16 MiB), 8 MB Octal |
+| Device-tested | Yes (results below) | No |
 
 ## Boundary
 
@@ -82,7 +98,8 @@ at run time (`ROUNDIE_SENSOR_*` states, `ESP_ERR_NOT_FOUND`,
 The board is selected at build time in two places, which must agree:
 
 - The CMake cache variable `ROUNDIE_BOARD` (default
-  `waveshare_s3_touch_lcd_1_85b`) prepends the board's `sdkconfig.defaults`.
+  `waveshare_s3_touch_lcd_1_85b`, or `waveshare_s3_touch_amoled_1_75c`)
+  prepends the board's `sdkconfig.defaults`.
 - The Kconfig choice `ROUNDIE_BOARD` sets `CONFIG_ROUNDIE_BOARD_DIR`, and with
   it the compiled directory.
 
@@ -130,9 +147,9 @@ missing something. Record it as a decision instead of working around it.
 
 ## Limitations of the current boundary
 
-- **Resolution.** The application canvas is 360 × 360 (ABI). A panel of another
-  size fails the static assert. Supporting one needs a decision on scaling or
-  an ABI version, not a board change.
+- **Resolution.** The application canvas is 360 × 360 (ABI). A larger panel
+  shows it upscaled; a smaller one fails the static assert. Native use of a
+  larger panel would need an ABI version, not a board change.
 - **CPU architecture.**
   - Applications are native Xtensa ELF objects, built and validated for the
     ESP32-S3 (see [elf-loader.md](elf-loader.md)).
@@ -141,12 +158,14 @@ missing something. Record it as a decision instead of working around it.
     validation and package architecture tag. Its board choice can depend on
     that target, but the app runtime is not validated there.
 - **Flash and partitions.** The REP profile's partition table and
-  `sdkconfig.rep.defaults` assume 16 MB Flash. A board with less Flash needs its
-  own layout, which is a storage decision (spec §25).
+  `sdkconfig.rep.defaults` use the first 16 MiB. A 32 MiB chip (1.75C) leaves the
+  rest unallocated. A board with less Flash needs its own layout, which is a
+  storage decision (spec §25).
 - **Display buffering.**
   - The strip buffers are internal DMA memory sized for an SPI or QSPI panel.
-  - The `ROUNDIE_LCD_*` experiment options (20 or 60 lines) are tuned on the
-    1.85B.
+  - The `ROUNDIE_LCD_STRIP_LINES` and `ROUNDIE_LCD_DOUBLE_BUFFER` experiment
+    options exist only for the 1.85B. Other boards fix their strip height in
+    `roundie_board_config.h`.
   - An RGB or MIPI panel would need a different buffering strategy, a measured
     choice in its own right.
 - **Requirements.** CMake `REQUIRES` cannot depend on Kconfig. The component
@@ -160,6 +179,8 @@ missing something. Record it as a decision instead of working around it.
 ## Hardware regression scenarios
 
 Run these after any change to `roundie_board`, on firmware installed by OTA.
+The 1.75C has its own first-run list in
+[hardware-audit-1.75c.md](hardware-audit-1.75c.md#pending-device-tests).
 Each scenario passes only with the stated evidence.
 
 | # | Area | Procedure | Pass |

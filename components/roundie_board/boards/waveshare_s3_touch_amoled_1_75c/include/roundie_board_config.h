@@ -22,6 +22,8 @@
 /* CO5300 windows start on an even and end on an odd column and row. */
 #define ROUNDIE_BOARD_DISPLAY_ALIGN 2
 
-/* ESP32-S3R8 with a 32 MiB Flash chip. */
+/* ESP32-S3R8 with a 32 MiB Flash chip (wiki, factory image). The schematic
+ * names a 16 MB part; checked with esptool before the first flash
+ * (docs/hardware-audit-1.75c.md). */
 #define ROUNDIE_BOARD_FLASH_BYTES 0x2000000U
 #define ROUNDIE_BOARD_PSRAM_BYTES 0x800000U
