@@ -112,17 +112,17 @@ uint32_t roundie_ui_text_fields(const char *text, uint32_t length)
 
 bool roundie_ui_box_in_circle(int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    if (x < 0 || y < 0 || width <= 0 || height <= 0 || width > 360 - x || height > 360 - y) {
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 || width > ROUNDIE_UI_WIDTH - x || height > ROUNDIE_UI_HEIGHT - y) {
         return false;
     }
-    /* Every corner within radius 176 of the panel centre (180, 180). */
+    /* Every corner within the safe radius of the panel centre. */
     int32_t xs[2] = {x, x + width};
     int32_t ys[2] = {y, y + height};
     for (unsigned i = 0; i < 2; i++) {
         for (unsigned j = 0; j < 2; j++) {
-            int32_t dx = xs[i] - 180;
-            int32_t dy = ys[j] - 180;
-            if (dx * dx + dy * dy > 176 * 176) {
+            int32_t dx = xs[i] - ROUNDIE_UI_CENTER;
+            int32_t dy = ys[j] - ROUNDIE_UI_CENTER;
+            if (dx * dx + dy * dy > ROUNDIE_UI_SAFE_RADIUS * ROUNDIE_UI_SAFE_RADIUS) {
                 return false;
             }
         }
@@ -184,9 +184,9 @@ static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
         /* A styled label: version-1 label geometry plus one font size. */
         uint32_t fonts = widget->options & (REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE);
         return fonts != (REP_UI_OPTION_FONT_MEDIUM | REP_UI_OPTION_FONT_LARGE) &&
-            base->x >= 0 && base->x <= 360 && base->y >= 0 && base->y <= 360 &&
-            base->width > 0 && base->width <= 360 - base->x &&
-            base->height > 0 && base->height <= 360 - base->y &&
+            base->x >= 0 && base->x <= ROUNDIE_UI_WIDTH && base->y >= 0 && base->y <= ROUNDIE_UI_HEIGHT &&
+            base->width > 0 && base->width <= ROUNDIE_UI_WIDTH - base->x &&
+            base->height > 0 && base->height <= ROUNDIE_UI_HEIGHT - base->y &&
             widget->value == 0 && widget->minimum == 0 && widget->maximum == 0;
     }
     if (base->type == REP_UI_LIST) {
@@ -274,15 +274,15 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
     bool format = round ? round_format(request, &items) :
         widget->version == 1 && widget->struct_size == sizeof(*widget) &&
         widget->type >= REP_UI_VIEW && widget->type <= REP_UI_BUTTON &&
-        widget->x >= 0 && widget->x <= 360 && widget->y >= 0 && widget->y <= 360 &&
-        widget->width > 0 && widget->width <= 360 - widget->x &&
-        widget->height > 0 && widget->height <= 360 - widget->y &&
+        widget->x >= 0 && widget->x <= ROUNDIE_UI_WIDTH && widget->y >= 0 && widget->y <= ROUNDIE_UI_HEIGHT &&
+        widget->width > 0 && widget->width <= ROUNDIE_UI_WIDTH - widget->x &&
+        widget->height > 0 && widget->height <= ROUNDIE_UI_HEIGHT - widget->y &&
         (widget->type != REP_UI_BUTTON || (widget->width >= 44 && widget->height >= 44)) &&
         text_valid(widget->text, widget->text_length);
     portENTER_CRITICAL(&lock);
     bool root = widget->type == REP_UI_VIEW;
     bool parent = root ? widget->parent == 0 && status.view == 0 &&
-        widget->x == 0 && widget->y == 0 && widget->width == 360 && widget->height == 360 :
+        widget->x == 0 && widget->y == 0 && widget->width == ROUNDIE_UI_WIDTH && widget->height == ROUNDIE_UI_HEIGHT :
         widget->parent != 0 && widget->parent == status.view;
     /* One system-placed ARC_SLIDER, EDGE_BUTTON and DIALOG per view. */
     if (round && single_per_view(widget->type)) {

@@ -3,6 +3,15 @@
 #include <stdint.h>
 #include "rep/rep_app_v3.h"
 
+/* The UI canvas in pixels: the coordinate space of the launcher, system screens
+ * and REP applications (ABI 2 and 3 widgets are validated against it). Part of
+ * the application contract, so it does not follow the board; the GUI checks
+ * at build time that the panel matches (docs/board-support.md). */
+#define ROUNDIE_UI_WIDTH 360
+#define ROUNDIE_UI_HEIGHT 360
+#define ROUNDIE_UI_CENTER 180 /* x and y of the round glass's centre */
+#define ROUNDIE_UI_SAFE_RADIUS 176 /* round widgets keep every corner within it */
+
 #define ROUNDIE_UI_QUEUE_CAPACITY 12U
 #define ROUNDIE_UI_BATCH 4U
 /* BUTTON: payload = origin. VALUE: payload = committed int32 bits; coalesce

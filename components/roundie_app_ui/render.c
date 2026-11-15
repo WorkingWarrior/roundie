@@ -419,7 +419,7 @@ static bool create_round(unsigned index, const rep_ui_widget_v2_t *widget)
         }
         lv_obj_remove_style_all(object);
         lv_obj_remove_flag(object, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_size(object, 360, 360);
+        lv_obj_set_size(object, ROUNDIE_UI_WIDTH, ROUNDIE_UI_HEIGHT);
         lv_obj_set_style_bg_color(object, lv_color_hex(0x05080d), 0);
         lv_obj_set_style_bg_opa(object, LV_OPA_COVER, 0);
         lv_obj_t *label = lv_label_create(object);

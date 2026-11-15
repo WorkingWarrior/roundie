@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "roundie_app_ui.h"
 
 static TaskHandle_t gui_task;
 static lv_obj_t *screen;
@@ -82,7 +83,7 @@ static bool swipe_armed;
 #define ROW_MARGIN 10      /* from the circle, on each side */
 #define LIST_END_SPACE 120 /* lets the last item scroll up from the bottom edge */
 #define FADE_START 110     /* distance of an item's centre from the screen centre */
-#define SCREEN_RADIUS 180
+#define SCREEN_RADIUS ROUNDIE_UI_CENTER
 
 static uint32_t elapsed_us(int64_t later, int64_t earlier)
 {
@@ -149,9 +150,9 @@ static void swipe_feedback(uint32_t kind, const lv_point_t *point)
         travel = PILL_WIDTH + 20;
     }
     if (kind == SWIPE_BOTTOM_EDGE) {
-        lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, 360 - travel);
+        lv_obj_set_pos(exit_pill, ROUNDIE_UI_CENTER - PILL_WIDTH / 2, ROUNDIE_UI_HEIGHT - travel);
     } else if (kind == SWIPE_TOP_EDGE) {
-        lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, travel - PILL_HEIGHT);
+        lv_obj_set_pos(exit_pill, ROUNDIE_UI_CENTER - PILL_WIDTH / 2, travel - PILL_HEIGHT);
     } else {
         int32_t y = point->y - PILL_HEIGHT / 2;
         if (y < EDGE_Y) {
@@ -374,7 +375,7 @@ static bool create(void)
     lv_label_set_text(title, "Roundie / Aplikacje");
     lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(list, 0, 0);
-    lv_obj_set_size(list, 360, 360);
+    lv_obj_set_size(list, ROUNDIE_UI_WIDTH, ROUNDIE_UI_HEIGHT);
     lv_obj_set_style_pad_all(list, 0, 0);
     lv_obj_set_style_pad_bottom(list, LIST_END_SPACE, 0);
     lv_obj_set_style_border_width(list, 0, 0);
@@ -400,7 +401,7 @@ static bool create(void)
     lv_obj_set_size(top, BOTTOM_WIDTH, TOP_HEIGHT);
     /* Quick settings: an opaque full-screen panel, closed by a swipe up that
      * starts outside its buttons. */
-    lv_obj_set_size(quick, 360, 360);
+    lv_obj_set_size(quick, ROUNDIE_UI_WIDTH, ROUNDIE_UI_HEIGHT);
     lv_obj_set_style_bg_color(quick, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(quick, LV_OPA_COVER, 0);
     quick_battery = label(quick, 240, 60, 44);
@@ -421,7 +422,7 @@ static bool create(void)
             return false;
         }
         lv_obj_set_size(button, QUICK_BUTTON_WIDTH, QUICK_BUTTON_HEIGHT);
-        lv_obj_set_pos(button, 180 - QUICK_BUTTON_WIDTH / 2, 86 + (int32_t)i * 64);
+        lv_obj_set_pos(button, ROUNDIE_UI_CENTER - QUICK_BUTTON_WIDTH / 2, 86 + (int32_t)i * 64);
         lv_label_set_text(text, quick_labels[i]);
         lv_obj_center(text);
         if (i == 0) {
@@ -687,7 +688,7 @@ void roundie_launcher_gui_pump(bool safe)
             lv_label_set_text(pill_text, model.home_active ? LV_SYMBOL_LIST " Aplikacje" : LV_SYMBOL_CLOSE " Zamknij");
         } else if (running && model.generation != 0) {
             /* Accepted: the pill stays at the top centre until unloaded. */
-            lv_obj_set_pos(exit_pill, 180 - PILL_WIDTH / 2, 12);
+            lv_obj_set_pos(exit_pill, ROUNDIE_UI_CENTER - PILL_WIDTH / 2, 12);
             lv_label_set_text(pill_text, model.home_active ? "Aplikacje..." : "Zamykanie...");
             lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
         } else if (model.state == ROUNDIE_NAV_LIST && model.home_available) {

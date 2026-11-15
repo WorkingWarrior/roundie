@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "lvgl.h"
+#include "roundie_app_ui.h"
 #include "recovery_diagnostics.h"
 #include "roundie_boot_guard.h"
 #include "roundie_storage_session.h"
@@ -97,7 +98,7 @@ void roundie_storage_screen_start(int64_t now_us)
 
     screen_object = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(screen_object);
-    lv_obj_set_size(screen_object, 360, 360);
+    lv_obj_set_size(screen_object, ROUNDIE_UI_WIDTH, ROUNDIE_UI_HEIGHT);
     lv_obj_set_style_bg_color(screen_object, lv_color_hex(0x0b1320), 0);
     lv_obj_set_style_bg_opa(screen_object, LV_OPA_COVER, 0);
     lv_obj_add_flag(screen_object, LV_OBJ_FLAG_CLICKABLE);
