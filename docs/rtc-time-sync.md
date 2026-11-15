@@ -50,6 +50,17 @@ battery-backed RTC (1.85B: PCF85063); its path is unchanged. Without the bit
   the time before it.
 - **Power loss.** Power-on, brownout, power-glitch, external-pin and unknown
   resets invalidate time until the next trusted sync. NVS never supplies time.
+- **Verified (host).** `tests/test_roundie_clock.py` compiles
+  `accept_retained_wall_clock()` from `main.c` with `clock_retention.c`, and
+  takes every `esp_reset_reason_t` from the pinned ESP-IDF header. It checks:
+  - power-on with arbitrary RTC memory;
+  - a sync followed by a chain of software, panic and watchdog resets;
+  - every reset reason, against the list above;
+  - a power loss that restarts the RTC timer while the record survives;
+  - lost system time, and drift beyond the allowance.
+
+  A rejected record stays rejected on the next software reset. Real RTC
+  memory retention and the reset reasons the chip reports are device tests.
 - **Accuracy (assumption, pending measurement).** The 1.75C has no 32 kHz
   crystal, so the RTC slow clock is the calibrated internal RC oscillator
   (`CONFIG_RTC_CLK_SRC_INT_RC`). Drift across light sleep and resets is not

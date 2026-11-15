@@ -18,7 +18,7 @@ has not been run on hardware ([hardware-audit-1.75c.md](hardware-audit-1.75c.md)
 | Battery | BQ27220 fuel gauge | AXP2101, read only: presence, charge direction, voltage |
 | Speaker | ES8311 | ES8311 |
 | Wake | Touch INT, BOOT | Touch INT, BOOT |
-| Flash, PSRAM | 16 MB, 8 MB Octal | 32 MB (layout uses 16 MiB), 8 MB Octal |
+| Flash, PSRAM | 16 MB, 8 MB Octal | 32 MB per wiki, 16 MB per schematic; 16 MiB image header, 8 MB Octal |
 | Device-tested | Yes (results below) | No |
 
 ## Boundary
@@ -158,8 +158,11 @@ missing something. Record it as a decision instead of working around it.
     validation and package architecture tag. Its board choice can depend on
     that target, but the app runtime is not validated there.
 - **Flash and partitions.** The REP profile's partition table and
-  `sdkconfig.rep.defaults` use the first 16 MiB. A 32 MiB chip (1.75C) leaves the
-  rest unallocated. A board with less Flash needs its own layout, which is a
+  `sdkconfig.rep.defaults` use the first 16 MiB. Every board's image header
+  says 16 MiB. The 1.75C may carry a 32 MiB chip; ESP-IDF then uses the header
+  size, and the rest is unused
+  ([hardware-audit-1.75c.md](hardware-audit-1.75c.md#flash-size-conflicting-sources)).
+  A board with less Flash needs its own layout, which is a
   storage decision (spec §25).
 - **Display buffering.**
   - The strip buffers are internal DMA memory sized for an SPI or QSPI panel.

@@ -167,11 +167,25 @@ with a full-frame reference; every transfer is aligned, contiguous, sent once,
 and within the bound. `test_display_completion.py` runs `flush_scaled` itself
 against a mock DMA that reads a chunk only on completion, so reuse of a buffer
 in flight changes the image (a mutation that waits one chunk too little
-fails), and covers timeout, misaligned strips and failed draws. Both 1.85B
-profiles build without the scaled code.
+fails), and covers timeout, misaligned strips and failed draws. It also runs
+300 frames of one to four random dirty areas each, some one canvas pixel wide
+or high. DMA completes at random points, and the RGB565 byte swap runs both
+off and on (the 1.75C sends MSB first). After every frame the panel must equal
+the full-frame reference. Both 1.85B profiles build without the scaled code.
+
+Touch uses `roundie_scale_touch()`: a touch at a panel pixel selects the canvas
+pixel shown there. An index past the panel, such as a mirrored edge reported
+as 466, counts as the last pixel. `test_display_scale.c` checks this for
+every panel pixel, the corners and the centre, and confirms that every canvas
+pixel can be touched.
+
+The CO5300 driver (`esp_lcd_co5300` 2.2.0) sends one `tx_color` per
+`draw_bitmap`. ESP-IDF's SPI panel IO raises `on_color_trans_done` only on the
+last segment of a color transfer, so there is one completion per draw. This
+is from source review, not a device trace.
 
 **Pending (device, 1.75C):** visual check of the full canvas and partial
-updates on the panel, the draw-done callback firing once per draw in the
-CO5300 driver, the cost figures above for a full frame and for typical
+updates on the panel, the draw-done callback firing once per draw on the
+device, the cost figures above for a full frame and for typical
 navigation, internal-RAM headroom, and touch accuracy at the edges. The
 24-line chunk height is an assumption until measured.
