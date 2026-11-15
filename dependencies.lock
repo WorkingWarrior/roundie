@@ -42,6 +42,20 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.6.2
+  espressif/esp_lcd_co5300:
+    component_hash: 1a5cbaa0069c3c72c238e5a1eb32ec9dd390ec1c7c46b24bf44b9037f2fe6c56
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: idf
+      require: private
+      version: '>=5.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.2.0
   espressif/esp_lcd_st77916:
     component_hash: c0a565af3ea85a9d9f1e79b0e4d0829378db319bc4dab4939eca44361b3c5a1b
     dependencies:
@@ -117,15 +131,31 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 9.5.0
+  waveshare/esp_lcd_touch_cst9217:
+    component_hash: f755f8e3ae61df23413256a6a447e367a4b844538229c183ff0e89dbbdc15319
+    dependencies:
+    - name: espressif/esp_lcd_touch
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^1.1.0
+    - name: idf
+      require: private
+      version: '>=4.4.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.0.0
 direct_dependencies:
 - espressif/elf_loader
 - espressif/esp_codec_dev
+- espressif/esp_lcd_co5300
 - espressif/esp_lcd_st77916
 - espressif/esp_lcd_touch_cst816s
 - espressif/esp_tinyusb
 - idf
 - joltwallet/littlefs
 - lvgl/lvgl
-manifest_hash: 14a814850524fbc4eee8f8b59fe118949175d19fb8a719cd9a5a14983e6c7bc7
+- waveshare/esp_lcd_touch_cst9217
+manifest_hash: 934066a71703d34bf66241262c5ecda542de50cfb1f31f8e21fc2466f52dfd3b
 target: esp32s3
 version: 3.0.0

@@ -11,11 +11,16 @@ choice ROUNDIE_BOARD
 config ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_LCD_1_85B
     bool "Waveshare ESP32-S3-Touch-LCD-1.85B"
     depends on IDF_TARGET_ESP32S3
+
+config ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    bool "Waveshare ESP32-S3-Touch-AMOLED-1.75C"
+    depends on IDF_TARGET_ESP32S3
 endchoice
 
 config ROUNDIE_BOARD_DIR
     string
     default "waveshare_s3_touch_lcd_1_85b" if ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_LCD_1_85B
+    default "waveshare_s3_touch_amoled_1_75c" if ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
 
 if ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_LCD_1_85B
 rsource "boards/waveshare_s3_touch_lcd_1_85b/Kconfig"
@@ -27,6 +32,7 @@ menu "Roundie LCD"
 
 config ROUNDIE_LCD_STRIP_LINES
     int "LVGL partial draw buffer height in lines"
+    depends on ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_LCD_1_85B
     range 20 60
     default 20
     help
@@ -43,6 +49,7 @@ config ROUNDIE_LVGL_CORE_IRAM
 
 config ROUNDIE_LCD_DOUBLE_BUFFER
     bool "Two internal LVGL draw buffers"
+    depends on ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_LCD_1_85B
     default y
     help
         Compile-time partial-render experiment. Adds one more buffer of
