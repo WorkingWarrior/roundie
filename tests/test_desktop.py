@@ -181,32 +181,37 @@ class DesktopRunTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("timed out", result.stderr)
 
-    def test_window_in_gamescope(self):
-        """Vulkan presentation, mouse, keys and resizing through a real
-        compositor: gamescope's headless backend is a virtual monitor."""
+    def test_slide_off_a_button_still_clicks(self):
+        """Production behaviour, not a desktop artefact: LVGL keeps a pressed
+        button pressed when the finger slides off (LV_OBJ_FLAG_PRESS_LOCK), so
+        the release still clicks it, on the board's touch panel as here."""
+        script = "wait-nav RESULT 5000\nswipe 233 382 465 400 400\nwait-nav LIST 3000\n"
+        result, _ = self.run_desktop("1.75c", script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def run_in_gamescope(self, app_script, drive):
+        """Runs the 1.75C launcher at zoom 2 in gamescope's headless backend (a
+        virtual 932x932 monitor), resizes the window to 700x500 so that the
+        panel shows at zoom 1 from (117,17), then runs the xdotool driver."""
         tools = [tool for tool in ("gamescope", "gamescopectl", "xdotool") if shutil.which(tool) is None]
         if tools:
             self.skipTest("missing " + ", ".join(tools))
         directory = Path(tempfile.mkdtemp(dir=self.work))
-        # The application checks every transition; the driver only clicks.
-        (directory / "script.txt").write_text(
-            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait-nav RESULT 15000\nwait 500\nstatus\nquit\n")
+        (directory / "script.txt").write_text(app_script)
         installs = " ".join(f"--install {package}" for package in self.packages)
-        click = "xdotool mousemove --sync {} {}; sleep 0.2; xdotool mousedown 1; sleep 0.15; xdotool mouseup 1"
         (directory / "drive.sh").write_text(f"""#!/bin/bash
 cd {directory}
+press() {{ xdotool mousemove --sync $1 $2; sleep 0.2; xdotool mousedown 1; sleep 0.15; }}
+drag() {{ for i in $(seq 1 $5); do xdotool mousemove --sync $(($1+($3-$1)*i/$5)) $(($2+($4-$2)*i/$5)); sleep 0.04; done; }}
+release() {{ sleep 0.15; xdotool mouseup 1; }}
+click() {{ press $1 $2; release; }}
 {self.binary} --board 1.75c --zoom 2 --data {directory}/data {installs} --script script.txt > app.log 2>&1 &
 app=$!
 sleep 4
 xdotool key b
-window=$(xdotool getactivewindow)
-xdotool windowsize --sync "$window" 700 500
+xdotool windowsize --sync $(xdotool getactivewindow) 700 500
 sleep 1.5
-gamescopectl screenshot {directory}/resized.png
-sleep 1
-{click.format(350, 399)}
-sleep 2
-{click.format(350, 153)}
+{drive}
 wait $app
 echo "exit $?" >> app.log
 """)
@@ -214,15 +219,138 @@ echo "exit $?" >> app.log
         env = dict(os.environ, UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
                    ASAN_OPTIONS="detect_leaks=0")  # the graphics stack leaks on unload
         subprocess.run(["gamescope", "--backend", "headless", "-W", "932", "-H", "932", "--",
-                        str(directory / "drive.sh")], capture_output=True, timeout=90, env=env)
+                        str(directory / "drive.sh")], capture_output=True, timeout=120, env=env)
         log = (directory / "app.log").read_text()
         self.assertIn("exit 0", log, log)
+        self.assertNotIn("runtime error", log)
+        self.assertIn("boot pressed", log)
+        self.assertGreaterEqual(log.count("Creating swapchain"), 2, "resize did not recreate the swapchain")
+        self.assertIn("vulkan: swapchain 700x500, panel shown 466x466 at 117,17", log)
+        return log, directory
+
+    def test_window_in_gamescope(self):
+        """Vulkan presentation, mouse, keys and resizing through a real
+        compositor. The application checks every transition; the driver clicks."""
+        log, directory = self.run_in_gamescope(
+            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait-nav RESULT 15000\nwait 500\nstatus\nquit\n",
+            "gamescopectl screenshot $PWD/resized.png\nsleep 1\nclick 350 399\nsleep 2\nclick 350 153\n")
         self.assertIn("launcher state=RESULT", log)
         self.assertIn("request=2", log)  # the second launch came from the mouse
-        self.assertIn("boot pressed", log)
-        self.assertNotIn("runtime error", log)
-        self.assertGreaterEqual(log.count("Creating swapchain"), 2, "resize did not recreate the swapchain")
         self.assertEqual(png_size(directory / "resized.png"), (700, 500))  # the resized window
+
+    def test_drag_gestures_in_gamescope(self):
+        """A drag on the list scrolls it without launching; a drag from the
+        left-edge strip goes home (the launcher's own edge handler)."""
+        log, _ = self.run_in_gamescope(
+            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait 6000\nexpect-nav LIST\n"
+            "wait-nav RESULT 15000\nwait 300\nstatus\nquit\n",
+            "click 350 399\nsleep 1\n"
+            "press 350 192; drag 350 192 350 40 10; release\nsleep 4.5\n"
+            "press 127 250; drag 127 250 347 255 12; release\n")
+        self.assertIn("launcher state=RESULT", log)
+        self.assertIn("request=2", log)
+
+    def test_pointer_outside_the_panel_in_gamescope(self):
+        """A release outside the window still arrives (no stuck press), and a
+        press in the letterbox around the panel is not a touch."""
+        log, _ = self.run_in_gamescope(
+            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait 4000\nexpect-nav LIST\n"
+            "wait-nav RESULT 15000\nwait 300\nstatus\nquit\n",
+            # Back, dragged off the right side of the window: still a click (see
+            # test_slide_off_a_button_still_clicks).
+            "press 350 399; drag 350 399 900 420 12; release\nsleep 1\n"
+            # From the letterbox onto the first entry: ignored.
+            "press 40 250; drag 40 250 350 192 8; release\nsleep 4.5\n"
+            "click 350 192\n")
+        self.assertIn("launcher state=RESULT", log)
+        self.assertIn("request=2", log)
+
+    def test_window_in_nested_kwin_at_scale_2(self):
+        """HiDPI: a virtual KWin output at scale 2 in its own D-Bus session and
+        configuration directories (never the user's session). The window gets
+        device pixels; pointer events come from KWin's fake-input protocol."""
+        tools = [tool for tool in ("kwin_wayland", "dbus-run-session", "gdbus", "wayland-scanner", "cc")
+                 if shutil.which(tool) is None]
+        if tools:
+            self.skipTest("missing " + ", ".join(tools))
+        protocol = Path(os.environ.get("ROUNDIE_FAKE_INPUT_XML",
+                                       "/usr/share/plasma-wayland-protocols/fake-input.xml"))
+        if not protocol.exists():
+            self.skipTest("fake-input.xml not found; set ROUNDIE_FAKE_INPUT_XML")
+        directory = Path(tempfile.mkdtemp(dir=self.work))
+        for mode in ("client-header", "private-code"):
+            output = directory / ("fake-input.h" if mode == "client-header" else "fake-input.c")
+            subprocess.run(["wayland-scanner", mode, str(protocol), str(output)], check=True)
+        flags = subprocess.run(["pkg-config", "--cflags", "--libs", "wayland-client"], check=True,
+                               capture_output=True, text=True).stdout.split()
+        injector = directory / "fake-input"
+        subprocess.run(["cc", "-Wall", "-Wextra", "-Werror", "-I", str(directory), "-o", str(injector),
+                        str(ROOT / "tests/desktop_fake_input.c"), str(directory / "fake-input.c"), *flags],
+                       check=True)
+        for name in ("config", "cache", "data/applications"):
+            (directory / name).mkdir(parents=True)
+        # KWin offers fake input only to clients that a desktop file names.
+        (directory / "data/applications/roundie-fake-input.desktop").write_text(
+            f"[Desktop Entry]\nType=Application\nName=Roundie input test\nExec={injector}\nNoDisplay=true\n"
+            "X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input\n")
+        # Place the borderless 466x466 (logical) window at (100,50).
+        (directory / "place.js").write_text(
+            "for (const w of workspace.windowList()) {\n"
+            "    if (w.caption.indexOf(\"Roundie\") === 0) {\n"
+            "        w.noBorder = true;\n"
+            "        w.frameGeometry = {x: 100, y: 50, width: 466, height: 466};\n"
+            "    }\n}\n")
+        events = []
+        def point(x, y):
+            events.append(f"move {100 + x} {50 + y}")
+        # The panel shows at zoom 2 in 932x932 device pixels: one logical point per panel pixel.
+        point(233, 382)
+        events += ["sleep 200", "down", "sleep 150", "up", "sleep 1500"]  # Back -> list
+        point(10, 233)
+        events += ["sleep 200", "down", "sleep 100"]
+        for step in range(1, 13):
+            point(10 + step * 18, 233 + step // 4)
+            events.append("sleep 40")
+        events += ["sleep 150", "up", "sleep 500"]  # left-edge swipe -> home
+        (directory / "input.txt").write_text("\n".join(events) + "\n")
+        (directory / "script.txt").write_text(
+            "wait-nav RESULT 15000\nwait-nav LIST 20000\nwait-nav RESULT 20000\nwait 300\nstatus\nquit\n")
+        installs = " ".join(f"--install {package}" for package in self.packages)
+        (directory / "inner.sh").write_text(f"""#!/bin/bash
+cd {directory}
+SDL_VIDEO_DRIVER=wayland {self.binary} --board 1.75c --zoom 1 --data {directory}/appdata {installs} --script script.txt > app.log 2>&1 &
+app=$!
+sleep 3
+id=$(gdbus call --session --dest org.kde.KWin --object-path /Scripting --method org.kde.kwin.Scripting.loadScript {directory}/place.js place | grep -o '[0-9]\\+')
+gdbus call --session --dest org.kde.KWin --object-path /Scripting/Script$id --method org.kde.kwin.Script.run > /dev/null
+sleep 0.5
+{injector} < input.txt > inject.log 2>&1
+wait $app
+echo "exit $?" >> app.log
+""")
+        (directory / "inner.sh").chmod(0o755)
+        env = {name: value for name, value in os.environ.items()
+               if name not in ("WAYLAND_DISPLAY", "DISPLAY", "XDG_SESSION_ID", "DBUS_SESSION_BUS_ADDRESS")}
+        env.update(XDG_CONFIG_HOME=str(directory / "config"), XDG_CACHE_HOME=str(directory / "cache"),
+                   XDG_DATA_HOME=str(directory / "data"), ASAN_OPTIONS="detect_leaks=0",
+                   UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1")
+        def kwin(session):
+            subprocess.run(["dbus-run-session", "--", "kwin_wayland", "--virtual", "--width", "932", "--height",
+                            "932", "--scale", "2", "--no-lockscreen", "--socket", f"roundie-test-{os.getpid()}",
+                            "--exit-with-session", session], capture_output=True, timeout=90, env=env,
+                           cwd=directory)
+        # The first start writes the output configuration; set its scale to 2.
+        kwin("/bin/true")
+        outputs = directory / "config/kwinoutputconfig.json"
+        self.assertIn('"scale": 1,', outputs.read_text())
+        outputs.write_text(outputs.read_text().replace('"scale": 1,', '"scale": 2,'))
+        kwin(str(directory / "inner.sh"))
+        log = (directory / "app.log").read_text()
+        self.assertIn("exit 0", log, log + (directory / "inject.log").read_text())
+        self.assertNotIn("runtime error", log)
+        self.assertIn("466x466, 932x932 pixels, density 2.00", log)
+        self.assertIn("vulkan: swapchain 932x932, panel shown 932x932 at 0,0", log)
+        self.assertIn("request=2", log)
 
     def test_empty_registry_lists_no_packages(self):
         script = "wait-nav LIST 5000\nscreenshot empty.png\n"

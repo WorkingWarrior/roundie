@@ -276,14 +276,48 @@ unchanged. Builds have no warnings; host tests pass.
   SUBOPTIMAL, so the desktop recreates the swapchain on SDL's pixel size
   event and presents the last frame again after a resize or expose.
 
+- Gestures in gamescope (automated, same harness): a drag on the package list
+  scrolls it and does not launch (the launcher stays on the list for 6 s); a
+  drag that starts in the left-edge strip goes home through the launcher's own
+  `edge_swiped` handler, with the swipe pill shown during the drag; a release
+  outside the 700 × 500 window still reaches the application, so no press
+  stays stuck, and a later click works; a press in the letterbox beside the
+  panel is not a touch, even when dragged onto an entry. A press on a button
+  that slides off it still clicks on release: that is LVGL's
+  `LV_OBJ_FLAG_PRESS_LOCK` default in the production launcher, reproduced
+  headless (`test_slide_off_a_button_still_clicks`), so it applies to the
+  board's touch panel too; whether to change it is a UX decision, not a
+  desktop defect.
+- HiDPI in a nested KWin (automated, `test_window_in_nested_kwin_at_scale_2`):
+  `kwin_wayland --virtual` with a 932 × 932 logical output at scale 2, in its
+  own `dbus-run-session` and its own `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and
+  `XDG_DATA_HOME` (KWin writes `kwinoutputconfig.json` there, not to the
+  user's configuration). The window is created with
+  `SDL_WINDOW_HIGH_PIXEL_DENSITY`: a 466 × 466 point window gets a 932 × 932
+  swapchain (density 2.00) and the panel is shown at integer zoom 2. Without
+  the flag SDL reported density 1.00 and a 466 × 466 swapchain, which KWin
+  stretched. Pointer events come from KWin's `org_kde_kwin_fake_input`
+  protocol through `tests/desktop_fake_input.c`, which the test builds with
+  `wayland-scanner`; it needs `fake-input.xml` from plasma-wayland-protocols
+  (`ROUNDIE_FAKE_INPUT_XML` or `/usr/share/plasma-wayland-protocols`) and
+  skips otherwise. A click on Back and a left-edge swipe land on the right
+  controls at scale 2. The desktop logs the window's size, pixel size,
+  density and display scale, and every swapchain's size and panel placement.
+
 ## Pending
 
 - Firmware after M1a is checked by builds and code comparison, not on a
   device; the code is equivalent, so no device run is planned for it. Any
   later step that changes firmware code needs its own device check.
-- Not checked yet: the window on the KDE Plasma Wayland session itself
-  (gamescope ran the client through Xwayland), a HiDPI output with a pixel
-  density above 1, and a mouse drag as a swipe in a window.
+- PENDING, needs an unlocked interactive KDE Plasma session (not attempted
+  while the session was locked): the window in the user's own Plasma Wayland
+  session with real mouse input; dragging a press out of the window onto
+  another output or another application's window and releasing there; the
+  window losing focus (Alt+Tab, screen lock) while the button is held; and
+  sharpness at the user's actual output scale, including a fractional one
+  (1.25, 1.5). The nested KWin and gamescope runs below use the same
+  compositor code paths only in part and are not evidence for the native
+  session.
 - BOOT and PWR are emulated and logged, but nothing consumes them before M2:
   on the board the power manager in `main/power_manager.c` handles them.
 - Desktop applications (D6) need the design note of M5; until then every

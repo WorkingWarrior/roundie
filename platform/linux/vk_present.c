@@ -259,6 +259,23 @@ static void destroy_swapchain(vk_present_t *present)
     present->image_count = 0;
 }
 
+/* Largest integer zoom that fits, else fit by aspect: crisp pixels. */
+static void layout(const vk_present_t *present, int32_t *left, int32_t *top, uint32_t *out_w, uint32_t *out_h)
+{
+    uint32_t zoom_x = present->extent.width / present->width;
+    uint32_t zoom_y = present->extent.height / present->height;
+    uint32_t zoom = zoom_x < zoom_y ? zoom_x : zoom_y;
+    *out_w = present->width * zoom;
+    *out_h = present->height * zoom;
+    if (zoom == 0) {
+        uint32_t side = present->extent.width < present->extent.height ? present->extent.width : present->extent.height;
+        *out_w = side;
+        *out_h = side;
+    }
+    *left = (int32_t)(present->extent.width - *out_w) / 2;
+    *top = (int32_t)(present->extent.height - *out_h) / 2;
+}
+
 /* Returns false on error; a zero-sized (minimised) window leaves no swapchain. */
 static bool create_swapchain(vk_present_t *present)
 {
@@ -316,6 +333,13 @@ static bool create_swapchain(vk_present_t *present)
         return false;
     }
     present->extent = extent;
+    int32_t left = 0;
+    int32_t top = 0;
+    uint32_t out_w = 0;
+    uint32_t out_h = 0;
+    layout(present, &left, &top, &out_w, &out_h);
+    fprintf(stderr, "vulkan: swapchain %ux%u, panel shown %ux%u at %d,%d\n", (unsigned)extent.width,
+            (unsigned)extent.height, (unsigned)out_w, (unsigned)out_h, (int)left, (int)top);
     /* The driver may create more images than requested; acquired indices
      * must fit images[] and rendered[]. */
     if (!check(vkGetSwapchainImagesKHR(present->device, present->swapchain, &present->image_count, NULL),
@@ -401,23 +425,6 @@ static void barrier(VkCommandBuffer commands, VkImage image, VkImageLayout from,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
     vkCmdPipelineBarrier(commands, source_stage, target_stage, 0, 0, NULL, 0, NULL, 1, &info);
-}
-
-/* Largest integer zoom that fits, else fit by aspect: crisp pixels. */
-static void layout(const vk_present_t *present, int32_t *left, int32_t *top, uint32_t *out_w, uint32_t *out_h)
-{
-    uint32_t zoom_x = present->extent.width / present->width;
-    uint32_t zoom_y = present->extent.height / present->height;
-    uint32_t zoom = zoom_x < zoom_y ? zoom_x : zoom_y;
-    *out_w = present->width * zoom;
-    *out_h = present->height * zoom;
-    if (zoom == 0) {
-        uint32_t side = present->extent.width < present->extent.height ? present->extent.width : present->extent.height;
-        *out_w = side;
-        *out_h = side;
-    }
-    *left = (int32_t)(present->extent.width - *out_w) / 2;
-    *top = (int32_t)(present->extent.height - *out_h) / 2;
 }
 
 bool vk_present_map(const vk_present_t *present, float x, float y, int32_t *panel_x, int32_t *panel_y)

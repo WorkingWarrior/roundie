@@ -584,6 +584,19 @@ static void prepare_data(const char *directory)
     }
 }
 
+static void log_window(SDL_Window *window)
+{
+    int width = 0;
+    int height = 0;
+    int pixel_width = 0;
+    int pixel_height = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    SDL_GetWindowSizeInPixels(window, &pixel_width, &pixel_height);
+    fprintf(stderr, "roundie-desktop: window %dx%d, %dx%d pixels, density %.2f, display scale %.2f\n", width,
+            height, pixel_width, pixel_height, (double)SDL_GetWindowPixelDensity(window),
+            (double)SDL_GetWindowDisplayScale(window));
+}
+
 /* Handles one SDL event; returns whether the window needs the last frame
  * presented again. */
 static bool handle_event(const SDL_Event *event, vk_present_t *present, SDL_Window *window)
@@ -597,6 +610,7 @@ static bool handle_event(const SDL_Event *event, vk_present_t *present, SDL_Wind
         atomic_store(&quit_requested, true);
         break;
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        log_window(window);
         vk_present_resized(present);
         return true;
     case SDL_EVENT_WINDOW_EXPOSED:
@@ -709,8 +723,11 @@ int main(int argc, char **argv)
         char title[64];
         snprintf(title, sizeof(title), "Roundie %s (%ux%u)", gui.profile->name,
                  (unsigned)gui.profile->width, (unsigned)gui.profile->height);
+        /* High density: on a scaled output the swapchain gets device pixels and
+         * the panel an integer zoom, rather than a compositor-stretched buffer.
+         * handle_event() converts mouse points with the window's pixel density. */
         window = SDL_CreateWindow(title, (int)gui.profile->width * zoom, (int)gui.profile->height * zoom,
-                                  SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+                                  SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
         if (window == NULL) {
             fail("SDL window: %s", SDL_GetError());
         }
@@ -720,6 +737,7 @@ int main(int argc, char **argv)
         }
         fprintf(stderr, "roundie-desktop: %s panel %ux%u on %s\n", gui.profile->name,
                 (unsigned)gui.profile->width, (unsigned)gui.profile->height, vk_present_device(present));
+        log_window(window);
     }
 
     roundie_desktop_input_init(&gui.input, gui.profile->width, gui.profile->height);
