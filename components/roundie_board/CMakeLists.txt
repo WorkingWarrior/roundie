@@ -25,6 +25,6 @@ endif()
 idf_component_register(SRCS ${srcs}
                        INCLUDE_DIRS ${includes}
                        PRIV_INCLUDE_DIRS ${priv_includes}
-                       REQUIRES esp_lcd esp_lcd_touch esp_driver_i2c
-                       PRIV_REQUIRES esp_driver_spi esp_driver_ledc esp_timer
+                       REQUIRES esp_codec_dev
+                       PRIV_REQUIRES esp_lcd esp_lcd_touch esp_driver_i2c esp_driver_i2s esp_driver_spi esp_driver_ledc esp_timer
                                      esp_driver_gpio esp_hw_support esp_hal_gpspi freertos)

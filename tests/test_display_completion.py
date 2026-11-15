@@ -127,11 +127,11 @@ static void lv_draw_sw_rgb565_swap(void *p, unsigned count)
     assert(p != 0 && count == 72 && state.transfer_pending);
     swaps++;
 }
-static void *roundie_board_panel(void *board) { return board; }
+#define ROUNDIE_BOARD_DISPLAY_SWAP_RGB565 1
 static const char *esp_err_to_name(int error) { (void)error; return "failed"; }
-static int esp_lcd_panel_draw_bitmap(void *panel, int x1, int y1, int x2, int y2, void *p)
+static int roundie_board_display_draw(void *board, int x1, int y1, int x2, int y2, void *p)
 {
-    assert(panel == state.board && p != 0 && state.transfer_pending);
+    assert(board == state.board && p != 0 && state.transfer_pending);
     assert(x1 == 11 && y1 == 21 && x2 == 19 && y2 == 30);
     submissions++;
     return fail_submission ? -1 : 0;
@@ -194,8 +194,6 @@ int main(void)
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
-typedef void *esp_lcd_panel_io_handle_t;
-typedef void esp_lcd_panel_io_event_data_t;
 typedef int BaseType_t;
 #define pdFALSE 0
 #define pdTRUE 1
@@ -228,10 +226,10 @@ int main(void)
 {
     state.gui_task = &state;
     wake = true;
-    assert(lcd_transfer_done(0, 0, &state));
+    assert(lcd_transfer_done(&state));
     assert(notifications == 1 && switches == 1);
     wake = false;
-    assert(!lcd_transfer_done(0, 0, &state));
+    assert(!lcd_transfer_done(&state));
     assert(notifications == 2 && switches == 1);
     return 0;
 }

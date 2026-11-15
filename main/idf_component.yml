@@ -2,4 +2,3 @@ dependencies:
   idf: "==6.1.0"
   lvgl/lvgl: "==9.5.0"
   espressif/esp_tinyusb: "==3.0.0"
-  espressif/esp_codec_dev: "==1.6.2"

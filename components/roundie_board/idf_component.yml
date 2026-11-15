@@ -2,3 +2,4 @@ dependencies:
   idf: "==6.1.0"
   espressif/esp_lcd_st77916: "==2.0.2"
   espressif/esp_lcd_touch_cst816s: "==1.1.1"
+  espressif/esp_codec_dev: "==1.6.2"

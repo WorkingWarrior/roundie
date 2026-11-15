@@ -38,3 +38,13 @@
 #define BOARD_BACKLIGHT GPIO_NUM_5
 #define BOARD_BACKLIGHT_TIMER LEDC_TIMER_1
 #define BOARD_BACKLIGHT_CHANNEL LEDC_CHANNEL_0
+
+/* Speaker: ES8311 codec on the shared I2C bus, I2S transmit only, NS4150B
+ * amplifier enabled by the codec driver through PA_CTRL. */
+#define BOARD_CODEC_ADDRESS 0x18 /* 7-bit */
+#define BOARD_I2S_PORT I2S_NUM_0
+#define BOARD_I2S_MCLK GPIO_NUM_2
+#define BOARD_I2S_BCLK GPIO_NUM_48
+#define BOARD_I2S_WS GPIO_NUM_38
+#define BOARD_I2S_DOUT GPIO_NUM_47
+#define BOARD_SPEAKER_PA GPIO_NUM_9

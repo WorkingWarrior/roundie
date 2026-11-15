@@ -50,9 +50,15 @@
 
 _Static_assert(sizeof(time_t) == 8, "RTC requires ESP-IDF 64-bit time_t");
 
-#define DISPLAY_WIDTH 360
-#define DISPLAY_HEIGHT 360
-#define DISPLAY_STRIP_LINES CONFIG_ROUNDIE_LCD_STRIP_LINES
+#define DISPLAY_WIDTH ROUNDIE_BOARD_DISPLAY_WIDTH
+#define DISPLAY_HEIGHT ROUNDIE_BOARD_DISPLAY_HEIGHT
+#define DISPLAY_STRIP_LINES ROUNDIE_BOARD_DISPLAY_STRIP_LINES
+/* The UI canvas is part of the application contract; a panel of another size
+ * needs a scaling or layout decision first (docs/board-support.md). */
+_Static_assert(DISPLAY_WIDTH == ROUNDIE_UI_WIDTH && DISPLAY_HEIGHT == ROUNDIE_UI_HEIGHT,
+               "the board's panel must match the UI canvas");
+_Static_assert((ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_ROUND_DISPLAY) != 0,
+               "the launcher and round UI need a round panel");
 #define GUI_DELAY_MAX_MS 10U
 #define HOME_PACKAGE "org.roundie.watch" /* see docs/system-navigation.md */
 
@@ -615,12 +621,8 @@ static uint32_t lv_tick_now(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-static bool lcd_transfer_done(esp_lcd_panel_io_handle_t io,
-                              esp_lcd_panel_io_event_data_t *event,
-                              void *user_context)
+static bool lcd_transfer_done(void *user_context)
 {
-    (void)io;
-    (void)event;
     gui_state_t *state = user_context;
     int64_t done_us = esp_timer_get_time();
     portENTER_CRITICAL_ISR(&state->dma_lock);
@@ -629,7 +631,8 @@ static bool lcd_transfer_done(esp_lcd_panel_io_handle_t io,
     portEXIT_CRITICAL_ISR(&state->dma_lock);
     BaseType_t higher_priority_woken = pdFALSE;
     vTaskNotifyGiveFromISR(state->gui_task, &higher_priority_woken);
-    /* IDF v6.1's SPI panel IO discards the color callback's bool return.
+    /* IDF v6.1's SPI panel IO discards the color callback's bool return, and
+     * the board passes it through.
      * Request the deferred ISR-exit switch here, otherwise a blocked GUI may
      * wait until the next 100 Hz tick for every strip. DMA already completed;
      * the existing GUI wait callback still controls buffer reuse. */
@@ -691,18 +694,20 @@ static void flush_display(lv_display_t *display, const lv_area_t *area,
     state->work.last_submit_id = state->transfer_id;
     state->work.flushes++;
     state->work.pixels += (uint32_t)lv_area_get_size(area);
-    /* LVGL stores RGB565 in CPU byte order; ST77916 expects MSB first. */
+#if ROUNDIE_BOARD_DISPLAY_SWAP_RGB565
+    /* LVGL stores RGB565 in CPU byte order; the panel expects MSB first. */
     lv_draw_sw_rgb565_swap(pixels, lv_area_get_size(area));
+#endif
     int64_t driver_started_us = esp_timer_get_time();
     uint32_t swap_us = (uint32_t)(driver_started_us - state->transfer_started_us);
     state->work.swap_us += swap_us;
     if (swap_us > state->work.submit_swap_max_us) {
         state->work.submit_swap_max_us = swap_us;
     }
-    esp_err_t error = esp_lcd_panel_draw_bitmap(roundie_board_panel(state->board),
-                                                area->x1, area->y1,
-                                                area->x2 + 1, area->y2 + 1,
-                                                pixels);
+    esp_err_t error = roundie_board_display_draw(state->board,
+                                                 area->x1, area->y1,
+                                                 area->x2 + 1, area->y2 + 1,
+                                                 pixels);
     int64_t submitted_us = esp_timer_get_time();
     uint32_t driver_us = (uint32_t)(submitted_us - driver_started_us);
     state->work.driver_us += driver_us;
@@ -1070,8 +1075,9 @@ void app_main(void)
 
 #if CONFIG_ROUNDIE_AUDIO
     /* Speaker output: normal mode only; a failure leaves audio off and changes nothing else. */
-    if (!roundie_recovery_active() && !storage_mode) {
-        roundie_audio_init(roundie_board_i2c_bus(board));
+    if ((ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_SPEAKER) != 0 &&
+        !roundie_recovery_active() && !storage_mode) {
+        roundie_audio_init(board);
     }
 #endif
     /* Startup samples remain private until the complete board is published. */
@@ -1100,11 +1106,7 @@ void app_main(void)
         .brightness_percent = 60,
         .touch_available = status.touch == ESP_OK,
     };
-    const esp_lcd_panel_io_callbacks_t callbacks = {
-        .on_color_trans_done = lcd_transfer_done,
-    };
-    error = esp_lcd_panel_io_register_event_callbacks(
-        roundie_board_panel_io(board), &callbacks, &state);
+    error = roundie_board_display_set_draw_done(board, lcd_transfer_done, &state);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "LCD callback registration: %s", esp_err_to_name(error));
         headless_recovery();
@@ -1146,11 +1148,14 @@ void app_main(void)
     lv_display_set_flush_wait_cb(state.display, wait_for_display);
     lv_display_set_buffers(state.display, draw_buffer, draw_buffer_second, buffer_bytes,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
+    /* A board without touch gets no pointer device; the UI still renders. */
+    const bool use_touch = (ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_TOUCH) != 0 &&
+                           !roundie_recovery_active();
     lv_indev_t *input = NULL;
-    if (!roundie_recovery_active()) {
+    if (use_touch) {
         input = lv_indev_create();
     }
-    if (input == NULL && !roundie_recovery_active()) {
+    if (input == NULL && use_touch) {
         ESP_LOGE(TAG, "LVGL input allocation failed");
         headless_recovery();
     }

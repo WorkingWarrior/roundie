@@ -19,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "roundie_app_ui.h"
 #include "recovery_diagnostics.h"
 #include "roundie_ota.h"
 #include "roundie_power.h"
@@ -114,10 +115,10 @@ static void report(const char *message)
     portEXIT_CRITICAL(&shared.lock);
 }
 
-/* GUI task only. After the screen was off, the ST77916 shows nothing on DISPON
- * alone (seen on the unit after a screen-off timeout and after light sleep), so
- * it is initialised again once no transfer is in flight, then everything is repainted. */
-static bool reinit_pending;
+/* GUI task only. After the screen was off, the board restores the panel once no
+ * transfer is in flight (some controllers stay blank on display-on alone), then
+ * everything is repainted if the board asks for it. */
+static bool restore_pending;
 
 static void apply_screen(bool on)
 {
@@ -128,7 +129,7 @@ static void apply_screen(bool on)
             error = roundie_board_backlight_set(gui_board, *gui_brightness);
         }
     } else {
-        reinit_pending = false; /* a later screen-off wins over a pending wake */
+        restore_pending = false; /* a later screen-off wins over a pending wake */
         error = roundie_board_backlight_set(gui_board, 0);
         if (error == ESP_OK) {
             error = roundie_board_display_power(gui_board, false);
@@ -214,7 +215,7 @@ static void open_menu(void)
     /* Full-screen backdrop on the top layer: above applications and system
      * chrome, and it absorbs touches outside the buttons. */
     menu = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(menu, 360, 360);
+    lv_obj_set_size(menu, ROUNDIE_UI_WIDTH, ROUNDIE_UI_HEIGHT);
     lv_obj_set_pos(menu, 0, 0);
     lv_obj_set_style_radius(menu, 0, 0);
     lv_obj_set_style_border_width(menu, 0, 0);
@@ -303,22 +304,28 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
     if (phase == SLEEP_PARKED) {
         return false;
     }
-    if (reinit_pending && dma_idle) {
-        reinit_pending = false;
-        esp_err_t reinit_error = roundie_board_display_reinit(gui_board);
-        ESP_LOGI(TAG, "Display re-initialised after screen off: %s", esp_err_to_name(reinit_error));
+    if (restore_pending && dma_idle) {
+        restore_pending = false;
+        bool repaint = false;
+        esp_err_t restore_error = roundie_board_display_restore(gui_board, &repaint);
+        ESP_LOGI(TAG, "Display re-initialised after screen off: %s", esp_err_to_name(restore_error));
         apply_screen(true);
-        lv_obj_invalidate(lv_screen_active());
+        if (repaint || restore_error != ESP_OK) {
+            lv_obj_invalidate(lv_screen_active());
+        }
     }
     if (phase == SLEEP_RESUMED) {
         roundie_power_woke(&policy, now_us, user_wake);
         if (user_wake) {
-            /* Hypothesis, pending the device test: light sleep leaves the
-             * ST77916 blank, so initialise it again and repaint all. */
-            esp_err_t error = roundie_board_display_reinit(gui_board);
+            /* Light sleep may leave the panel blank (board-specific, see
+             * roundie_board_display_restore()); restore it and repaint. */
+            bool repaint = false;
+            esp_err_t error = roundie_board_display_restore(gui_board, &repaint);
             ESP_LOGI(TAG, "Display re-initialised after wake: %s", esp_err_to_name(error));
             apply_screen(true);
-            lv_obj_invalidate(lv_screen_active());
+            if (repaint || error != ESP_OK) {
+                lv_obj_invalidate(lv_screen_active());
+            }
         }
         portENTER_CRITICAL(&shared.lock);
         shared.phase = SLEEP_IDLE;
@@ -360,7 +367,7 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
         shared.screen_offs++;
         portEXIT_CRITICAL(&shared.lock);
     } else if (action == ROUNDIE_POWER_TURN_SCREEN_ON) {
-        reinit_pending = true;
+        restore_pending = true;
     } else if (action == ROUNDIE_POWER_TOGGLE_MENU) {
         if (menu != NULL) {
             close_menu();

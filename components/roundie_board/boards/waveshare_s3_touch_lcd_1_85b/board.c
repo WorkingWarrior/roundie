@@ -5,16 +5,20 @@
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "driver/i2s_std.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_lcd_io_i2c.h"
 #include "esp_lcd_io_spi.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_st77916.h"
 #include "esp_lcd_touch.h"
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_log.h"
 #include "esp_clk_tree.h"
+#include "esp_codec_dev_defaults.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -54,6 +58,9 @@ struct roundie_board {
     bool backlight_started;
     bool boot_button_ready;
     bool wake_armed;
+    roundie_board_draw_done_t draw_done;
+    void *draw_done_context;
+    const audio_codec_ctrl_if_t *codec_control;
 };
 
 static esp_err_t read_register(i2c_master_dev_handle_t device, uint8_t address,
@@ -451,14 +458,43 @@ void roundie_board_stop(roundie_board_t *board)
     free(board);
 }
 
-esp_lcd_panel_handle_t roundie_board_panel(roundie_board_t *board)
+/* SPI color-transfer completion, ISR context. */
+static bool lcd_transfer_done(esp_lcd_panel_io_handle_t io,
+                              esp_lcd_panel_io_event_data_t *event,
+                              void *user_context)
 {
-    return board->panel;
+    (void)io;
+    (void)event;
+    roundie_board_t *board = user_context;
+    return board->draw_done(board->draw_done_context);
 }
 
-esp_lcd_panel_io_handle_t roundie_board_panel_io(roundie_board_t *board)
+esp_err_t roundie_board_display_set_draw_done(roundie_board_t *board,
+                                              roundie_board_draw_done_t callback,
+                                              void *context)
 {
-    return board->lcd_io;
+    if (board == NULL || board->lcd_io == NULL || callback == NULL ||
+        board->draw_done != NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    board->draw_done = callback;
+    board->draw_done_context = context;
+    const esp_lcd_panel_io_callbacks_t callbacks = {
+        .on_color_trans_done = lcd_transfer_done,
+    };
+    esp_err_t error = esp_lcd_panel_io_register_event_callbacks(board->lcd_io,
+                                                                &callbacks, board);
+    if (error != ESP_OK) {
+        board->draw_done = NULL;
+        board->draw_done_context = NULL;
+    }
+    return error;
+}
+
+esp_err_t roundie_board_display_draw(roundie_board_t *board, int x1, int y1,
+                                     int x2, int y2, const void *pixels)
+{
+    return esp_lcd_panel_draw_bitmap(board->panel, x1, y1, x2, y2, pixels);
 }
 
 esp_err_t roundie_board_touch_read(roundie_board_t *board, bool *pressed,
@@ -512,11 +548,15 @@ esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent)
     return ledc_update_duty(LEDC_LOW_SPEED_MODE, BOARD_BACKLIGHT_CHANNEL);
 }
 
-esp_err_t roundie_board_display_reinit(roundie_board_t *board)
+/* After DISPOFF (screen-off timeout) and after light sleep the ST77916 shows
+ * nothing on DISPON alone (seen on the unit), so it is reset and initialised
+ * again; its memory is lost and the caller repaints. docs/power-manager.md. */
+esp_err_t roundie_board_display_restore(roundie_board_t *board, bool *repaint)
 {
-    if (board == NULL || board->panel == NULL) {
+    if (board == NULL || board->panel == NULL || repaint == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    *repaint = true;
     esp_err_t error = esp_lcd_panel_reset(board->panel);
     if (error != ESP_OK) {
         return error;
@@ -584,9 +624,118 @@ esp_err_t roundie_board_wake_arm(roundie_board_t *board)
     return error;
 }
 
-i2c_master_bus_handle_t roundie_board_i2c_bus(roundie_board_t *board)
+/* Moved from roundie_audio unchanged: identity probe, then I2S, then the
+ * ES8311 through esp_codec_dev. Started once; nothing here is torn down. */
+esp_err_t roundie_board_speaker_start(roundie_board_t *board, uint32_t sample_rate,
+                                      roundie_board_speaker_t *speaker)
 {
-    return board != NULL ? board->i2c_bus : NULL;
+    if (speaker == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *speaker = (roundie_board_speaker_t){.failed_step = "i2c bus"};
+    if (board == NULL || board->i2c_bus == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (board->codec_control != NULL) {
+        speaker->failed_step = "already started";
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Identity first, on a temporary device: a missing codec is reported, not fatal. */
+    esp_err_t probe = i2c_master_probe(board->i2c_bus, BOARD_CODEC_ADDRESS, I2C_TIMEOUT_MS);
+    speaker->codec_ack = probe == ESP_OK;
+    if (!speaker->codec_ack) {
+        speaker->failed_step = "codec not found";
+        return probe;
+    }
+    const i2c_device_config_t identity_config = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = BOARD_CODEC_ADDRESS,
+        .scl_speed_hz = BOARD_I2C_DEVICE_HZ,
+    };
+    i2c_master_dev_handle_t identity;
+    if (i2c_master_bus_add_device(board->i2c_bus, &identity_config, &identity) == ESP_OK) {
+        for (uint8_t index = 0; index < 3; index++) {
+            uint8_t reg = (uint8_t)(0xFD + index);
+            i2c_master_transmit_receive(identity, &reg, 1, &speaker->codec_id[index], 1,
+                                        I2C_TIMEOUT_MS);
+        }
+        i2c_master_bus_rm_device(identity);
+    }
+
+    i2s_chan_handle_t transmit = NULL;
+    i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(BOARD_I2S_PORT, I2S_ROLE_MASTER);
+    channel_config.auto_clear = true; /* silence, not a repeated buffer, if the feed stops */
+    esp_err_t error = i2s_new_channel(&channel_config, &transmit, NULL);
+    if (error != ESP_OK) {
+        speaker->failed_step = "i2s channel";
+        return error;
+    }
+    const i2s_std_config_t standard_config = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = BOARD_I2S_MCLK,
+            .bclk = BOARD_I2S_BCLK,
+            .ws = BOARD_I2S_WS,
+            .dout = BOARD_I2S_DOUT,
+            .din = I2S_GPIO_UNUSED,
+        },
+    };
+    error = i2s_channel_init_std_mode(transmit, &standard_config);
+    if (error != ESP_OK) {
+        i2s_del_channel(transmit);
+        speaker->failed_step = "i2s init";
+        return error;
+    }
+
+    audio_codec_i2c_cfg_t i2c_config = {.addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = board->i2c_bus};
+    const audio_codec_ctrl_if_t *control = audio_codec_new_i2c_ctrl(&i2c_config);
+    board->codec_control = control;
+    audio_codec_i2s_cfg_t i2s_config = {.port = BOARD_I2S_PORT, .tx_handle = transmit, .rx_handle = NULL};
+    const audio_codec_data_if_t *data = audio_codec_new_i2s_data(&i2s_config);
+    const audio_codec_gpio_if_t *gpio = audio_codec_new_gpio();
+    if (control == NULL || data == NULL || gpio == NULL) {
+        i2s_del_channel(transmit);
+        speaker->failed_step = "codec interfaces";
+        return ESP_ERR_NO_MEM;
+    }
+    es8311_codec_cfg_t codec_config = {
+        .ctrl_if = control,
+        .gpio_if = gpio,
+        .codec_mode = ESP_CODEC_DEV_TYPE_OUT,
+        .pa_pin = BOARD_SPEAKER_PA,
+        .use_mclk = true,
+        .hw_gain = {.pa_voltage = 5.0F, .codec_dac_voltage = 3.3F},
+    };
+    const audio_codec_if_t *codec = es8311_codec_new(&codec_config);
+    if (codec == NULL) {
+        i2s_del_channel(transmit);
+        speaker->failed_step = "es8311";
+        return ESP_FAIL;
+    }
+    esp_codec_dev_cfg_t device_config = {.dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = codec, .data_if = data};
+    speaker->device = esp_codec_dev_new(&device_config);
+    if (speaker->device == NULL) {
+        i2s_del_channel(transmit);
+        speaker->failed_step = "codec device";
+        return ESP_FAIL;
+    }
+    speaker->failed_step = "ok";
+    ESP_LOGI(TAG, "Speaker: ES8311 id %02x %02x %02x, amplifier on GPIO%d", speaker->codec_id[0],
+             speaker->codec_id[1], speaker->codec_id[2], (int)BOARD_SPEAKER_PA);
+    return ESP_OK;
+}
+
+esp_err_t roundie_board_speaker_read_register(roundie_board_t *board, uint8_t reg, uint8_t *value)
+{
+    if (board == NULL || value == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const audio_codec_ctrl_if_t *control = board->codec_control;
+    if (control == NULL || control->read_reg == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return control->read_reg(control, reg, 1, value, 1) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
 }
 
 void roundie_board_wake_disarm(roundie_board_t *board)
