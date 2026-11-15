@@ -198,7 +198,9 @@ pixels as the touch controller reports them, times are milliseconds:
 `wait T`, `down X Y`, `move X Y`, `up`, `tap X Y` (100 ms press),
 `swipe X1 Y1 X2 Y2 T`, `key boot|pwr` (100 ms press), `screenshot FILE.png`,
 `wait-nav STATE T`, `expect-nav STATE`, `mark`, `wait-refreshed T` (package
-list re-read since `mark`), `status` and `quit`. The run ends after the last
+list re-read since `mark`), `status`, `power` (power state, whether the panel
+is lit, sleep and screen-off counts, last power menu message),
+`wait-power active|screen_off|light_sleep T` and `quit`. The run ends after the last
 line; the exit code is 1 when a line fails, 2 on a usage or start-up error.
 `wait-nav` and `wait-refreshed` complete only after the GUI has applied the
 launcher's latest change, the display has been refreshed and LVGL has read the
@@ -216,6 +218,9 @@ change would otherwise be lost, which a finger cannot do on the board.
 | `app_runtime.c` | Package manager seams on files; application runtime that refuses execution (D6) |
 | `desktop.c` | GUI loop in the firmware's order, system worker thread, display flush through `display_scale.c`, touch, scripts |
 | `desktop_input.c` | Emulated touch panel (mouse, scripted taps and swipes) and BOOT/PWR keys |
+| `board.c` | Emulated board at the `roundie_board.h` boundary for the power manager: display power, backlight, BOOT and touch as wake sources |
+| `power_worker.c` | M2 worker half of the power manager: emulated light sleep, restart and USB storage refused |
+| `include/esp_log.h`, `include/sdkconfig.h`, `include/esp_codec_dev.h`, `include/roundie_board_config.h` | Minimal headers for `main/power_gui.c`; `sdkconfig.h` holds the rep profile's power options (tested against `sdkconfig.rep`) |
 | `vk_present.c` | D4 Vulkan presentation and window-to-panel coordinate mapping |
 
 ## Results
@@ -304,6 +309,39 @@ unchanged. Builds have no warnings; host tests pass.
   controls at scale 2. The desktop logs the window's size, pixel size,
   density and display scale, and every swapchain's size and panel placement.
 
+**M2 (verified on the host and by firmware builds; not on a device):**
+
+- `main/power_manager.c` is split. `main/power_gui.c` holds the GUI half
+  unchanged (power menu, screen timeout, BOOT, touch filtering, parking the
+  GUI for sleep); `main/power_manager.c` keeps the ESP-IDF worker half (light
+  sleep, wake sources, restart, Safe Mode and USB storage requests). The
+  state both halves share is `roundie_power_shared` in the private header
+  `main/power_shared.h`; the GUI half takes its lock through `roundie_lock()`
+  (D1, `portENTER_CRITICAL` on ESP-IDF). `main` now lists `roundie_platform`
+  in `PRIV_REQUIRES`, which it used before only through other components.
+- Firmware: the four configurations build without warnings. In the legacy
+  profile (`CONFIG_ROUNDIE_POWER` off) both objects are empty, as before. In
+  the rep profile, 18 of the 22 functions and literal pools of the old
+  `power_manager.c.obj` disassemble identically in the two new objects; the
+  other four (`roundie_power_gui_poll`, its literal pool,
+  `roundie_power_worker_poll`, `roundie_power_command`) differ only in
+  alignment padding and narrow versus wide encodings of the same instructions
+  (`mov.n a10, a5` / `or a10, a5, a5`, `s32i.n` / `s32i`, `beqz.n` / `beqz`),
+  with every operation, branch and call in the same order.
+- Desktop: the same `main/power_gui.c` and the `roundie_power` policy run
+  against the emulated board (`platform/linux/board.c`) and a desktop worker
+  (`platform/linux/power_worker.c`). `test_power_menu` (ASan/UBSan, 1.85b):
+  the B key opens the firmware's power menu; Restart is refused with
+  "Niedostępne na komputerze"; Anuluj restores the previous screen exactly;
+  "Wygaś ekran" turns the panel off (state `screen_off`, black frame), and
+  the next touch, placed on Back, only wakes the screen; "Uśpij" parks the GUI
+  and enters emulated light sleep, the B key wakes it, the display is
+  re-initialised and the screen is identical to the one before.
+  `test_power_configuration_matches_rep_profile` compares the desktop power
+  options with `sdkconfig.rep`.
+- PWR: the firmware has no PWR handler (none in `main` or the board code), so
+  the desktop P key is still only logged.
+
 ## Pending
 
 - Firmware after M1a is checked by builds and code comparison, not on a
@@ -318,7 +356,12 @@ unchanged. Builds have no warnings; host tests pass.
   (1.25, 1.5). The nested KWin and gamescope runs below use the same
   compositor code paths only in part and are not evidence for the native
   session.
-- BOOT and PWR are emulated and logged, but nothing consumes them before M2:
-  on the board the power manager in `main/power_manager.c` handles them.
+- PENDING, needs the board (no flashing was authorized for M2): the rep
+  firmware after the M2 split on the 1.85B and 1.75C, power menu, screen off,
+  light sleep and BOOT/touch wake. The code comparison above makes a
+  behaviour change unlikely but is not a device test.
+- Desktop power emulation limits: no screen dimming hardware (the backlight
+  level is kept but not shown), no timer wake source other than the sleep
+  safety timer, restart and USB storage mode refused.
 - Desktop applications (D6) need the design note of M5; until then every
   launch is refused.

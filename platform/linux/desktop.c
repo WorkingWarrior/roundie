@@ -22,7 +22,11 @@
 #include "roundie_launcher.h"
 #include "roundie_packages.h"
 #include "roundie_platform.h"
+#include "board.h"
 #include "desktop_input.h"
+#include "power_manager.h"
+#include "power_shared.h"
+#include "roundie_power.h"
 #include "vk_present.h"
 
 #define PACKAGES_PARENT "storage"
@@ -67,9 +71,13 @@ typedef struct {
     uint16_t last_x;
     uint16_t last_y;
     uint32_t touch_reads;
+    roundie_board_t *board;
+    bool lit; /* the panel's light as last composed */
 } gui_t;
 
 static gui_t gui;
+/* Backlight for the power manager; the firmware's default brightness. */
+static uint8_t brightness_percent = 60;
 static atomic_bool quit_requested;
 static char *caller_directory; /* script paths are relative to it */
 static char *installs[INSTALLS_MAX];
@@ -209,6 +217,14 @@ static void create_display(void)
 static void compose(void)
 {
     size_t pixels = (size_t)gui.profile->width * gui.profile->height;
+    gui.lit = roundie_desktop_board_lit(gui.board);
+    if (!gui.lit) {
+        /* Panel or backlight off: the glass is black, the panel keeps its memory. */
+        for (size_t i = 0; i < pixels; i++) {
+            gui.presented[i] = 0xFF000000U;
+        }
+        return;
+    }
     for (size_t i = 0; i < pixels; i++) {
         uint16_t c = gui.panel[i];
         uint32_t r = (c >> 11) & 0x1FU;
@@ -254,6 +270,11 @@ static void read_touch(lv_indev_t *device, lv_indev_data_t *data)
         /* The board reports panel coordinates; LVGL works on the canvas. */
         x = (uint16_t)roundie_scale_touch(x, ROUNDIE_UI_WIDTH, gui.profile->width);
         y = (uint16_t)roundie_scale_touch(y, ROUNDIE_UI_HEIGHT, gui.profile->height);
+    }
+    /* As on the board: touches that turn the screen on, or arrive while it
+     * is off, never reach applications or the launcher. */
+    if (!roundie_power_gui_touch(roundie_time_us(), pressed)) {
+        pressed = false;
     }
     if (pressed) {
         gui.last_x = x;
@@ -331,6 +352,7 @@ static void *system_worker(void *argument)
         int64_t now = roundie_time_us();
         roundie_packages_poll(now);
         roundie_launcher_poll(true, roundie_packages_busy());
+        roundie_power_worker_poll(now);
         roundie_sleep_ms(10);
     }
     return NULL;
@@ -530,6 +552,33 @@ static void script_step(void)
                    (unsigned)status->count);
             fflush(stdout);
             free(status);
+        } else if (strcmp(command, "power") == 0) {
+            roundie_lock(&roundie_power_shared.lock);
+            roundie_power_state_t state = roundie_power_shared.state;
+            uint32_t sleeps = roundie_power_shared.sleeps;
+            uint32_t screen_offs = roundie_power_shared.screen_offs;
+            char message[sizeof(roundie_power_shared.message)];
+            memcpy(message, roundie_power_shared.message, sizeof(message));
+            roundie_unlock(&roundie_power_shared.lock);
+            printf("power state=%s lit=%d sleeps=%u screen_offs=%u message=\"%s\"\n", roundie_power_state_name(state),
+                   (int)roundie_desktop_board_lit(gui.board), (unsigned)sleeps, (unsigned)screen_offs, message);
+            fflush(stdout);
+        } else if (strcmp(command, "wait-power") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2) {
+            /* No LVGL refresh here: the GUI may be parked for light sleep. */
+            roundie_lock(&roundie_power_shared.lock);
+            roundie_power_state_t state = roundie_power_shared.state;
+            roundie_unlock(&roundie_power_shared.lock);
+            if (strcmp(roundie_power_state_name(state), word) != 0) {
+                if (script.deadline_us == 0) {
+                    script.deadline_us = now + (int64_t)a * 1000;
+                }
+                if (now >= script.deadline_us) {
+                    fprintf(stderr, "roundie-desktop: power state is %s\n", roundie_power_state_name(state));
+                    script_fail(line, "timed out");
+                }
+                return;
+            }
+            script.deadline_us = 0;
         } else if (strcmp(command, "mark") == 0) {
             roundie_launcher_status_t *status = allocate(sizeof(*status));
             roundie_launcher_status(status);
@@ -754,6 +803,9 @@ int main(int argc, char **argv)
     lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
     roundie_ui_gui_bind();
     roundie_launcher_gui_bind();
+    gui.board = roundie_desktop_board();
+    gui.lit = true;
+    roundie_power_gui_bind(gui.board, &brightness_percent, roundie_time_us());
 
     pthread_t worker;
     if (pthread_create(&worker, NULL, system_worker, NULL) != 0) {
@@ -778,10 +830,20 @@ int main(int argc, char **argv)
             }
         }
         roundie_desktop_input_poll(&gui.input, roundie_time_us());
-        roundie_ui_gui_batch(ROUNDIE_UI_QUEUE_CAPACITY);
-        roundie_ui_gui_pump();
-        roundie_launcher_gui_pump(false);
-        uint32_t next_ms = lv_timer_handler();
+        roundie_desktop_board_inputs(gui.board, roundie_desktop_key_pressed(&gui.input, ROUNDIE_DESKTOP_KEY_BOOT),
+                                     roundie_desktop_touch_active(&gui.input));
+        uint32_t next_ms = GUI_DELAY_MAX_MS;
+        /* The panel flush is synchronous, so no transfer is ever in flight. */
+        if (roundie_power_gui_poll(roundie_time_us(), true, false)) {
+            roundie_ui_gui_batch(ROUNDIE_UI_QUEUE_CAPACITY);
+            roundie_ui_gui_pump();
+            roundie_launcher_gui_pump(false);
+            next_ms = lv_timer_handler();
+        }
+        /* Otherwise parked for light sleep: no LVGL work until resumed. */
+        if (roundie_desktop_board_lit(gui.board) != gui.lit) {
+            gui.dirty = true;
+        }
         if ((gui.dirty || present_again) && present != NULL) {
             present_again = false;
             compose();

@@ -31,7 +31,10 @@ core_inc = include_directories(
   'components/roundie_packages', 'components/roundie_packages/include',
   'components/roundie_elf/include',
   'components/roundie_fonts/include',
-  'components/roundie_audio/include')
+  'components/roundie_audio/include',
+  'components/roundie_board/include',
+  'components/roundie_power/include',
+  'components/roundie_boot_guard/include')
 
 strict = ['-Wall', '-Wextra', '-Werror']
 
@@ -45,6 +48,8 @@ core_sources = files(
   'components/roundie_packages/manager.c',
   'components/roundie_elf/validate.c',
   'main/display_scale.c',
+  'main/power_gui.c',
+  'components/roundie_power/power.c',
   'components/roundie_fonts/roundie_font_14.c',
   'components/roundie_fonts/roundie_font_20.c',
   'components/roundie_fonts/roundie_font_28.c',
@@ -61,6 +66,8 @@ if sdl.found() and vulkan.found() and psa.found()
              core_sources,
              'platform/linux/platform.c',
              'platform/linux/app_runtime.c',
+             'platform/linux/board.c',
+             'platform/linux/power_worker.c',
              'platform/linux/desktop.c',
              'platform/linux/desktop_input.c',
              'platform/linux/vk_present.c',

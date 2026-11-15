@@ -113,6 +113,18 @@ class DesktopContractTests(unittest.TestCase):
                 self.assertEqual(desktop[name], expected, f"{config.name}: {name}")
 
 
+    def test_power_configuration_matches_rep_profile(self):
+        config = ROOT / "sdkconfig.rep"
+        if not config.exists():
+            self.skipTest("no sdkconfig.rep; build the rep firmware first")
+        firmware = dict(line.split("=", 1) for line in config.read_text().splitlines()
+                        if line.startswith("CONFIG_ROUNDIE_POWER") and "=" in line)
+        desktop = defines(ROOT / "platform/linux/include/sdkconfig.h")
+        self.assertEqual(firmware.get("CONFIG_ROUNDIE_POWER"), "y")
+        for name in ("CONFIG_ROUNDIE_POWER_SCREEN_TIMEOUT_SECONDS", "CONFIG_ROUNDIE_POWER_SLEEP_SAFETY_SECONDS"):
+            self.assertEqual(desktop[name], firmware[name], name)
+
+
 class DesktopRunTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -165,7 +177,7 @@ class DesktopRunTests(unittest.TestCase):
                 result, directory = self.run_desktop(board, FLOW.format(**points))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn("runtime error", result.stderr)
-                # The BOOT key is emulated; its consumer comes with M2.
+                # The emulated BOOT key reaches the firmware's power menu (M2).
                 self.assertIn("boot pressed", result.stderr)
                 size = points["size"]
                 for name in ("result.png", "list.png"):
@@ -188,6 +200,61 @@ class DesktopRunTests(unittest.TestCase):
         script = "wait-nav RESULT 5000\nswipe 233 382 465 400 400\nwait-nav LIST 3000\n"
         result, _ = self.run_desktop("1.75c", script)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_power_menu(self):
+        """M2: the firmware's power GUI (main/power_gui.c) on the emulated board.
+        Menu buttons are canvas points of main/power_gui.c on the 1.85B panel."""
+        script = """\
+wait-nav RESULT 5000
+screenshot before.png
+key boot
+wait 300
+screenshot menu.png
+tap 180 157
+wait 300
+power
+tap 180 280
+wait 300
+screenshot closed.png
+key boot
+wait 300
+tap 180 116
+wait-power screen_off 2000
+power
+screenshot off.png
+tap 180 295
+wait-power active 2000
+wait 300
+expect-nav RESULT
+key boot
+wait 300
+tap 180 75
+wait-power light_sleep 3000
+wait 500
+key boot
+wait-power active 3000
+wait 300
+power
+screenshot woke.png
+expect-nav RESULT
+"""
+        result, directory = self.run_desktop("1.85b", script)
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn("runtime error", result.stderr)
+        before = (directory / "before.png").read_bytes()
+        self.assertNotEqual((directory / "menu.png").read_bytes(), before)
+        # Restart is refused on the desktop and Anuluj closes the menu.
+        self.assertIn('power state=active lit=1 sleeps=0 screen_offs=0 message="Niedostępne na komputerze"',
+                      output)
+        self.assertEqual((directory / "closed.png").read_bytes(), before)
+        # The waking tap lands on Back but only wakes the screen (expect-nav RESULT).
+        self.assertIn("power state=screen_off lit=0", output)
+        self.assertNotEqual((directory / "off.png").read_bytes(), before)
+        self.assertIn("light sleep (emulated)", output)
+        self.assertIn("woke after", output)
+        self.assertIn("power state=active lit=1 sleeps=1 screen_offs=1", output)
+        self.assertEqual((directory / "woke.png").read_bytes(), before)
 
     def run_in_gamescope(self, app_script, drive):
         """Runs the 1.75C launcher at zoom 2 in gamescope's headless backend (a

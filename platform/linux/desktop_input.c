@@ -87,9 +87,9 @@ void roundie_desktop_key(roundie_desktop_input_t *input, roundie_desktop_key_t k
     input->keys[key] = pressed;
     if (pressed) {
         input->key_presses[key]++;
-        /* Milestone M1: the buttons are emulated, but the power manager that
-         * consumes them on the board is not part of Roundie Core yet (M2). */
-        fprintf(stderr, "roundie-desktop: %s pressed (no handler before M2)\n", key_names[key]);
+        /* The power manager reads BOOT through the emulated board
+         * (board.c). Nothing reads PWR: the firmware has no PWR handler. */
+        fprintf(stderr, "roundie-desktop: %s pressed\n", key_names[key]);
     }
 }
 
