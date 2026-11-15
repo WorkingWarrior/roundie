@@ -1,5 +1,7 @@
 """Read-only diagnostic protocol and interval-rate regression tests."""
 from pathlib import Path
+import os
+import re
 import sys
 import subprocess
 import tempfile
@@ -43,6 +45,138 @@ class ClockTests(unittest.TestCase):
                                     '-Icomponents/roundie_board/include', *sources, '-o', output],
                                    cwd=root, check=True, capture_output=True)
                     subprocess.run([output], check=True, capture_output=True)
+
+    def test_reset_and_power_loss_without_rtc(self):
+        """Production startup acceptance from main.c with the real reset reasons."""
+        root = Path(__file__).resolve().parents[1]
+        idf = os.environ.get('IDF_PATH')
+        if not idf:
+            self.skipTest('IDF_PATH not set')
+        header = (Path(idf) / 'components/esp_system/include/esp_system.h').read_text()
+        body = header[header.index('typedef enum {', header.index('ESP_RST_UNKNOWN') - 200):
+                      header.index('} esp_reset_reason_t;')]
+        reasons = re.findall(r'\b(ESP_RST_[A-Z_]+)\b', body)
+        self.assertIn('ESP_RST_POWERON', reasons)
+        source = (root / 'main/main.c').read_text()
+        start = source.index('static RTC_NOINIT_ATTR roundie_clock_retention_t retained_clock;')
+        logic = source[start:source.index('#endif', source.index('static bool accept_retained_wall_clock'))]
+        keeps = {'ESP_RST_SW', 'ESP_RST_PANIC', 'ESP_RST_INT_WDT', 'ESP_RST_TASK_WDT', 'ESP_RST_WDT',
+                 'ESP_RST_DEEPSLEEP', 'ESP_RST_USB', 'ESP_RST_JTAG', 'ESP_RST_CPU_LOCKUP'}
+        table = ',\n'.join(f'    {{{r}, {int(r in keeps)}, "{r}"}}' for r in reasons)
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/time.h>
+#include "clock_retention.h"
+typedef enum {""" + ', '.join(reasons) + r"""} esp_reset_reason_t;
+#define RTC_NOINIT_ATTR
+#define TAG "test"
+#define ESP_LOGW(...) ((void)0)
+#define ESP_LOGI(...) ((void)0)
+static int64_t wall_us, rtc_us, timer_us;
+static esp_reset_reason_t reason;
+static unsigned syncs_aligned;
+static uint32_t wall_sync_count;
+static int64_t wall_sync_at_us;
+static int fake_gettimeofday(struct timeval *now, void *zone)
+{
+    (void)zone;
+    now->tv_sec = (time_t)(wall_us / 1000000);
+    now->tv_usec = (suseconds_t)(wall_us % 1000000);
+    return 0;
+}
+#define gettimeofday fake_gettimeofday
+static uint64_t esp_rtc_get_time_us(void) { return (uint64_t)rtc_us; }
+static esp_reset_reason_t esp_reset_reason(void) { return reason; }
+static void esp_sync_timekeeping_timers(void) { syncs_aligned++; }
+static int64_t esp_timer_get_time(void) { return timer_us; }
+""" + logic + r"""
+static const struct { esp_reset_reason_t reason; int keeps; const char *name; } reasons[] = {
+""" + table + r"""
+};
+/* Reboot: the RTC timer and the system time continue across the reset by
+ * elapsed_us; rtc_restart models a lost RTC domain. */
+static bool boot(esp_reset_reason_t why, int64_t elapsed_us, bool rtc_restart)
+{
+    reason = why;
+    wall_us += elapsed_us;
+    rtc_us = rtc_restart ? 300000 : rtc_us + elapsed_us;
+    timer_us = 300000;
+    return accept_retained_wall_clock();
+}
+int main(void)
+{
+    const int64_t set_at = INT64_C(1792390000000000);
+    /* Power-on with arbitrary RTC memory: never accepted. */
+    memset(&retained_clock, 0x5A, sizeof(retained_clock));
+    wall_us = 300000;
+    rtc_us = 0;
+    assert(!boot(ESP_RST_POWERON, 0, true));
+    /* Trusted SET, then a software reset 10 s later keeps the time. */
+    wall_us = set_at;
+    rtc_us = 600000000;
+    retain_wall_clock();
+    assert(boot(ESP_RST_SW, 10000000, false));
+    assert(wall_sync_count == 1);
+    /* Each accepted boot renews the record: a chain of resets keeps working
+     * while each interval stays inside the allowance. */
+    for (int i = 0; i < 20; i++) {
+        assert(boot(ESP_RST_PANIC, 3600000000, false));
+        wall_us += 1000000; /* within 2 s + 2 % */
+        assert(boot(ESP_RST_TASK_WDT, 0, false));
+    }
+    /* Every reason: only resets that keep the RTC domain keep the time. */
+    for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); i++) {
+        wall_us = set_at;
+        rtc_us = 600000000;
+        retain_wall_clock();
+        bool kept = boot(reasons[i].reason, 5000000, false);
+        if (kept != (reasons[i].keeps != 0)) {
+            printf("unexpected for %s\n", reasons[i].name);
+            return 1;
+        }
+        /* A rejected record is cleared: a later software reset rejects too. */
+        if (!kept) {
+            assert(!boot(ESP_RST_SW, 1000000, false));
+        }
+    }
+    /* Simulated power loss: the RTC timer restarts. Even a reason that keeps
+     * the domain (a reset during the loss) and an intact record are rejected,
+     * and so is any boot after. */
+    wall_us = set_at;
+    rtc_us = 600000000;
+    retain_wall_clock();
+    assert(!boot(ESP_RST_SW, 0, true));
+    assert(!boot(ESP_RST_SW, 1000000, false));
+    /* System time lost (boot time back at 1970) with the RTC timer running. */
+    wall_us = set_at;
+    rtc_us = 600000000;
+    retain_wall_clock();
+    wall_us = 0;
+    assert(!boot(ESP_RST_SW, 5000000, false));
+    /* Drift beyond the allowance: rejected. */
+    wall_us = set_at;
+    rtc_us = 600000000;
+    retain_wall_clock();
+    wall_us += 3000000;
+    assert(!boot(ESP_RST_SW, 10000000, false));
+    puts("reset retention: OK");
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            c = Path(folder) / 'reset.c'
+            c.write_text(harness)
+            for standard in ('gnu11', 'gnu2x'):
+                output = str(Path(folder) / f'reset-{standard}')
+                subprocess.run(['cc', f'-std={standard}', '-Wall', '-Wextra', '-Werror', '-g',
+                                '-fsanitize=address,undefined', '-Imain', str(c),
+                                'main/clock_retention.c', '-o', output],
+                               cwd=root, check=True, capture_output=True)
+                subprocess.run([output], check=True, capture_output=True)
 
     def test_valid_reply_and_sign(self):
         s = sample()
