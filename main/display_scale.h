@@ -43,6 +43,11 @@ typedef struct {
 /* Logical index sampled by panel index. */
 uint32_t roundie_scale_source(uint32_t physical_index, uint32_t logical_size,
                               uint32_t physical_size);
+/* Logical index under a touch at panel index: the canvas pixel shown there.
+ * An index past the panel (a mirrored edge reports physical_size) counts as
+ * the last panel pixel. */
+uint32_t roundie_scale_touch(uint32_t physical_index, uint32_t logical_size,
+                             uint32_t physical_size);
 /* First and last panel index that samples logical index. */
 uint32_t roundie_scale_first(uint32_t logical_index, uint32_t logical_size,
                              uint32_t physical_size);

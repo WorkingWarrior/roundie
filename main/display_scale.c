@@ -10,6 +10,15 @@ uint32_t roundie_scale_source(uint32_t physical_index, uint32_t logical_size,
     return (uint32_t)(numerator / (2U * (uint64_t)physical_size));
 }
 
+uint32_t roundie_scale_touch(uint32_t physical_index, uint32_t logical_size,
+                             uint32_t physical_size)
+{
+    if (physical_index >= physical_size) {
+        physical_index = physical_size - 1U;
+    }
+    return roundie_scale_source(physical_index, logical_size, physical_size);
+}
+
 uint32_t roundie_scale_first(uint32_t logical_index, uint32_t logical_size,
                              uint32_t physical_size)
 {

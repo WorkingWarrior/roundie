@@ -208,8 +208,47 @@ static void check_geometry(const roundie_scale_geometry_t *geometry, int32_t buf
     }
 }
 
+/* A touch at any panel pixel selects the canvas pixel shown there. */
+static void check_touch(uint32_t logical, uint32_t physical)
+{
+    uint32_t previous = 0;
+    for (uint32_t p = 0; p < physical; p++) {
+        uint32_t l = roundie_scale_touch(p, logical, physical);
+        assert(l < logical);
+        assert(l == roundie_scale_source(p, logical, physical));
+        assert(roundie_scale_first(l, logical, physical) <= p);
+        assert(p <= roundie_scale_last(l, logical, physical));
+        /* Monotonic, no canvas pixel skipped: each one can be touched. */
+        assert(l == previous || l == previous + 1U || p == 0);
+        previous = l;
+    }
+    assert(roundie_scale_touch(0, logical, physical) == 0);
+    assert(previous == logical - 1U);
+    /* Past the panel (a mirrored edge, a stray report): the last pixel. */
+    assert(roundie_scale_touch(physical, logical, physical) == logical - 1U);
+    assert(roundie_scale_touch(physical + 1U, logical, physical) == logical - 1U);
+    assert(roundie_scale_touch(UINT16_MAX, logical, physical) == logical - 1U);
+    assert(roundie_scale_touch(UINT32_MAX, logical, physical) == logical - 1U);
+}
+
 int main(void)
 {
+    /* Touch: 1.75C panel to canvas, corners and centre, and the identity. */
+    check_touch(360, 466);
+    check_touch(360, 360);
+    check_touch(90, 158);
+    const uint32_t corners[][4] = {
+        {0, 0, 0, 0}, {465, 0, 359, 0}, {0, 465, 0, 359}, {465, 465, 359, 359},
+        {466, 466, 359, 359}, {233, 233, 180, 180}, {1, 464, 1, 358}, {2, 3, 1, 2},
+    };
+    for (size_t i = 0; i < sizeof(corners) / sizeof(corners[0]); i++) {
+        assert(roundie_scale_touch(corners[i][0], 360, 466) == corners[i][2]);
+        assert(roundie_scale_touch(corners[i][1], 360, 466) == corners[i][3]);
+    }
+    for (uint32_t p = 0; p < 360; p++) {
+        assert(roundie_scale_touch(p, 360, 360) == p);
+    }
+
     const roundie_scale_geometry_t amoled = {360, 360, 466, 466, 2};
     check_geometry(&amoled, 18);
     check_geometry(&amoled, 7);

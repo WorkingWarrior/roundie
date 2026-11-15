@@ -1087,10 +1087,8 @@ static void read_touch(lv_indev_t *device, lv_indev_data_t *data)
 #if DISPLAY_SCALED
     /* The board reports panel coordinates; LVGL works on the canvas. */
     if (pressed) {
-        x = (uint16_t)roundie_scale_source(x < DISPLAY_WIDTH ? x : DISPLAY_WIDTH - 1,
-                                           CANVAS_WIDTH, DISPLAY_WIDTH);
-        y = (uint16_t)roundie_scale_source(y < DISPLAY_HEIGHT ? y : DISPLAY_HEIGHT - 1,
-                                           CANVAS_HEIGHT, DISPLAY_HEIGHT);
+        x = (uint16_t)roundie_scale_touch(x, CANVAS_WIDTH, DISPLAY_WIDTH);
+        y = (uint16_t)roundie_scale_touch(y, CANVAS_HEIGHT, DISPLAY_HEIGHT);
     }
 #endif
 #if CONFIG_ROUNDIE_POWER
