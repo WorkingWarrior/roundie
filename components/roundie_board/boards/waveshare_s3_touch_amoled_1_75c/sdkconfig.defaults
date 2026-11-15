@@ -1,7 +1,9 @@
-# Waveshare ESP32-S3-Touch-AMOLED-1.75C: 32 MB quad Flash, 8 MB Octal PSRAM.
+# Waveshare ESP32-S3-Touch-AMOLED-1.75C: 16 or 32 MB quad Flash, 8 MB Octal
+# PSRAM. The image header says 16 MB, which boots on either chip (a larger
+# chip is used up to the header size); see docs/hardware-audit-1.75c.md.
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_ROUNDIE_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C=y
-CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
