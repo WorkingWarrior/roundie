@@ -173,6 +173,51 @@ host test suite, and the step's own check.
 Pending experiments and limits are listed per step in the step's commit and
 in the section below as they arise.
 
+## Running the desktop
+
+Build (LVGL comes from `managed_components`, so build the firmware once first):
+
+```
+meson setup build-desktop
+ninja -C build-desktop
+build-desktop/roundie-desktop --board 1.85b      # or --board 1.75c
+```
+
+Options: `--data DIR` (default `$XDG_DATA_HOME/roundie-desktop`; packages live
+in `DIR/storage/packages`), `--zoom N` (initial window scale), `--install
+FILE.rpk` (repeatable; installs through the package manager's transfer API, as
+the USB protocol does), `--headless` (no window or Vulkan) and `--script FILE`.
+The left mouse button is the touch panel, `B` is BOOT, `P` is PWR and `Esc`
+quits. Profiles: `1.85b` is a 360 × 360 panel (alignment 1, 20-line strips),
+`1.75c` a 466 × 466 panel (alignment 2, 24-line strips), the values of the
+boards' `roundie_board_config.h`. The round glass is masked in the window and
+in screenshots.
+
+Script commands, one per line, `#` starts a comment; coordinates are panel
+pixels as the touch controller reports them, times are milliseconds:
+`wait T`, `down X Y`, `move X Y`, `up`, `tap X Y` (100 ms press),
+`swipe X1 Y1 X2 Y2 T`, `key boot|pwr` (100 ms press), `screenshot FILE.png`,
+`wait-nav STATE T`, `expect-nav STATE`, `mark`, `wait-refreshed T` (package
+list re-read since `mark`), `status` and `quit`. The run ends after the last
+line; the exit code is 1 when a line fails, 2 on a usage or start-up error.
+`wait-nav` and `wait-refreshed` complete only after the GUI has applied the
+launcher's latest change, the display has been refreshed and LVGL has read the
+touch panel once: a new launcher screen ignores a press until LVGL reads a
+release (`lv_indev_wait_release`), and a press within one input period of the
+change would otherwise be lost, which a finger cannot do on the board.
+
+### Desktop platform files (`platform/linux`)
+
+| File | Role |
+|---|---|
+| `include/roundie_platform_port.h`, `platform.c` | D1 seam: `CLOCK_MONOTONIC`, pthread mutex, `pthread_self`, `nanosleep` |
+| `include/esp_err.h` | D2 status codes, same values as ESP-IDF v6.1 (tested) |
+| `lv_conf.h` | LVGL options mirroring the firmware Kconfig (tested against the generated `sdkconfig` files) |
+| `app_runtime.c` | Package manager seams on files; application runtime that refuses execution (D6) |
+| `desktop.c` | GUI loop in the firmware's order, system worker thread, display flush through `display_scale.c`, touch, scripts |
+| `desktop_input.c` | Emulated touch panel (mouse, scripted taps and swipes) and BOOT/PWR keys |
+| `vk_present.c` | D4 Vulkan presentation and window-to-panel coordinate mapping |
+
 ## Results
 
 **M1a (verified, four configurations, `xtensa-esp32s3-elf-objdump -d` of the
@@ -184,8 +229,53 @@ source) also moves by two bytes of loop alignment and encodes one register
 move as `or a10, a2, a2` instead of `mov.n`. Application image sizes are
 unchanged. Builds have no warnings; host tests pass.
 
+**M1b (verified on the host, x86-64 CachyOS, GCC 16.2.1, SDL 3.4.20, Vulkan
+1.4 on RADV GFX1201 (RX 9070), TF-PSA-Crypto 1.2.0):**
+
+- The desktop compiles the firmware's own launcher, UI bridge and render code,
+  package manager, ELF validator, `display_scale.c` and fonts with `-Wall
+  -Wextra -Werror` and `gnu23`; LVGL is the pinned 9.5.0 from
+  `managed_components`.
+- `tests/test_desktop.py` builds with ASan and UBSan and runs headless scripts
+  on both profiles: two example packages (`hello_elf`, `watch_elf`) are packed
+  with `tools/roundie_package.py` and installed through the transfer API; the
+  launcher starts the home package (`org.roundie.watch`), the desktop runtime
+  refuses it with `ESP_ERR_NOT_SUPPORTED` (262) and the launcher shows its
+  result screen; Back returns to the list; the refresh button re-reads the
+  list; a listed package is launched by touch and refused the same way. The
+  screenshots have the panel's size (360 or 466). A touch beside the button
+  does not refresh, which checks the panel-to-canvas mapping. The test also
+  checks the `esp_err.h` values against ESP-IDF and the LVGL options against
+  the generated firmware `sdkconfig` files. No sanitizer report in headless
+  runs.
+- Windowed runs present through Vulkan on both profiles without errors. Under
+  LeakSanitizer the windowed run reports one 128-byte allocation from an
+  unloaded, unsymbolised module (the graphics stack), none from Roundie code.
+- Firmware: the change of M1b to shared code is one `NULL` comparison in
+  `bridge.c` spelt `ROUNDIE_THREAD_NONE` (the same `NULL` on ESP-IDF) and the
+  home package id moved to `roundie_launcher.h`. All objects of `main`,
+  `roundie_app_ui` and `roundie_launcher` disassemble identically to M1a on
+  all four configurations, and the application images differ from M1a only
+  in build time, ELF and image hashes and the build directory path that a
+  generated file embeds through `__FILE__`. Builds have no warnings; the host
+  suite passes; the storage layout validator accepts all four builds.
+- The launcher sets no font, so its text uses `LV_FONT_DEFAULT`, Montserrat 14
+  on the firmware and on the desktop. That font covers 0x20–0x7F, 0xB0 and
+  0x2022 only (its generator options in LVGL's source), so Polish letters such
+  as `ś` and `ż` in "Odśwież" render as missing glyphs on the desktop, and by
+  the same configuration on the board (not observed on a device). The host
+  tests' `lv_conf.h` uses `roundie_font_14` as the default instead, so they do
+  not show it. Existing behaviour, not changed here.
+
 ## Pending
 
 - Firmware after M1a is checked by builds and code comparison, not on a
   device; the code is equivalent, so no device run is planned for it. Any
   later step that changes firmware code needs its own device check.
+- M1b on the desktop is not checked by a person yet: the image in the window
+  (the scripted runs check the frame Roundie hands to Vulkan, not what the
+  compositor shows), mouse touch, resizing and the window on a HiDPI output.
+- BOOT and PWR are emulated and logged, but nothing consumes them before M2:
+  on the board the power manager in `main/power_manager.c` handles them.
+- Desktop applications (D6) need the design note of M5; until then every
+  launch is refused.

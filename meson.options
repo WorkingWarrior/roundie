@@ -1,0 +1,2 @@
+option('desktop', type: 'feature', value: 'auto',
+       description: 'Linux desktop target (SDL3 window, Vulkan presentation)')
