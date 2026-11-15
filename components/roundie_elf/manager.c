@@ -32,8 +32,10 @@ static bool lifecycle_stopped;
 static rep_descriptor_v2_t lifecycle;
 static bool ui_owned;
 static bool round_ui; /* descriptor required REP3_CAP_ROUND_UI */
+#if CONFIG_ROUNDIE_AUDIO
 /* rep_audio_v1: this instance's stream handle, 0 when none. Executor only. */
 static uint32_t audio_stream;
+#endif
 /* REP3_CAP_CLOCK: executor-only state; the source is set once before start. */
 static roundie_elf_clock_source_t clock_source;
 static bool clock_app;
