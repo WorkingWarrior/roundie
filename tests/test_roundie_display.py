@@ -1,11 +1,26 @@
 import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import roundie_display as display
+
+
+class DisplayScaleTests(unittest.TestCase):
+    def test_strip_scaling_matches_full_frame(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as folder:
+            for standard in ('c11', 'c23'):
+                output = str(Path(folder) / f'scale-{standard}')
+                subprocess.run(['cc', f'-std={standard}', '-Wall', '-Wextra', '-Werror', '-O1',
+                                '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                                '-Imain', 'main/display_scale.c', 'tests/test_display_scale.c',
+                                '-o', output], cwd=root, check=True, capture_output=True)
+                subprocess.run([output], check=True, capture_output=True, timeout=60)
 
 
 class DisplayDiagnosticsTests(unittest.TestCase):
@@ -26,6 +41,11 @@ class DisplayDiagnosticsTests(unittest.TestCase):
                     display.request(None)
             reply(dict(response, format=2, trace=trace + [7] * 8))
             self.assertEqual(display.request(None)['trace']['swap_us'], 7)
+            reply(dict(response, format=4, trace=trace + [7] * 8 + [9, 10, 11]))
+            self.assertEqual(display.request(None)['trace']['chunks'], 11)
+            reply(dict(response, format=4, trace=trace + [7] * 8))
+            with self.assertRaises(display.TransportError):
+                display.request(None)
 
     def test_only_bounded_operations(self):
         for operation in ('PERF -1', 'PERF 4294967296', 'BATCH 0', 'BATCH 13', 'RESET', 'PERF 0 extra'):

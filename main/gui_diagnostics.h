@@ -25,6 +25,10 @@ typedef struct {
     uint64_t last_done_id;
     uint64_t submit_driver_max_us;
     uint64_t submit_swap_max_us;
+    /* Scaled panels only (docs/display-rendering.md); zero on the direct path. */
+    uint64_t scale_us;      /* canvas strip to panel chunk, byte swap included */
+    uint64_t scaled_pixels; /* panel pixels queued */
+    uint64_t chunks;        /* panel transfers queued */
 } roundie_gui_work_t;
 
 unsigned roundie_gui_batch(void);

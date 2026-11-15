@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class DisplayCompletionTests(unittest.TestCase):
     def test_internal_buffer_allocation_failure(self):
         source = (ROOT / 'main/main.c').read_text()
-        allocation = source[source.index('    const size_t buffer_bytes ='):
-                            source.index('    state.display = lv_display_create(')]
+        # The direct (unscaled) path; the scaled one has its own test.
+        allocation = source[source.index('    const size_t buffer_bytes = DISPLAY_WIDTH'):
+                            source.index('#endif\n\n    state.display = lv_display_create(')]
         harness = r'''
 #include <assert.h>
 #include <stddef.h>
@@ -71,7 +72,7 @@ int main(void)
     def test_buffer_wait_timeout_and_partial_submission(self):
         source = (ROOT / 'main/main.c').read_text()
         callbacks = source[source.index('static void wait_for_display('):
-                           source.index('static void display_event(')]
+                           source.index('#else\nstatic const roundie_scale_geometry_t')]
         harness = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -186,6 +187,248 @@ int main(void)
                             '-fsanitize=address,undefined', '-g', '-I' + str(ROOT / 'main'),
                             str(c), '-o', str(exe)], check=True, capture_output=True)
             subprocess.run([str(exe)], check=True, timeout=5)
+
+    def test_scaled_chunks_never_reuse_a_buffer_in_flight(self):
+        source = (ROOT / 'main/main.c').read_text()
+        scaled = source[source.index('static const roundie_scale_geometry_t scale_geometry'):
+                        source.index('#endif\n\nstatic void display_event(')]
+        harness = r"""
+#include <assert.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <setjmp.h>
+#include "display_scale.h"
+#include "gui_diagnostics.h"
+#define CANVAS_WIDTH 360
+#define CANVAS_HEIGHT 360
+#define DISPLAY_WIDTH 466
+#define DISPLAY_HEIGHT 466
+#define DISPLAY_STRIP_LINES 24
+#define ROUNDIE_BOARD_DISPLAY_ALIGN 2
+#define ROUNDIE_BOARD_DISPLAY_SWAP_RGB565 0
+#define RENDER_ROWS 17
+typedef int BaseType_t;
+typedef int esp_err_t;
+#define pdFALSE 0
+#define pdTRUE 1
+#define pdMS_TO_TICKS(ms) (ms)
+#define ESP_OK 0
+#define TAG "test"
+#define ESP_LOGE(...) ((void)esp_err_to_name(0))
+#define portENTER_CRITICAL(lock) ((void)(lock))
+#define portEXIT_CRITICAL(lock) ((void)(lock))
+#define portENTER_CRITICAL_ISR(lock) ((void)(lock))
+#define portEXIT_CRITICAL_ISR(lock) ((void)(lock))
+#define portYIELD_FROM_ISR(woken) ((void)(woken))
+typedef struct { int32_t x1, y1, x2, y2; } lv_area_t;
+typedef struct {
+    int dma_lock;
+    void *gui_task;
+    void *board;
+    int64_t dma_done_us;
+    uint32_t dma_completions;
+    uint64_t transfer_id;
+    bool display_fault;
+    uint32_t completed_transfers, transfer_errors;
+    roundie_gui_work_t work;
+    roundie_scale_carry_t carry;
+    uint16_t *scale_output[2];
+    uint16_t *scale_carry_pixels;
+    uint32_t collected_completions;
+    uint64_t collected_busy_us;
+    int64_t chunk_submitted_us[2];
+    uint64_t dma_busy_us;
+    uint32_t dma_busy_max_us;
+} gui_state_t;
+typedef gui_state_t lv_display_t;
+static gui_state_t state;
+static int64_t now;
+static unsigned notifications, releases, timeouts;
+static bool last_part, fail_draw, stall;
+static jmp_buf restart;
+/* Queued draws in order; the "DMA" reads a buffer only when it completes. */
+typedef struct { int x1, y1, x2, y2; const uint16_t *pixels; } draw_t;
+static draw_t queue[4];
+static unsigned queued;
+static uint16_t canvas[CANVAS_HEIGHT][CANVAS_WIDTH];
+static uint16_t panel[DISPLAY_HEIGHT][DISPLAY_WIDTH];
+static int64_t esp_timer_get_time(void) { now += 10; return now; }
+static const char *esp_err_to_name(int error) { (void)error; return "failed"; }
+static _Noreturn void esp_restart(void) { longjmp(restart, 1); }
+static gui_state_t *lv_display_get_user_data(lv_display_t *d) { return d; }
+static void lv_display_flush_ready(lv_display_t *d) { assert(d == &state); releases++; }
+static bool lv_display_flush_is_last(lv_display_t *d) { assert(d == &state); return last_part; }
+static uint32_t lv_area_get_size(const lv_area_t *a)
+{
+    return (uint32_t)((a->x2 - a->x1 + 1) * (a->y2 - a->y1 + 1));
+}
+static void vTaskNotifyGiveFromISR(void *task, BaseType_t *woken)
+{
+    assert(task == state.gui_task);
+    notifications++;
+    *woken = pdFALSE;
+}
+static bool lcd_chunk_done(void *user_context);
+static void complete_oldest(void)
+{
+    assert(queued > 0);
+    draw_t d = queue[0];
+    for (int y = d.y1; y < d.y2; y++) {
+        memcpy(&panel[y][d.x1], d.pixels + (size_t)(y - d.y1) * (size_t)(d.x2 - d.x1),
+               (size_t)(d.x2 - d.x1) * 2U);
+    }
+    memmove(queue, queue + 1, sizeof(queue[0]) * (queued - 1U));
+    queued--;
+    now += 1000;
+    lcd_chunk_done(&state);
+}
+/* The GUI task blocks: the oldest queued transfer finishes meanwhile. */
+static uint32_t ulTaskNotifyTake(int clear, unsigned timeout)
+{
+    assert(clear == pdTRUE && timeout == 2000);
+    if (!stall && queued > 0) {
+        complete_oldest();
+    }
+    if (notifications == 0) {
+        timeouts++;
+        return 0;
+    }
+    uint32_t taken = notifications;
+    notifications = 0;
+    return taken;
+}
+static esp_err_t roundie_board_display_draw(void *board, int x1, int y1, int x2, int y2,
+                                            const void *pixels)
+{
+    assert(board == state.board);
+    if (fail_draw) {
+        return -1;
+    }
+    /* Two queued transfers at most, never sharing a buffer, aligned windows. */
+    assert(queued < 2);
+    for (unsigned i = 0; i < queued; i++) {
+        assert(queue[i].pixels != pixels);
+    }
+    assert(x1 % 2 == 0 && x2 % 2 == 0 && y1 % 2 == 0 && y2 % 2 == 0);
+    assert((size_t)(x2 - x1) * (size_t)(y2 - y1) <= (size_t)DISPLAY_WIDTH * DISPLAY_STRIP_LINES);
+    queue[queued++] = (draw_t){x1, y1, x2, y2, pixels};
+    return ESP_OK;
+}
+"""
+        harness += scaled
+        harness += r"""
+static uint16_t strip[CANVAS_WIDTH * RENDER_ROWS];
+/* One rounded area, strip by strip as LVGL PARTIAL mode renders it. */
+static void refresh(int32_t x1, int32_t y1, int32_t x2, int32_t y2, bool last_area)
+{
+    roundie_scale_round(&scale_geometry, &x1, &y1, &x2, &y2);
+    int32_t width = x2 - x1 + 1;
+    int32_t rows = (CANVAS_WIDTH * RENDER_ROWS) / width;
+    for (int32_t row = y1; row <= y2; row += rows) {
+        int32_t last = row + rows - 1 < y2 ? row + rows - 1 : y2;
+        for (int32_t y = row; y <= last; y++) {
+            memcpy(strip + (size_t)(y - row) * (size_t)width, &canvas[y][x1], (size_t)width * 2U);
+        }
+        lv_area_t area = {x1, row, x2, last};
+        last_part = last_area && last == y2;
+        unsigned before = releases;
+        flush_scaled(&state, &area, (uint8_t *)strip);
+        /* LVGL may reuse its buffer at once except after the last strip; after
+         * a display fault every strip is released unsent. */
+        assert(releases == before + (last_part && !state.display_fault ? 0U : 1U));
+        /* The strip buffer is free: scribbling over it changes nothing. */
+        memset(strip, 0xA5, sizeof(strip));
+    }
+}
+static void check_panel(void)
+{
+    for (uint32_t y = 0; y < DISPLAY_HEIGHT; y++) {
+        uint32_t sy = roundie_scale_source(y, CANVAS_HEIGHT, DISPLAY_HEIGHT);
+        for (uint32_t x = 0; x < DISPLAY_WIDTH; x++) {
+            uint32_t sx = roundie_scale_source(x, CANVAS_WIDTH, DISPLAY_WIDTH);
+            assert(panel[y][x] == canvas[sy][sx]);
+        }
+    }
+}
+int main(void)
+{
+    static uint16_t output[2][DISPLAY_WIDTH * DISPLAY_STRIP_LINES];
+    static uint16_t carry[DISPLAY_WIDTH];
+    state.gui_task = &state;
+    state.board = &state;
+    state.scale_output[0] = output[0];
+    state.scale_output[1] = output[1];
+    state.scale_carry_pixels = carry;
+    roundie_scale_columns(&scale_geometry, scale_columns);
+    assert(roundie_scale_max_output(&scale_geometry, CANVAS_WIDTH * RENDER_ROWS) <=
+           DISPLAY_WIDTH * DISPLAY_STRIP_LINES);
+    uint32_t seed = 7;
+    for (int y = 0; y < CANVAS_HEIGHT; y++) {
+        for (int x = 0; x < CANVAS_WIDTH; x++) {
+            seed = seed * 1664525U + 1013904223U;
+            canvas[y][x] = (uint16_t)(seed >> 16);
+        }
+    }
+    /* Full frame, then two areas in one refresh, one of them narrow. */
+    refresh(0, 0, CANVAS_WIDTH - 1, CANVAS_HEIGHT - 1, true);
+    wait_for_scaled_display(&state);
+    assert(queued == 0 && state.dma_completions == (uint32_t)state.transfer_id);
+    check_panel();
+    for (int y = 40; y < 300; y++) {
+        canvas[y][101] ^= 0x1234;
+        canvas[y][200] ^= 0x4321;
+    }
+    for (int x = 10; x < 350; x++) {
+        canvas[180][x] ^= 0x0F0F;
+    }
+    refresh(101, 40, 101, 299, false);
+    refresh(10, 180, 349, 180, false);
+    refresh(200, 40, 200, 299, true);
+    wait_for_scaled_display(&state);
+    check_panel();
+    /* Counters: every chunk queued, finished and timed. */
+    assert(state.completed_transfers == state.transfer_id && state.work.chunks == state.transfer_id);
+    assert(state.work.done == state.transfer_id);
+    /* Each simulated transfer is on the bus for at least 1000 us. */
+    assert(state.work.dma_us >= 1000U * state.transfer_id && state.work.dma_us <= (uint64_t)now);
+    assert(state.work.dma_max_us >= 1000U && state.work.scale_us > 0);
+    assert(state.transfer_errors == 0 && timeouts == 0);
+    /* A transfer that never finishes restarts instead of reusing its buffer. */
+    stall = true;
+    if (setjmp(restart) == 0) {
+        refresh(0, 0, CANVAS_WIDTH - 1, CANVAS_HEIGHT - 1, true);
+        assert(false);
+    }
+    assert(state.transfer_errors == 1 && timeouts == 1 && queued == 2);
+    stall = false;
+    while (queued > 0) {
+        complete_oldest();
+    }
+    /* A misaligned strip is refused and released; a failed draw latches the fault. */
+    lv_area_t odd = {1, 0, 358, 9};
+    last_part = true;
+    flush_scaled(&state, &odd, (uint8_t *)strip);
+    assert(state.transfer_errors == 2 && !state.carry.active && queued == 0);
+    fail_draw = true;
+    unsigned before = releases;
+    refresh(0, 0, CANVAS_WIDTH - 1, 20, true);
+    assert(state.display_fault && state.transfer_errors == 3 && releases > before);
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='roundie-lcd-scaled-') as temporary:
+            c = Path(temporary) / 'scaled.c'
+            exe = Path(temporary) / 'scaled'
+            c.write_text(harness)
+            for standard in ('c11', 'c23'):
+                subprocess.run(['cc', '-std=' + standard, '-Wall', '-Wextra', '-Werror',
+                                '-fsanitize=address,undefined', '-g', '-I' + str(ROOT / 'main'),
+                                str(c), str(ROOT / 'main/display_scale.c'), '-o', str(exe)],
+                               check=True, capture_output=True)
+                subprocess.run([str(exe)], check=True, timeout=30)
 
     def test_completed_dma_notifies_and_requests_deferred_switch(self):
         source = (ROOT / 'main/main.c').read_text()

@@ -27,8 +27,10 @@ Further buffering is justified only by measured transfer/CPU overlap and RAM.
 ## Measurement boundaries
 
 RP1 format 2 retains every original counter and appends swap, driver, layout,
-completion-origin and transfer-identity fields. The host tool accepts historical
-format 1. Counters are bounded by the existing 32-record ring; there is no
+completion-origin and transfer-identity fields. Format 4 (format 3 is BENCH)
+appends the [scaled-panel](#scaled-panels) fields `scale_us`, `scaled_pixels`
+and `chunks`, which are zero on the 360 × 360 path. The host tool accepts
+historical formats 1 and 2. Counters are bounded by the existing 32-record ring; there is no
 per-strip USB logging. Each successful submission has one monotonically
 increasing identity; only one transfer is outstanding, so its completion cannot
 belong to a later strip. `carry_done` marks completion consumed in a later GUI
@@ -109,3 +111,67 @@ limited evidence. The user reported a small visible improvement on the live
 candidate; it does not establish an electrical margin or a repeatable timing
 gain. **26.667 MHz with two 20-line buffers remains the selected default.**
 0.3.9 is a retained experimental image, not the recommended release.
+
+## Scaled panels
+
+**Architectural decision (2026-11-15):** the application canvas stays
+360 × 360 (`ROUNDIE_UI_WIDTH/HEIGHT`, part of the app contract). A board whose
+panel is larger, such as the 466 × 466 CO5300 of the AMOLED 1.75C, shows the
+canvas upscaled by nearest neighbour; applications and layouts do not change.
+A panel equal to the canvas, the 1.85B, keeps the direct path above unchanged:
+the scaled code is compiled out (`DISPLAY_SCALED` in `main.c`).
+
+Each panel pixel samples the canvas pixel under its centre
+(`main/display_scale.c`), so every canvas area maps to one disjoint panel
+rectangle. LVGL still renders only dirty areas, in PARTIAL strips; each strip
+is scaled exactly once into a panel chunk and queued. There is no shadow frame
+and no full-panel pass per flush.
+
+- **Alignment.** `ROUNDIE_BOARD_DISPLAY_ALIGN` 2 means the controller takes
+  windows that start on an even and end on an odd column and row. The
+  `LV_EVENT_INVALIDATE_AREA` handler widens each dirty area until its panel
+  rectangle is aligned, and to at least the smallest aligned area at the top of
+  the canvas: LVGL 9.5 sizes strips by rounding rows `0..h-1` and gives up
+  (zero rows, an endless refresh loop) when no `h` within the area fits. Strip
+  boundaries inside an area need not be aligned: one odd final panel row is
+  held back (`carry`) and sent first with the next strip of the same area.
+- **Buffers.** One canvas-strip buffer in internal RAM (LVGL single-buffer
+  mode) and two internal DMA chunks of `DISPLAY_WIDTH × DISPLAY_STRIP_LINES`
+  pixels. LVGL gives narrower areas proportionally taller strips, so the strip
+  height is the largest one whose worst-case output over every area width fits
+  a chunk (`roundie_scale_max_output`, a proven bound). For 360 → 466 with
+  24-line chunks that is 17 canvas rows (12,240 bytes) and at most 466 × 24
+  panel pixels per draw; total ≈ 58 KB internal, against 28.8 KB for the
+  1.85B's two 20-line buffers.
+- **Synchronization.** Chunk `n` uses buffer `n % 2`; before scaling into it
+  the GUI task waits until chunk `n − 2` has completed (draw-done count from the
+  ISR). The canvas strip is free once scaled, so `flush_scaled` calls
+  `lv_display_flush_ready()` immediately for every strip except the last of a
+  refresh; for that one LVGL calls the wait callback, which waits for every
+  queued chunk. Scaling of chunk `n + 1` overlaps the transfer of chunk `n`. A
+  completion missing for 2 s restarts the device instead of reusing a buffer
+  DMA may own. A strip that breaks alignment is released unsent and counted
+  as a transfer error.
+- **Touch.** The board reports panel coordinates; `read_touch` maps them to
+  the canvas pixel under the touch.
+- **Costs measured per GUI iteration.** `scale_us` (scaling with the fused
+  RGB565 byte swap and duplicate-row copies), `driver_us` (queuing the draw),
+  `dma_us`/`dma_max_us` (time each chunk spends on the bus, from submission or
+  the previous completion to its own completion), `wait_us` (GUI task blocked
+  on a chunk), `chunks` and `scaled_pixels`.
+
+**Verified (host):** `tests/test_display_scale.c` checks the mapping against
+brute force and, for several geometries and random, narrow and low dirty
+areas, emulates LVGL 9.5 strip sizing and compares the panel byte for byte
+with a full-frame reference; every transfer is aligned, contiguous, sent once,
+and within the bound. `test_display_completion.py` runs `flush_scaled` itself
+against a mock DMA that reads a chunk only on completion, so reuse of a buffer
+in flight changes the image (a mutation that waits one chunk too little
+fails), and covers timeout, misaligned strips and failed draws. Both 1.85B
+profiles build without the scaled code.
+
+**Pending (device, 1.75C):** visual check of the full canvas and partial
+updates on the panel, the draw-done callback firing once per draw in the
+CO5300 driver, the cost figures above for a full frame and for typical
+navigation, internal-RAM headroom, and touch accuracy at the edges. The
+24-line chunk height is an assumption until measured.

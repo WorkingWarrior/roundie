@@ -13,9 +13,12 @@
  * chosen by CONFIG_ROUNDIE_BOARD_*; its roundie_board_config.h defines:
  *   ROUNDIE_BOARD_NAME                  board name for logs
  *   ROUNDIE_BOARD_CAPABILITIES          ROUNDIE_BOARD_CAP_* bits below
- *   ROUNDIE_BOARD_DISPLAY_WIDTH/HEIGHT  panel pixels
- *   ROUNDIE_BOARD_DISPLAY_STRIP_LINES   rows per draw, the bus transfer limit
+ *   ROUNDIE_BOARD_DISPLAY_WIDTH/HEIGHT  panel pixels; larger than the UI canvas
+ *                                       means the canvas is shown upscaled
+ *   ROUNDIE_BOARD_DISPLAY_STRIP_LINES   full-width rows per draw, the bus transfer limit
  *   ROUNDIE_BOARD_DISPLAY_SWAP_RGB565   1 when the panel takes RGB565 MSB first
+ *   ROUNDIE_BOARD_DISPLAY_ALIGN         1, or 2 when draw windows must start on an
+ *                                       even and end on an odd column and row
  *   ROUNDIE_BOARD_FLASH_BYTES           fitted Flash size, checked by the OTA self-test
  *   ROUNDIE_BOARD_PSRAM_BYTES           fitted PSRAM size, checked by the OTA self-test
  * Every function below exists on every board; a missing device is reported at
@@ -117,8 +120,9 @@ esp_err_t roundie_board_display_set_draw_done(roundie_board_t *board,
                                               void *context);
 /* Queues RGB565 pixels for columns x1..x2-1 and rows y1..y2-1, in the panel's
  * byte order (ROUNDIE_BOARD_DISPLAY_SWAP_RGB565), at most
- * ROUNDIE_BOARD_DISPLAY_STRIP_LINES rows, from internal DMA-capable memory. The
- * buffer belongs to the transfer until the draw-done callback. */
+ * ROUNDIE_BOARD_DISPLAY_WIDTH x ROUNDIE_BOARD_DISPLAY_STRIP_LINES pixels, from
+ * internal DMA-capable memory. The buffer belongs to the transfer until the
+ * draw-done callback, which runs once per draw. Up to two draws may be queued. */
 esp_err_t roundie_board_display_draw(roundie_board_t *board, int x1, int y1,
                                      int x2, int y2, const void *pixels);
 

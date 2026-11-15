@@ -20,6 +20,8 @@
 #define ROUNDIE_BOARD_DISPLAY_STRIP_LINES CONFIG_ROUNDIE_LCD_STRIP_LINES
 /* The panel takes RGB565 most significant byte first; LVGL stores CPU order. */
 #define ROUNDIE_BOARD_DISPLAY_SWAP_RGB565 1
+/* Any draw window is accepted. */
+#define ROUNDIE_BOARD_DISPLAY_ALIGN 1
 
 /* ESP32-S3R8 with a 16 MiB Flash chip. */
 #define ROUNDIE_BOARD_FLASH_BYTES 0x1000000U

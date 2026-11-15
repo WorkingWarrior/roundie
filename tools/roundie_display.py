@@ -14,6 +14,8 @@ TRACE = ('sequence at_us nav request generation batch pending_before pending_aft
          'invalidations invalid_pixels full_invalidations').split()
 TRACE_V2 = TRACE + ('swap_us driver_us layout_us carry_done last_submit_id last_done_id '
                     'submit_driver_max_us submit_swap_max_us').split()
+TRACE_V4 = TRACE_V2 + 'scale_us scaled_pixels chunks'.split()
+TRACE_BY_FORMAT = {1: TRACE, 2: TRACE_V2, 4: TRACE_V4}
 
 
 def request(port, operation='PERF', timeout=4, allow_error=False):
@@ -37,9 +39,9 @@ def request(port, operation='PERF', timeout=4, allow_error=False):
             if result['code'] and not allow_error:
                 raise DeviceError(f'display diagnostic rejected: {result}')
             return result
-        if result['format'] not in (1, 2):
+        if result['format'] not in TRACE_BY_FORMAT:
             raise ValueError('format')
-        trace_names = TRACE if result['format'] == 1 else TRACE_V2
+        trace_names = TRACE_BY_FORMAT[result['format']]
         for field, names in (('summary', SUMMARY), ('trace', trace_names)):
             values = result[field]
             if (not isinstance(values, list) or len(values) != len(names) or

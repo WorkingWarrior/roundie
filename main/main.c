@@ -31,6 +31,7 @@
 #include "time_protocol.h"
 #include "clock_diagnostic.h"
 #include "clock_retention.h"
+#include "display_scale.h"
 #include "storage_diagnostics.h"
 #include "ota_diagnostics.h"
 #include "recovery_diagnostics.h"
@@ -57,10 +58,23 @@ _Static_assert(sizeof(time_t) == 8, "RTC requires ESP-IDF 64-bit time_t");
 #define DISPLAY_WIDTH ROUNDIE_BOARD_DISPLAY_WIDTH
 #define DISPLAY_HEIGHT ROUNDIE_BOARD_DISPLAY_HEIGHT
 #define DISPLAY_STRIP_LINES ROUNDIE_BOARD_DISPLAY_STRIP_LINES
-/* The UI canvas is part of the application contract; a panel of another size
- * needs a scaling or layout decision first (docs/board-support.md). */
-_Static_assert(DISPLAY_WIDTH == ROUNDIE_UI_WIDTH && DISPLAY_HEIGHT == ROUNDIE_UI_HEIGHT,
-               "the board's panel must match the UI canvas");
+/* The UI canvas is part of the application contract. A larger panel shows it
+ * upscaled (display_scale.h, docs/display-rendering.md); a panel of the same
+ * size keeps the direct path. */
+#define CANVAS_WIDTH ROUNDIE_UI_WIDTH
+#define CANVAS_HEIGHT ROUNDIE_UI_HEIGHT
+#define DISPLAY_SCALED (DISPLAY_WIDTH != CANVAS_WIDTH || DISPLAY_HEIGHT != CANVAS_HEIGHT)
+_Static_assert(DISPLAY_WIDTH >= CANVAS_WIDTH && DISPLAY_HEIGHT >= CANVAS_HEIGHT,
+               "the board's panel must not be smaller than the UI canvas");
+#if DISPLAY_SCALED
+_Static_assert(ROUNDIE_BOARD_DISPLAY_ALIGN == 1 || ROUNDIE_BOARD_DISPLAY_ALIGN == 2,
+               "the scaler aligns panel windows to 1 or 2 pixels");
+_Static_assert(DISPLAY_WIDTH % ROUNDIE_BOARD_DISPLAY_ALIGN == 0 &&
+               DISPLAY_HEIGHT % ROUNDIE_BOARD_DISPLAY_ALIGN == 0,
+               "the panel edges must be aligned");
+#else
+_Static_assert(ROUNDIE_BOARD_DISPLAY_ALIGN == 1, "the direct path sends LVGL areas unrounded");
+#endif
 _Static_assert((ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_ROUND_DISPLAY) != 0,
                "the launcher and round UI need a round panel");
 #define GUI_DELAY_MAX_MS 10U
@@ -100,6 +114,19 @@ typedef struct {
     int64_t touch_retry_after_us;
     uint8_t brightness_percent;
     bool touch_available;
+#if DISPLAY_SCALED
+    /* GUI task only. */
+    roundie_scale_carry_t carry;
+    uint16_t *scale_output[2]; /* panel chunks; chunk n uses scale_output[n % 2] */
+    uint16_t *scale_carry_pixels;
+    uint32_t collected_completions;
+    uint64_t collected_busy_us;
+    /* Under dma_lock: written by the GUI task before a draw, read by the ISR. */
+    int64_t chunk_submitted_us[2];
+    /* Under dma_lock: written by the ISR. */
+    uint64_t dma_busy_us;
+    uint32_t dma_busy_max_us;
+#endif
 } gui_state_t;
 
 typedef struct {
@@ -732,6 +759,7 @@ static uint32_t lv_tick_now(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+#if !DISPLAY_SCALED
 static bool lcd_transfer_done(void *user_context)
 {
     gui_state_t *state = user_context;
@@ -839,17 +867,191 @@ static void flush_display(lv_display_t *display, const lv_area_t *area,
         lv_display_flush_ready(display);
     }
 }
+#else
+static const roundie_scale_geometry_t scale_geometry = {
+    .logical_width = CANVAS_WIDTH,
+    .logical_height = CANVAS_HEIGHT,
+    .physical_width = DISPLAY_WIDTH,
+    .physical_height = DISPLAY_HEIGHT,
+    .align = ROUNDIE_BOARD_DISPLAY_ALIGN,
+};
+static uint16_t scale_columns[DISPLAY_WIDTH];
+
+static bool lcd_chunk_done(void *user_context)
+{
+    gui_state_t *state = user_context;
+    int64_t done_us = esp_timer_get_time();
+    portENTER_CRITICAL_ISR(&state->dma_lock);
+    /* Chunks complete in submission order. A chunk queued behind another one
+     * starts on the bus when the previous one is done. */
+    int64_t started_us = state->chunk_submitted_us[(state->dma_completions + 1U) % 2U];
+    if (started_us < state->dma_done_us) {
+        started_us = state->dma_done_us;
+    }
+    uint32_t busy_us = (uint32_t)(done_us - started_us);
+    state->dma_busy_us += busy_us;
+    if (busy_us > state->dma_busy_max_us) {
+        state->dma_busy_max_us = busy_us;
+    }
+    state->dma_done_us = done_us;
+    state->dma_completions++;
+    portEXIT_CRITICAL_ISR(&state->dma_lock);
+    BaseType_t higher_priority_woken = pdFALSE;
+    vTaskNotifyGiveFromISR(state->gui_task, &higher_priority_woken);
+    /* Same deferred ISR-exit switch as the direct path. */
+    portYIELD_FROM_ISR(higher_priority_woken);
+    return higher_priority_woken == pdTRUE;
+}
+
+/* GUI task: moves finished-chunk counters into this iteration's work. */
+static void collect_chunks(gui_state_t *state)
+{
+    portENTER_CRITICAL(&state->dma_lock);
+    uint32_t completions = state->dma_completions;
+    uint64_t busy_us = state->dma_busy_us;
+    uint32_t busy_max_us = state->dma_busy_max_us;
+    state->dma_busy_max_us = 0;
+    portEXIT_CRITICAL(&state->dma_lock);
+    uint32_t finished = completions - state->collected_completions;
+    state->collected_completions = completions;
+    state->work.done += finished;
+    state->work.last_done_id = completions;
+    state->work.dma_us += busy_us - state->collected_busy_us;
+    state->collected_busy_us = busy_us;
+    if (busy_max_us > state->work.dma_max_us) {
+        state->work.dma_max_us = busy_max_us;
+    }
+    state->completed_transfers += finished;
+}
+
+/* Blocks the GUI task until chunk number target has finished. */
+static void wait_for_chunks(gui_state_t *state, uint32_t target)
+{
+    int64_t started_us = esp_timer_get_time();
+    while (true) {
+        portENTER_CRITICAL(&state->dma_lock);
+        uint32_t completions = state->dma_completions;
+        portEXIT_CRITICAL(&state->dma_lock);
+        if ((int32_t)(completions - target) >= 0) {
+            break;
+        }
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) == 0) {
+            state->transfer_errors++;
+            ESP_LOGE(TAG, "LCD transfer completion timeout (%u)", state->transfer_errors);
+            /* The scaler would otherwise reuse a buffer that DMA may still own. */
+            esp_restart();
+            abort();
+        }
+    }
+    uint32_t wait_us = (uint32_t)(esp_timer_get_time() - started_us);
+    state->work.wait_us += wait_us;
+    if (wait_us > state->work.wait_max_us) {
+        state->work.wait_max_us = wait_us;
+    }
+    collect_chunks(state);
+}
+
+/* After the last strip of a refresh, LVGL calls this before rendering again. */
+static void wait_for_scaled_display(lv_display_t *display)
+{
+    gui_state_t *state = lv_display_get_user_data(display);
+    wait_for_chunks(state, (uint32_t)state->transfer_id);
+}
+
+/* Scales each LVGL strip once into a free panel chunk and queues it. The
+ * strip buffer is free on return, so LVGL renders the next strip while the
+ * chunk transfers; only the last strip of a refresh keeps flushing set. */
+static void flush_scaled(lv_display_t *display, const lv_area_t *area, uint8_t *pixels)
+{
+    gui_state_t *state = lv_display_get_user_data(display);
+    if (state->display_fault) {
+        state->carry.active = false;
+        lv_display_flush_ready(display);
+        return;
+    }
+    int64_t started_us = esp_timer_get_time();
+    state->work.flushes++;
+    state->work.pixels += (uint32_t)lv_area_get_size(area);
+    roundie_scale_plan_t plan;
+    if (!roundie_scale_plan(&scale_geometry, &state->carry, area->x1, area->y1,
+                            area->x2, area->y2, &plan)) {
+        state->carry.active = false;
+        state->transfer_errors++;
+        ESP_LOGE(TAG, "Scaled flush (%" PRId32 ",%" PRId32 ")-(%" PRId32 ",%" PRId32
+                 ") breaks panel alignment (%u)", area->x1, area->y1, area->x2, area->y2,
+                 state->transfer_errors);
+        lv_display_flush_ready(display);
+        return;
+    }
+    bool send = plan.send_y2 >= plan.send_y1;
+    uint32_t chunk = (uint32_t)state->transfer_id + 1U;
+    uint16_t *output = NULL;
+    if (send) {
+        /* The buffer was last used by chunk - 2. */
+        wait_for_chunks(state, chunk - 2U);
+        output = state->scale_output[chunk % 2U];
+    }
+    int64_t scale_started_us = esp_timer_get_time();
+    roundie_scale_strip(&scale_geometry, &plan, scale_columns, (const uint16_t *)pixels,
+                        output, state->scale_carry_pixels, ROUNDIE_BOARD_DISPLAY_SWAP_RGB565 != 0);
+    roundie_scale_update_carry(&plan, &state->carry);
+    int64_t scaled_us = esp_timer_get_time();
+    uint32_t scale_us = (uint32_t)(scaled_us - scale_started_us);
+    state->work.scale_us += scale_us;
+    if (send) {
+        uint32_t width = (uint32_t)(plan.x2 - plan.x1 + 1);
+        uint32_t rows = (uint32_t)(plan.send_y2 - plan.send_y1 + 1);
+        portENTER_CRITICAL(&state->dma_lock);
+        state->chunk_submitted_us[chunk % 2U] = scaled_us;
+        portEXIT_CRITICAL(&state->dma_lock);
+        esp_err_t error = roundie_board_display_draw(state->board, plan.x1, plan.send_y1,
+                                                     plan.x2 + 1, plan.send_y2 + 1, output);
+        int64_t submitted_us = esp_timer_get_time();
+        uint32_t driver_us = (uint32_t)(submitted_us - scaled_us);
+        state->work.driver_us += driver_us;
+        if (driver_us > state->work.submit_driver_max_us) {
+            state->work.submit_driver_max_us = driver_us;
+        }
+        if (error != ESP_OK) {
+            state->carry.active = false;
+            state->display_fault = true;
+            state->transfer_errors++;
+            ESP_LOGE(TAG, "LCD transfer enqueue failed (%u): %s",
+                     state->transfer_errors, esp_err_to_name(error));
+            lv_display_flush_ready(display);
+            return;
+        }
+        state->transfer_id = chunk;
+        state->work.last_submit_id = chunk;
+        state->work.chunks++;
+        state->work.scaled_pixels += (uint64_t)width * rows;
+    }
+    uint32_t submit_us = (uint32_t)(esp_timer_get_time() - started_us);
+    state->work.submit_us += submit_us;
+    if (submit_us > state->work.submit_max_us) {
+        state->work.submit_max_us = submit_us;
+    }
+    if (!lv_display_flush_is_last(display)) {
+        lv_display_flush_ready(display);
+    }
+}
+#endif
 
 static void display_event(lv_event_t *event)
 {
     gui_state_t *state = lv_event_get_user_data(event);
     lv_event_code_t code = lv_event_get_code(event);
     if (code == LV_EVENT_INVALIDATE_AREA) {
+#if DISPLAY_SCALED
+        /* Rounder: every area's panel rectangle starts and ends aligned. */
+        lv_area_t *rounded = lv_event_get_invalidated_area(event);
+        roundie_scale_round(&scale_geometry, &rounded->x1, &rounded->y1, &rounded->x2, &rounded->y2);
+#endif
         const lv_area_t *area = lv_event_get_param(event);
         uint32_t pixels = (uint32_t)lv_area_get_size(area);
         state->work.invalidations++;
         state->work.invalid_pixels += pixels;
-        state->work.full_invalidations += pixels == DISPLAY_WIDTH * DISPLAY_HEIGHT;
+        state->work.full_invalidations += pixels == CANVAS_WIDTH * CANVAS_HEIGHT;
     } else if (code == LV_EVENT_REFR_START) {
         state->refresh_started_us = esp_timer_get_time();
     } else if (code == LV_EVENT_RENDER_START) {
@@ -882,6 +1084,15 @@ static void read_touch(lv_indev_t *device, lv_indev_data_t *data)
     } else if (error == ESP_OK) {
         state->touch_error_logged = false;
     }
+#if DISPLAY_SCALED
+    /* The board reports panel coordinates; LVGL works on the canvas. */
+    if (pressed) {
+        x = (uint16_t)roundie_scale_source(x < DISPLAY_WIDTH ? x : DISPLAY_WIDTH - 1,
+                                           CANVAS_WIDTH, DISPLAY_WIDTH);
+        y = (uint16_t)roundie_scale_source(y < DISPLAY_HEIGHT ? y : DISPLAY_HEIGHT - 1,
+                                           CANVAS_HEIGHT, DISPLAY_HEIGHT);
+    }
+#endif
 #if CONFIG_ROUNDIE_POWER
     /* Touches that turn the screen on, or arrive while it is off, never
      * reach applications or the launcher. */
@@ -985,7 +1196,7 @@ static void show_color_field(lv_event_t *event)
     const uint32_t *color = lv_event_get_user_data(event);
     lv_obj_t *screen = lv_obj_get_parent(lv_event_get_target_obj(event));
     lv_obj_t *field = lv_obj_create(screen);
-    lv_obj_set_size(field, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_set_size(field, CANVAS_WIDTH, CANVAS_HEIGHT);
     lv_obj_set_pos(field, 0, 0);
     lv_obj_set_style_radius(field, 0, 0);
     lv_obj_set_style_border_width(field, 0, 0);
@@ -1221,12 +1432,52 @@ void app_main(void)
         .brightness_percent = 60,
         .touch_available = status.touch == ESP_OK,
     };
+#if DISPLAY_SCALED
+    error = roundie_board_display_set_draw_done(board, lcd_chunk_done, &state);
+#else
     error = roundie_board_display_set_draw_done(board, lcd_transfer_done, &state);
+#endif
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "LCD callback registration: %s", esp_err_to_name(error));
         headless_recovery();
     }
 
+#if DISPLAY_SCALED
+    /* LVGL renders canvas strips into one internal buffer, which is free again
+     * when flush_scaled returns; two DMA chunks of DISPLAY_STRIP_LINES panel
+     * rows alternate on the bus. The canvas strip is as tall as the worst-case
+     * chunk (narrow areas get taller strips) allows. */
+    const size_t chunk_pixels = (size_t)DISPLAY_WIDTH * DISPLAY_STRIP_LINES;
+    uint32_t render_rows = CANVAS_HEIGHT;
+    while (render_rows > 0 &&
+           roundie_scale_max_output(&scale_geometry, CANVAS_WIDTH * render_rows) > chunk_pixels) {
+        render_rows--;
+    }
+    if (render_rows < 3) {
+        ESP_LOGE(TAG, "%u-line LCD chunks are too small to scale the canvas",
+                 (unsigned)DISPLAY_STRIP_LINES);
+        headless_recovery();
+    }
+    const size_t buffer_bytes = (size_t)CANVAS_WIDTH * render_rows * 2;
+    void *draw_buffer = heap_caps_malloc(buffer_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    void *draw_buffer_second = NULL;
+    for (unsigned i = 0; i < 2; i++) {
+        state.scale_output[i] = heap_caps_malloc(chunk_pixels * 2,
+                                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    }
+    state.scale_carry_pixels = heap_caps_malloc(DISPLAY_WIDTH * 2,
+                                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (draw_buffer == NULL || state.scale_output[0] == NULL || state.scale_output[1] == NULL ||
+        state.scale_carry_pixels == NULL) {
+        ESP_LOGE(TAG, "No internal memory for scaled LCD buffers");
+        headless_recovery();
+    }
+    roundie_scale_columns(&scale_geometry, scale_columns);
+    ESP_LOGI(TAG, "LVGL PARTIAL RGB565 %ux%u canvas, %" PRIu32 " lines (%zu bytes) scaled to "
+             "%ux%u panel, 2 x %u-line DMA chunks",
+             (unsigned)CANVAS_WIDTH, (unsigned)CANVAS_HEIGHT, render_rows, buffer_bytes,
+             (unsigned)DISPLAY_WIDTH, (unsigned)DISPLAY_HEIGHT, (unsigned)DISPLAY_STRIP_LINES);
+#else
     const size_t buffer_bytes = DISPLAY_WIDTH * DISPLAY_STRIP_LINES * 2;
     void *draw_buffer = heap_caps_malloc(buffer_bytes,
                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
@@ -1250,8 +1501,9 @@ void app_main(void)
 #endif
     ESP_LOGI(TAG, "LVGL PARTIAL RGB565: %u x %u lines, %zu bytes each, internal DMA",
              buffer_count, DISPLAY_STRIP_LINES, buffer_bytes);
+#endif
 
-    state.display = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    state.display = lv_display_create(CANVAS_WIDTH, CANVAS_HEIGHT);
     if (state.display == NULL) {
         ESP_LOGE(TAG, "LVGL display allocation failed");
         headless_recovery();
@@ -1259,8 +1511,13 @@ void app_main(void)
     lv_display_set_color_format(state.display, LV_COLOR_FORMAT_RGB565);
     lv_display_set_user_data(state.display, &state);
     lv_display_add_event_cb(state.display, display_event, LV_EVENT_ALL, &state);
+#if DISPLAY_SCALED
+    lv_display_set_flush_cb(state.display, flush_scaled);
+    lv_display_set_flush_wait_cb(state.display, wait_for_scaled_display);
+#else
     lv_display_set_flush_cb(state.display, flush_display);
     lv_display_set_flush_wait_cb(state.display, wait_for_display);
+#endif
     lv_display_set_buffers(state.display, draw_buffer, draw_buffer_second, buffer_bytes,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
     /* A board without touch gets no pointer device; the UI still renders. */
@@ -1411,6 +1668,10 @@ void app_main(void)
             esp_restart();
             abort();
         }
+#if DISPLAY_SCALED
+        /* Chunks still on the bus at the end of a refresh finish later. */
+        collect_chunks(&state);
+#endif
         portENTER_CRITICAL(&state.dma_lock);
         uint32_t dma_completions = state.dma_completions;
         portEXIT_CRITICAL(&state.dma_lock);
