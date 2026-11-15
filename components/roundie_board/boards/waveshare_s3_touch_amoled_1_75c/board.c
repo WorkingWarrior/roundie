@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
+#include "board_logic.h"
 #include "board_pins.h"
 
 #define LCD_WIDTH ROUNDIE_BOARD_DISPLAY_WIDTH
@@ -61,7 +62,7 @@ struct roundie_board {
     esp_lcd_panel_io_handle_t touch_io;
     esp_lcd_touch_handle_t touch;
     volatile bool touch_irq_pending;
-    bool touch_polling;
+    board_touch_filter_t touch_filter;
     esp_lcd_panel_io_handle_t lcd_io;
     esp_lcd_panel_handle_t panel;
     bool spi_started;
@@ -160,6 +161,15 @@ static esp_err_t start_touch(roundie_board_t *board)
                                                        touch_interrupt);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "CST9217 IRQ registration: %s", esp_err_to_name(error));
+        goto cleanup;
+    }
+    /* The main board has no pull-up on TP_INT (schematic S2: J3 pin 30 to
+     * GPIO11) and the driver configures none. Whether the controller drives
+     * the line push-pull is unknown, so the internal pull-up keeps an idle
+     * line from floating into interrupts or light-sleep wakes. */
+    error = gpio_pullup_en(BOARD_TOUCH_INT);
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "CST9217 INT pull-up: %s", esp_err_to_name(error));
         goto cleanup;
     }
     return ESP_OK;
@@ -395,40 +405,38 @@ esp_err_t roundie_board_touch_read(roundie_board_t *board, bool *pressed,
         *pressed = false;
         return ESP_ERR_NOT_FOUND;
     }
-    if (!board->touch_irq_pending && !board->touch_polling) {
+    if (!board->touch_irq_pending && !board->touch_filter.pressed) {
         *pressed = false;
         return ESP_OK;
     }
+    /* While a touch is held, every call reads, without waiting for INT. */
     board->touch_irq_pending = false;
+    board_touch_report_t report = BOARD_TOUCH_NONE;
+    esp_lcd_touch_point_data_t point = {0};
     esp_err_t error = esp_lcd_touch_read_data(board->touch);
     if (error == ESP_ERR_INVALID_RESPONSE) {
-        /* The report lacked its acknowledge byte; the driver kept no data.
-         * Assumption: a transient no-touch report, not a bus fault, so it
-         * must not trigger the caller's retry backoff. The next INT edge
-         * starts a new read. */
-        board->touch_polling = false;
-        *pressed = false;
-        return ESP_OK;
-    }
-    if (error != ESP_OK) {
-        board->touch_polling = false;
+        /* No acknowledge byte; the driver kept no new data. Assumption: a
+         * report between updates, not a bus fault, so it must not trigger the
+         * caller's retry backoff (board_logic.h). */
+        report = BOARD_TOUCH_NO_ACK;
+    } else if (error != ESP_OK) {
+        board_touch_filter_reset(&board->touch_filter);
         *pressed = false;
         return error;
+    } else {
+        uint8_t point_count = 0;
+        error = esp_lcd_touch_get_data(board->touch, &point, &point_count, 1);
+        if (error != ESP_OK) {
+            board_touch_filter_reset(&board->touch_filter);
+            *pressed = false;
+            return error;
+        }
+        if (point_count > 0) {
+            report = BOARD_TOUCH_POINT;
+        }
     }
-    uint8_t point_count = 0;
-    esp_lcd_touch_point_data_t point = {0};
-    error = esp_lcd_touch_get_data(board->touch, &point, &point_count, 1);
-    if (error != ESP_OK) {
-        board->touch_polling = false;
-        *pressed = false;
-        return error;
-    }
-    *pressed = point_count > 0;
-    board->touch_polling = *pressed;
-    if (*pressed) {
-        *x = point.x;
-        *y = point.y;
-    }
+    *pressed = board_touch_filter_update(&board->touch_filter, report, point.x, point.y,
+                                         LCD_WIDTH, LCD_HEIGHT, x, y);
     return ESP_OK;
 }
 
@@ -691,7 +699,7 @@ static roundie_sensor_state_t pmic_error(roundie_board_t *board, esp_err_t error
  * board (docs/hardware-audit-1.75c.md):
  *   0x00 bit 3       battery connected
  *   0x01 bits 6..5   01 charging, 10 discharging
- *   0x34..0x35       battery voltage in mV, 14 bits; reads 0 while the
+ *   0x34..0x35       battery voltage in mV, 13 bits; reads 0 while the
  *                    PMIC's battery voltage ADC is disabled
  * The PMIC's own fuel gauge is not used, so the state is at best
  * ROUNDIE_SENSOR_UNCALIBRATED with no state of charge, current or temperature. */
@@ -716,13 +724,13 @@ void roundie_board_battery_read(roundie_board_t *board,
         return;
     }
     sample->battery_flags = (uint16_t)((status[0] << 8) | status[1]);
-    sample->battery_present = (status[0] & 0x08) != 0;
+    sample->battery_present = board_pmic_battery_present(status);
     if (!sample->battery_present) {
         sample->state = ROUNDIE_SENSOR_BATTERY_ABSENT;
         sample->error = ESP_OK;
         return;
     }
-    sample->discharging = ((status[1] >> 5) & 0x03) == 0x02;
+    sample->discharging = board_pmic_discharging(status);
     sample->state = ROUNDIE_SENSOR_UNCALIBRATED;
     sample->error = ESP_OK;
 
@@ -733,8 +741,8 @@ void roundie_board_battery_read(roundie_board_t *board,
         sample->state = pmic_error(board, error);
         return;
     }
-    uint16_t millivolts = (uint16_t)(((voltage[0] & 0x3F) << 8) | voltage[1]);
+    uint16_t millivolts = board_pmic_battery_mv(voltage);
     sample->voltage_mv = millivolts;
-    sample->voltage_valid = millivolts > 0 && millivolts <= 6000;
+    sample->voltage_valid = board_pmic_voltage_plausible(millivolts);
     sample->observed_us = esp_timer_get_time();
 }
