@@ -66,8 +66,9 @@ firmware code reads it:
 | `ROUNDIE_BOARD_CAP_TOUCH` | `main.c` | No LVGL pointer device |
 | `ROUNDIE_BOARD_CAP_SPEAKER` | `main.c` | `roundie_audio_init` is not called; `rep_audio_v1` reports no audio |
 | `ROUNDIE_BOARD_CAP_ROUND_DISPLAY` | `main.c` (static assert) | Build fails: the launcher and round UI need a round panel |
+| `ROUNDIE_BOARD_CAP_RTC` | `main.c` | The system clock alone keeps time after an explicit sync ([details](rtc-time-sync.md#boards-without-an-external-rtc)) |
 
-The RTC, the fuel gauge and wake sources have no bit. Their absence is reported
+The fuel gauge and wake sources have no bit. Their absence is reported
 at run time (`ROUNDIE_SENSOR_*` states, `ESP_ERR_NOT_FOUND`,
 `ESP_ERR_NOT_SUPPORTED`), and their callers already handle it.
 

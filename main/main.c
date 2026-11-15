@@ -11,12 +11,15 @@
 #include <unistd.h>
 
 #include "esp_app_desc.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_newlib.h"
 #include "esp_psram.h"
+#include "esp_rtc_time.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
@@ -27,6 +30,7 @@
 #include "roundie_board.h"
 #include "time_protocol.h"
 #include "clock_diagnostic.h"
+#include "clock_retention.h"
 #include "storage_diagnostics.h"
 #include "ota_diagnostics.h"
 #include "recovery_diagnostics.h"
@@ -116,7 +120,12 @@ static sensor_state_t sensors = {
 static uint32_t wall_sync_count;
 static int64_t wall_sync_at_us;
 
-/* Local time source: wall time is valid only after an RTC sync this boot. */
+/* Wall time is valid only after a trusted sync: from the external RTC, or on a
+ * board without one from the explicit roundie_time SET, which a software reset
+ * keeps (clock_retention.h). Validity never depends on the RTC being present. */
+#define BOARD_HAS_RTC ((ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_RTC) != 0)
+
+/* Local time source: wall time is valid only after a trusted sync. */
 static bool wall_clock_valid(uint32_t *sync_count)
 {
     portENTER_CRITICAL(&sensors.lock);
@@ -151,13 +160,8 @@ static const char *bus_state_name(roundie_sensor_state_t state)
     return "OK";
 }
 
-static bool sync_wall_clock(const roundie_rtc_sample_t *sample)
+static bool set_wall_clock(int64_t seconds)
 {
-    int64_t seconds;
-    if (sample->state != ROUNDIE_SENSOR_VALID || sample->oscillator_stopped ||
-        !roundie_rtc_unix_seconds(&sample->time, &seconds)) {
-        return false;
-    }
     struct timeval now = {
         .tv_sec = (time_t)seconds,
         .tv_usec = 0,
@@ -167,11 +171,91 @@ static bool sync_wall_clock(const roundie_rtc_sample_t *sample)
         ESP_LOGE(TAG, "System wall clock set failed: %s", esp_err_to_name(error));
         return false;
     }
-    ESP_LOGI(TAG, "System wall clock synchronized from valid RTC (UTC)");
     wall_sync_count++;
     wall_sync_at_us = esp_timer_get_time();
     return true;
 }
+
+static bool sync_wall_clock(const roundie_rtc_sample_t *sample)
+{
+    int64_t seconds;
+    if (sample->state != ROUNDIE_SENSOR_VALID || sample->oscillator_stopped ||
+        !roundie_rtc_unix_seconds(&sample->time, &seconds)) {
+        return false;
+    }
+    if (!set_wall_clock(seconds)) {
+        return false;
+    }
+    ESP_LOGI(TAG, "System wall clock synchronized from valid RTC (UTC)");
+    return true;
+}
+
+#if !BOARD_HAS_RTC
+/* Kept by a software reset in RTC slow memory; arbitrary after power-on. */
+static RTC_NOINIT_ATTR roundie_clock_retention_t retained_clock;
+
+static int64_t wall_now_us(void)
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return (int64_t)now.tv_sec * 1000000 + now.tv_usec;
+}
+
+/* Align ESP-IDF's RTC-domain boot time with the running clock, so that time
+ * read back after a reset matches the time before it. system_worker only. */
+static void align_retained_wall_clock(void)
+{
+    esp_sync_timekeeping_timers();
+}
+
+/* After a trusted SET. ESP-IDF itself keeps the time; this marks it trusted. */
+static void retain_wall_clock(void)
+{
+    align_retained_wall_clock();
+    roundie_clock_retention_record(&retained_clock, wall_now_us(), (int64_t)esp_rtc_get_time_us());
+}
+
+static bool reset_keeps_rtc_domain(esp_reset_reason_t reason)
+{
+    switch (reason) {
+    case ESP_RST_SW:
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+    case ESP_RST_DEEPSLEEP:
+    case ESP_RST_USB:
+    case ESP_RST_JTAG:
+    case ESP_RST_CPU_LOCKUP:
+        return true;
+    default:
+        /* Power-on, brownout, power glitch, external pin and unknown resets
+         * may have lost the RTC domain: time stays invalid until a sync. */
+        return false;
+    }
+}
+
+/* Startup only. Never restores a stored time: it accepts the system time that
+ * ESP-IDF kept in the RTC domain, or invalidates it. */
+static bool accept_retained_wall_clock(void)
+{
+    esp_reset_reason_t reason = esp_reset_reason();
+    bool accepted = reset_keeps_rtc_domain(reason) &&
+        roundie_clock_retention_accept(&retained_clock, wall_now_us(),
+                                       (int64_t)esp_rtc_get_time_us());
+    if (!accepted) {
+        roundie_clock_retention_clear(&retained_clock);
+        ESP_LOGW(TAG, "System wall clock unsynchronized after reset reason %d; no external RTC",
+                 (int)reason);
+        return false;
+    }
+    retain_wall_clock();
+    wall_sync_count++;
+    wall_sync_at_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "System wall clock kept across reset reason %d (UTC)", (int)reason);
+    return true;
+}
+#endif
 
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC
 static void clock_diagnostic(sensor_state_t *shared, const char *id)
@@ -253,7 +337,26 @@ static void time_command(sensor_state_t *shared,
     bool wall_valid = shared->wall_valid;
     roundie_board_t *board = shared->board_ready ? shared->board : NULL;
     portEXIT_CRITICAL(&shared->lock);
+#if !BOARD_HAS_RTC
     if (strcmp(result, "OK") == 0 && command.set) {
+        wall_valid = false;
+        shared->sync_failed = true;
+        portENTER_CRITICAL(&shared->lock);
+        shared->wall_valid = false;
+        portEXIT_CRITICAL(&shared->lock);
+        roundie_clock_retention_clear(&retained_clock);
+        wall_valid = set_wall_clock(command.seconds);
+        if (!wall_valid) {
+            result = "CLOCK";
+            error = ESP_FAIL;
+        } else {
+            retain_wall_clock();
+            shared->sync_failed = false;
+            ESP_LOGI(TAG, "System wall clock set by explicit time sync (UTC)");
+        }
+    }
+#endif
+    if (BOARD_HAS_RTC && strcmp(result, "OK") == 0 && command.set) {
         wall_valid = false;
         shared->sync_failed = true;
         portENTER_CRITICAL(&shared->lock);
@@ -299,13 +402,13 @@ static void time_command(sensor_state_t *shared,
     }
     /* Fresh status, also on failure. Never substitute a cached valid sample. */
     roundie_board_rtc_read(board, &rtc);
-    if (rtc.state != ROUNDIE_SENSOR_VALID) {
+    if (BOARD_HAS_RTC && rtc.state != ROUNDIE_SENSOR_VALID) {
         wall_valid = false;
         if (strcmp(result, "OK") == 0) {
             result = rtc.state == ROUNDIE_SENSOR_INVALID ? "RTC_INVALID" : "RTC_READ";
             error = rtc.error;
         }
-    } else if (strcmp(result, "OK") == 0 && !wall_valid && !shared->sync_failed) {
+    } else if (BOARD_HAS_RTC && strcmp(result, "OK") == 0 && !wall_valid && !shared->sync_failed) {
         wall_valid = sync_wall_clock(&rtc);
         if (!wall_valid) {
             result = "CLOCK";
@@ -315,6 +418,9 @@ static void time_command(sensor_state_t *shared,
     if (command.set && strcmp(result, "OK") != 0) {
         shared->sync_failed = true;
         wall_valid = false;
+#if !BOARD_HAS_RTC
+        roundie_clock_retention_clear(&retained_clock);
+#endif
     }
     portENTER_CRITICAL(&shared->lock);
     shared->rtc = rtc;
@@ -514,12 +620,17 @@ static void sensor_worker(void *argument)
             portENTER_CRITICAL(&shared->lock);
             shared->wall_valid = synchronized;
             portEXIT_CRITICAL(&shared->lock);
-        } else if (rtc.state != ROUNDIE_SENSOR_VALID && shared->wall_valid) {
+        } else if (BOARD_HAS_RTC && rtc.state != ROUNDIE_SENSOR_VALID && shared->wall_valid) {
             portENTER_CRITICAL(&shared->lock);
             shared->wall_valid = false;
             portEXIT_CRITICAL(&shared->lock);
             ESP_LOGW(TAG, "System wall clock marked unsynchronized after RTC failure");
         }
+#if !BOARD_HAS_RTC
+        if (shared->wall_valid) {
+            align_retained_wall_clock();
+        }
+#endif
         if (rtc.state != last_rtc) {
             ESP_LOGI(TAG, "RTC %s, OS=%u, error=%s",
                      sensor_state_name(rtc.state), rtc.oscillator_stopped,
@@ -579,7 +690,7 @@ static void update_sensor_labels(gui_state_t *state)
                           state->touch_available ? "OK" : "--",
                           bus_state_name(rtc.state), bus_state_name(battery.state));
 
-    if (rtc.state == ROUNDIE_SENSOR_VALID && wall_valid) {
+    if ((rtc.state == ROUNDIE_SENSOR_VALID || !BOARD_HAS_RTC) && wall_valid) {
         time_t now = time(NULL);
         struct tm utc;
         gmtime_r(&now, &utc);
@@ -1092,10 +1203,14 @@ void app_main(void)
              sensor_state_name(initial_battery.state), initial_battery.battery_present,
              initial_battery.voltage_mv, initial_battery.soc_valid,
              initial_battery.soc_percent, esp_err_to_name(initial_battery.error));
+#if BOARD_HAS_RTC
     bool initial_wall_valid = sync_wall_clock(&initial_rtc);
     if (!initial_wall_valid) {
         ESP_LOGW(TAG, "System wall clock unsynchronized; RTC time not trusted");
     }
+#else
+    bool initial_wall_valid = accept_retained_wall_clock();
+#endif
 
     lv_init();
     lv_tick_set_cb(lv_tick_now);

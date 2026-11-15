@@ -26,6 +26,7 @@
 #define ROUNDIE_BOARD_CAP_TOUCH (1U << 0)         /* touch input for LVGL */
 #define ROUNDIE_BOARD_CAP_SPEAKER (1U << 1)       /* roundie_board_speaker_start() */
 #define ROUNDIE_BOARD_CAP_ROUND_DISPLAY (1U << 2) /* circular glass: the round UI needs it */
+#define ROUNDIE_BOARD_CAP_RTC (1U << 3)           /* battery-backed RTC behind roundie_board_rtc_*() */
 
 #include "roundie_board_config.h"
 
@@ -147,7 +148,9 @@ void roundie_board_wake_disarm(roundie_board_t *board);
 /* Sensor calls use the board's shared master and bounded 100 ms transactions.
  * The sensor worker serializes RTC reads and sets after startup. Set verifies
  * immediate readback only; its caller must confirm progression before wall sync.
- * A failed probe is retried on later samples; no handle is permanently absent. */
+ * A failed probe is retried on later samples; no handle is permanently absent.
+ * Without ROUNDIE_BOARD_CAP_RTC, read reports ROUNDIE_SENSOR_NOT_FOUND and set
+ * returns ESP_ERR_NOT_SUPPORTED. */
 void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample);
 esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
                                         const roundie_rtc_time_t *time);

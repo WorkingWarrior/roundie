@@ -11,6 +11,9 @@ import time
 MIN_TIMESTAMP = 946684800
 MAX_TIMESTAMP = 4102444799
 TOLERANCE_SECONDS = 3.0
+# ROUNDIE_SENSOR_NOT_FOUND with result OK: the board has no external RTC and
+# the system clock alone carries the synchronized time.
+NO_RTC = 1
 MAX_REPLY = 256
 REPLY = re.compile(
     rb"!RT1 ([0-9a-f]{8}) ([A-Z_]+) state=([0-6]) os=(-1|0|1) "
@@ -43,7 +46,9 @@ def parse_reply(line, request_id):
     if status["state"] == 0:
         if status["os"] != 0 or status["rtc"] == -1:
             raise TransportError("inconsistent valid RTC reply")
-    elif status["rtc"] != -1 or status["wall"] != -1:
+    elif status["rtc"] != -1:
+        raise TransportError("invalid RTC advertised as synchronized")
+    elif status["wall"] != -1 and not (status["state"] == NO_RTC and status["code"] == "OK"):
         raise TransportError("invalid RTC advertised as synchronized")
     if status["state"] in (0, 3):
         if status["os"] == -1:
@@ -110,22 +115,30 @@ def read_serial_reply(port, prefix, deadline, limit):
     raise TransportError("response timeout (device disconnected, interface disabled, or lost frame)")
 
 
+def reference(status):
+    """The synchronized clock: the external RTC, or the system clock without one."""
+    return status["wall"] if status["state"] == NO_RTC else status["rtc"]
+
+
 def require_valid(status, host_now=None):
     if status["code"] != "OK" or status["error"] != 0:
         raise DeviceError(f"{status['code']}: RTC state={status['state']}, "
                           f"OS={status['os']}, error={status['error']}")
-    if status["state"] != 0 or status["os"] != 0 or status["wall"] == -1:
-        raise DeviceError("RTC or system clock is unsynchronized")
-    if abs(status["rtc"] - status["wall"]) > 1:
-        raise DeviceError("RTC and system clock differ by more than 1 second")
+    if status["wall"] == -1:
+        raise DeviceError("system clock is unsynchronized")
+    if status["state"] != NO_RTC:
+        if status["state"] != 0 or status["os"] != 0:
+            raise DeviceError("RTC or system clock is unsynchronized")
+        if abs(status["rtc"] - status["wall"]) > 1:
+            raise DeviceError("RTC and system clock differ by more than 1 second")
     if host_now is None:
         host_now = datetime.now(timezone.utc).timestamp()
     # Response samples precede reception; bound transport latency separately.
     if status["round_trip"] > 3.0:
         raise DeviceError("serial round trip exceeds the 3-second validation budget")
-    difference = status["rtc"] - host_now
+    difference = reference(status) - host_now
     if abs(difference) > TOLERANCE_SECONDS:
-        raise DeviceError(f"RTC differs from host UTC by {difference:+.2f}s (limit 3s)")
+        raise DeviceError(f"device clock differs from host UTC by {difference:+.2f}s (limit 3s)")
     return difference
 
 
@@ -138,7 +151,10 @@ def utc_text(timestamp):
 def show_status(status):
     states = ("valid", "not found", "communication failure", "invalid", "unavailable",
               "battery absent", "uncalibrated")
-    available = "yes" if status["state"] in (0, 3) else "no / communication unavailable"
+    if status["state"] == NO_RTC and status["code"] == "OK":
+        available = "no (board without external RTC; system clock only)"
+    else:
+        available = "yes" if status["state"] in (0, 3) else "no / communication unavailable"
     print(f"RTC available: {available}; state: {states[status['state']]}")
     print(f"RTC UTC: {utc_text(status['rtc'])}; OS: {status['os']}")
     print(f"System UTC: {utc_text(status['wall'])}")
@@ -187,11 +203,11 @@ def restart_verify(path):
                 after = request(port, "GET", timeout=1.0)
                 require_valid(after)
             elapsed = time.monotonic() - started
-            advance = after["rtc"] - before["rtc"]
+            advance = reference(after) - reference(before)
             if advance < 1 or abs(advance - elapsed) > 2:
-                raise DeviceError("RTC progression across restart is inconsistent")
+                raise DeviceError("clock progression across restart is inconsistent")
             show_status(after)
-            print(f"Software restart retention passed: RTC advanced {advance}s "
+            print(f"Software restart retention passed: clock advanced {advance}s "
                   f"over approximately {elapsed:.2f}s; OS=0 and system UTC restored.")
             return
         except TransportError as error:
@@ -261,7 +277,7 @@ def main(argv=None):
                 # A separate, read-only transaction confirms the SET result.
                 readback = request(port, "GET")
                 require_valid(readback)
-                if not status["rtc"] <= readback["rtc"] <= status["rtc"] + 3:
+                if not reference(status) <= reference(readback) <= reference(status) + 3:
                     raise DeviceError("independent readback differs from SET acknowledgment")
                 print("Synchronization confirmed by RTC progression, OS=0 and independent readback.")
             else:

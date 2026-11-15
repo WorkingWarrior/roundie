@@ -31,6 +31,7 @@ class ClockTests(unittest.TestCase):
             for standard in ('c11', 'c23'):
                 for name, sources in (
                     ('diagnostic', ['main/clock_diagnostic.c', 'tests/test_clock_diagnostic.c']),
+                    ('retention', ['main/clock_retention.c', 'tests/test_clock_retention.c']),
                     ('codec', ['components/roundie_board/rtc_time.c', 'components/roundie_board/boards/waveshare_s3_touch_lcd_1_85b/sensor_codec.c',
                                'tests/test_sensor_codec.c']),
                     ('protocol', ['main/time_protocol.c', 'components/roundie_board/rtc_time.c',

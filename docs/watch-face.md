@@ -41,10 +41,10 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
 - **Sampling.** The executor samples `roundie_local_time_now` at most once per
   second, outside native callbacks.
 - **When it posts.** It posts after start, at each local minute, and when the
-  revision changes. The revision is the zone revision plus the RTC sync count,
+  revision changes. The revision is the zone revision plus the wall-clock sync count,
   so a zone change or a sync is delivered within about a second.
 - **Invalid wall time.** Nothing is sent while wall time is invalid (no
-  successful RTC sync this boot).
+  trusted sync; see [boards without an external RTC](rtc-time-sync.md#boards-without-an-external-rtc)).
 - **Coalescing.** A queued clock event is replaced in place by a newer sample,
   including its time.
 - **Extrapolation.** Applications extrapolate from `posted_us` of later events

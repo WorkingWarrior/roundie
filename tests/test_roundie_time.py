@@ -100,6 +100,42 @@ class TimeToolTests(unittest.TestCase):
         with self.assertRaises(tool.DeviceError):
             tool.require_valid(status, 1792314000)
 
+    def test_board_without_rtc(self):
+        status = tool.parse_reply(reply(state=1, os_flag=-1, rtc=-1), "1234abcd")
+        status["round_trip"] = 0.05
+        self.assertAlmostEqual(tool.require_valid(status, 1792314000.5), -0.5)
+        with self.assertRaises(tool.DeviceError):
+            tool.require_valid(status, 1792314003.01)
+        unsynchronized = tool.parse_reply(reply(state=1, os_flag=-1, rtc=-1, wall=-1), "1234abcd")
+        unsynchronized["round_trip"] = 0.05
+        with self.assertRaisesRegex(tool.DeviceError, "unsynchronized"):
+            tool.require_valid(unsynchronized, 1792314000)
+        # Only a successful reply may carry system time without an RTC value.
+        for line in (reply(code="RTC_READ", state=1, os_flag=-1, rtc=-1, error=263),
+                     reply(state=2, os_flag=-1, rtc=-1),
+                     reply(state=1, os_flag=0, rtc=-1)):
+            with self.subTest(line=line), self.assertRaises(tool.TransportError):
+                tool.parse_reply(line, "1234abcd")
+
+    def test_restart_without_rtc_uses_system_clock(self):
+        context = MagicMock()
+        before = {"state": 1, "rtc": -1, "wall": 1792314000}
+        after = {"state": 1, "rtc": -1, "wall": 1792314003}
+        with patch.object(tool, "open_serial", return_value=context), \
+             patch.object(tool, "request", side_effect=[before, before, after]), \
+             patch.object(tool, "require_valid"), patch.object(tool, "show_status"), \
+             patch.object(tool.time, "sleep"), \
+             patch.object(tool.time, "monotonic", side_effect=[1, 1, 1, 4]):
+            tool.restart_verify("/dev/test")
+        stalled = {"state": 1, "rtc": -1, "wall": 1792314000}
+        with patch.object(tool, "open_serial", return_value=context), \
+             patch.object(tool, "request", side_effect=[before, before, stalled]), \
+             patch.object(tool, "require_valid"), patch.object(tool, "show_status"), \
+             patch.object(tool.time, "sleep"), \
+             patch.object(tool.time, "monotonic", side_effect=[1, 1, 1, 4]):
+            with self.assertRaises(tool.DeviceError):
+                tool.restart_verify("/dev/test")
+
     def test_correlated_request(self):
         port = FakeSerial()
         status = tool.request(port, "GET", timeout=0.2)
@@ -147,8 +183,8 @@ class TimeToolTests(unittest.TestCase):
 
     def test_restart_reconnect(self):
         context = MagicMock()
-        before = {"rtc": 100}
-        after = {"rtc": 103}
+        before = {"state": 0, "rtc": 100}
+        after = {"state": 0, "rtc": 103}
         with patch.object(tool, "open_serial", side_effect=[context, tool.TransportError("disconnected"), context]), \
              patch.object(tool, "request", side_effect=[before, before, after]) as requests, \
              patch.object(tool, "require_valid"), patch.object(tool, "show_status"), \
@@ -161,7 +197,7 @@ class TimeToolTests(unittest.TestCase):
     def test_restart_deadline(self):
         context = MagicMock()
         with patch.object(tool, "open_serial", return_value=context), \
-             patch.object(tool, "request", return_value={"rtc": 100}), \
+             patch.object(tool, "request", return_value={"state": 0, "rtc": 100}), \
              patch.object(tool, "require_valid"), \
              patch.object(tool.time, "monotonic", side_effect=[1, 1, 17]):
             with self.assertRaises(tool.TransportError):

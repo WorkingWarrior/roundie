@@ -19,6 +19,53 @@ release: anyone with serial access can overwrite time or request a restart.
 An import allowlist or native application trust policy would not secure this
 development interface.
 
+## Boards without an external RTC
+
+**Architectural decision (2026-11-15):** wall-time validity is separate from
+the presence of an external RTC. `ROUNDIE_BOARD_CAP_RTC` marks a board with a
+battery-backed RTC (1.85B: PCF85063); its path is unchanged. Without the bit
+(AMOLED 1.75C), the ESP-IDF system clock and the ESP32-S3 RTC timer keep time:
+
+- **Sync.** `roundie_time.py sync` (RT1 `SET`) sets the system clock directly.
+  Replies carry `state=1` (not found), `os=-1`, `rtc=-1` and the system time in
+  `wall`. The utility then checks `wall` against the host instead of the RTC.
+- **Running and light sleep.** Time follows `esp_timer` while running. ESP-IDF
+  advances it from the RTC timer across light sleep (`sleep_modes.c`), so it
+  keeps running without another sync.
+- **Software reset.** With `CONFIG_ESP_TIME_FUNCS_USE_RTC_TIMER=y` (set in
+  both profiles), ESP-IDF stores the boot time in the `RTC_BOOT_TIME`
+  registers. With the RTC timer, which keeps counting through a digital reset,
+  that preserves system time (`esp_libc/src/port/esp_time_impl.c`). The firmware
+  does not restore anything itself. A record in `RTC_NOINIT` memory
+  (`main/clock_retention.c`) holds the wall time and the RTC timer at the last
+  trusted sync. At boot the firmware accepts ESP-IDF's time only if all hold:
+  - the reset reason keeps the RTC domain (software, panic, watchdog, deep
+    sleep, USB, JTAG, CPU lockup);
+  - the record's checksum is valid;
+  - the RTC timer has not restarted;
+  - wall and RTC progress agree within 2 s + 2 %.
+
+  The system worker aligns the RTC boot time with the running clock every
+  5 s (`esp_sync_timekeeping_timers`), so time read back after a reset matches
+  the time before it.
+- **Power loss.** Power-on, brownout, power-glitch, external-pin and unknown
+  resets invalidate time until the next trusted sync. NVS never supplies time.
+- **Accuracy (assumption, pending measurement).** The 1.75C has no 32 kHz
+  crystal, so the RTC slow clock is the calibrated internal RC oscillator
+  (`CONFIG_RTC_CLK_SRC_INT_RC`). Drift across light sleep and resets is not
+  yet measured.
+
+**Pending device tests (1.75C), each with an acceptance criterion:**
+
+- *Sync and readback:* `roundie_time.py --port P sync`, then `verify`, within
+  3 s of the host.
+- *Software reset:* `roundie_time.py --port P verify --restart` advances
+  consistently with elapsed time (±2 s).
+- *Power loss:* after unplugging USB with no battery, `status` shows
+  `System UTC: unavailable`, and the watch face shows no time until `sync`.
+- *Light sleep:* `verify` within 3 s of the host after 1 h with periodic light
+  sleep. Record the drift; this checks the 2 % allowance.
+
 ## Linux utility
 
 Python 3 and pyserial are required. On CachyOS/Arch:
