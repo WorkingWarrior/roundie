@@ -27,8 +27,15 @@ follow AGENTS.md: **fact**, **proposal**, **assumption**, **experiment**.
   a scratch project: version **1.6.2** with the ES8311 driver, the I²C control
   interface on an existing `i2c_master_bus_handle_t` and the I²S data interface
   built without warnings (compilation only, not a hardware result).
-- **One I²C master:** the codec shares the board's managed bus
-  (`roundie_board_i2c_bus`); no second master and no legacy I²C or I²S driver.
+- **One I²C master:** the codec shares the board's managed bus; no second master
+  and no legacy I²C or I²S driver.
+- **Board boundary (2026-11-15):** the board support creates the I²S channel, the
+  codec and the amplifier control (`roundie_board_speaker_start`, an
+  `esp_codec_dev` output device; pins and addresses in the board's
+  `board_pins.h`). `roundie_audio` keeps the task, tones, the stream ring, volume
+  and the power interplay, and runs only on a board with
+  `ROUNDIE_BOARD_CAP_SPEAKER` ([board-support.md](board-support.md)). The
+  code moved unchanged; the A1–A3 results below were measured before the move.
 - **Playback only,** 16-bit stereo PCM, sample rates fixed per stream. No
   microphone, no ES7210, no recording.
 - **A system audio task** feeds the I²S DMA; applications never own a task or the

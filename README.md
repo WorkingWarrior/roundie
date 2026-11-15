@@ -54,6 +54,7 @@ The historical bring-up updater rejects the physical REP table.
 - [Local USB OTA, confirmation, rollback and pending physical gates](docs/ota.md)
 - [Physical Flash migration and provisioning](docs/flash-migration.md)
 - [Hardware audit](docs/hardware-audit.md)
+- [Board support boundary and adding a board](docs/board-support.md)
 - [Bring-up evidence and remaining Milestone 1 checks](docs/bringup.md)
 - [Physically verified ROM recovery route](docs/rom-recovery.md)
 - [BootGuard, native fault and watchdog tests](docs/boot-guard.md)

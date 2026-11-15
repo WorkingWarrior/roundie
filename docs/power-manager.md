@@ -30,7 +30,7 @@ is seen, as after a BOOT wake.
 **Screen on after screen off (2026-11-04).** On the unit the panel stayed black
 after a screen-off timeout when only DISPON was sent, as after light sleep. Turning the
 screen on now re-initialises the ST77916 once no transfer is in flight, then
-repaints (`roundie_board_display_reinit`); the cause is not identified. The
+repaints (`roundie_board_display_restore`, board support); the cause is not identified. The
 2026-11-03 notes below that call screen on/off verified rested on counters, not on
 seeing the panel.
 
@@ -176,7 +176,7 @@ meant the backlight only.
 
 **Architectural decision (a fix for an unconfirmed cause):** after a wake that
 turns the screen on (touch or BOOT), the GUI task resets and initialises the
-ST77916 again (`roundie_board_display_reinit`: reset, init table, DISPON),
+ST77916 again (`roundie_board_display_restore`; on the 1.85B: reset, init table, DISPON),
 turns the backlight on and invalidates the active screen. A timer-only wake
 keeps the screen off and does not do it.
 
