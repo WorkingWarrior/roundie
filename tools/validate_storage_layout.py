@@ -11,6 +11,7 @@ from flash_bringup import BACKUP_SHA256, check_legacy_build, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 FLASH_SIZE = 0x1000000
+BOARD_FLASH_SIZES = ("16MB", "32MB")
 EXPECTED = [
     ("nvs", 1, 2, 0x9000, 0x4000),
     ("otadata", 1, 0, 0xD000, 0x2000),
@@ -76,8 +77,12 @@ def validate_build(build, generator):
     csv = generator.PartitionTable.from_csv((ROOT / "partitions/rep.csv").read_text())
     require(csv.to_binary() == table.to_binary(), "CSV/binary partition mismatch")
     config = json.loads((build / "config/sdkconfig.json").read_text())
+    # REP v1 occupies the first 16 MiB. A larger chip (the AMOLED 1.75C has
+    # 32 MiB) keeps the same layout; the rest stays unallocated.
+    require(config.get("ESPTOOLPY_FLASHSIZE") in BOARD_FLASH_SIZES,
+            "config mismatch: ESPTOOLPY_FLASHSIZE")
     for key, value in {
-        "IDF_TARGET": "esp32s3", "ESPTOOLPY_FLASHSIZE": "16MB",
+        "IDF_TARGET": "esp32s3",
         "PARTITION_TABLE_OFFSET": 0x8000,
         "PARTITION_TABLE_CUSTOM": True,
         "PARTITION_TABLE_CUSTOM_FILENAME": "partitions/rep.csv",
@@ -102,7 +107,8 @@ def validate_build(build, generator):
             "initial OTA metadata must contain exactly two erased sectors")
     app = (build / "roundie_rep.bin").read_bytes()
     validate_app(app)
-    print(f"REP v1: 16 MiB, no overlap, no unused tail; app={len(app)} bytes")
+    print(f"REP v1: 16 MiB, no overlap, no unused tail in the layout; "
+          f"chip {config['ESPTOOLPY_FLASHSIZE']}; app={len(app)} bytes")
     for name, kind, subtype, offset, size in EXPECTED:
         print(f"  {name:10s} type={kind:#x}/{subtype:#x} offset={offset:#08x} size={size:#08x}")
         if kind == 0:

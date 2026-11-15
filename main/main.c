@@ -1271,8 +1271,8 @@ void app_main(void)
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 8192 &&
                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= 131072;
             bool mode_allows_confirmation = roundie_recovery_confirmation_allowed(startup_ota.running.state);
-            roundie_ota_gui_health(mode_allows_confirmation && sensor_task != NULL && flash_bytes == 0x1000000 &&
-                psram_bytes == 0x800000 && memory_ok && !state.display_fault &&
+            roundie_ota_gui_health(mode_allows_confirmation && sensor_task != NULL && flash_bytes == ROUNDIE_BOARD_FLASH_BYTES &&
+                psram_bytes == ROUNDIE_BOARD_PSRAM_BYTES && memory_ok && !state.display_fault &&
                 state.transfer_errors == 0 && state.completed_transfers > 0);
             health_sent = true;
         }

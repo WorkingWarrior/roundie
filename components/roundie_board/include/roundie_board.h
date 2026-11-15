@@ -16,6 +16,8 @@
  *   ROUNDIE_BOARD_DISPLAY_WIDTH/HEIGHT  panel pixels
  *   ROUNDIE_BOARD_DISPLAY_STRIP_LINES   rows per draw, the bus transfer limit
  *   ROUNDIE_BOARD_DISPLAY_SWAP_RGB565   1 when the panel takes RGB565 MSB first
+ *   ROUNDIE_BOARD_FLASH_BYTES           fitted Flash size, checked by the OTA self-test
+ *   ROUNDIE_BOARD_PSRAM_BYTES           fitted PSRAM size, checked by the OTA self-test
  * Every function below exists on every board; a missing device is reported at
  * run time (ESP_ERR_NOT_FOUND, ESP_ERR_NOT_SUPPORTED, ROUNDIE_SENSOR_*). */
 

@@ -168,6 +168,17 @@ class LayoutTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "config mismatch"):
                     self.validate()
 
+    def test_board_flash_size(self):
+        config_path = self.build / "config/sdkconfig.json"
+        original = json.loads(config_path.read_text())
+        config_path.write_text(json.dumps({**original, "ESPTOOLPY_FLASHSIZE": "32MB"}))
+        self.validate()
+        for bad in ("8MB", "4MB", None):
+            with self.subTest(size=bad):
+                config_path.write_text(json.dumps({**original, "ESPTOOLPY_FLASHSIZE": bad}))
+                with self.assertRaisesRegex(ValueError, "ESPTOOLPY_FLASHSIZE"):
+                    self.validate()
+
     def test_manifest_change_and_bootloader_overflow(self):
         path = self.build / "flasher_args.json"
         original = path.read_text()

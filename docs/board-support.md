@@ -53,6 +53,8 @@ Each board lives in `components/roundie_board/boards/<name>/`:
 - `ROUNDIE_BOARD_DISPLAY_WIDTH`, `ROUNDIE_BOARD_DISPLAY_HEIGHT`
 - `ROUNDIE_BOARD_DISPLAY_STRIP_LINES` (rows per draw, the bus transfer limit)
 - `ROUNDIE_BOARD_DISPLAY_SWAP_RGB565` (1 when the panel takes RGB565 MSB first)
+- `ROUNDIE_BOARD_FLASH_BYTES`, `ROUNDIE_BOARD_PSRAM_BYTES` (fitted memory; the
+  OTA self-test refuses to confirm an image on a chip that reports other sizes)
 
 ### Capabilities
 
