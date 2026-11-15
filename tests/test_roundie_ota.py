@@ -140,7 +140,7 @@ class OTATests(unittest.TestCase):
             subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
                             "-fsanitize=address,undefined", "-I" + str(ROOT / "main"),
                             "-I" + str(ROOT / "components/roundie_board/include"),
-                            str(ROOT / "components/roundie_board/sensor_codec.c"),
+                            str(ROOT / "components/roundie_board/rtc_time.c"),
                             str(ROOT / "main/time_protocol.c"), str(ROOT / "tests/test_time_protocol.c"),
                             "-o", executable], check=True)
             subprocess.run([executable], timeout=10, check=True)

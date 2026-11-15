@@ -1,12 +1,8 @@
-# Waveshare ESP32-S3 Touch-LCD-1.85B: 16 MB flash, 8 MB Octal PSRAM.
-# Common hardware settings; the default layout remains legacy bring-up.
-CONFIG_IDF_TARGET="esp32s3"
+# Board-independent settings. The target, Flash size and PSRAM come first from
+# components/roundie_board/boards/<ROUNDIE_BOARD>/sdkconfig.defaults.
+# The default layout remains legacy bring-up.
 CONFIG_PARTITION_TABLE_SINGLE_APP=y
 CONFIG_PARTITION_TABLE_OFFSET=0x8000
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
 # app_main owns the small LVGL loop and its rendering call stack.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # Subscribe the GUI/main task in code. Panic/reboot if it cannot progress

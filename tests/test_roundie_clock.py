@@ -31,13 +31,14 @@ class ClockTests(unittest.TestCase):
             for standard in ('c11', 'c23'):
                 for name, sources in (
                     ('diagnostic', ['main/clock_diagnostic.c', 'tests/test_clock_diagnostic.c']),
-                    ('codec', ['components/roundie_board/sensor_codec.c', 'tests/test_sensor_codec.c']),
-                    ('protocol', ['main/time_protocol.c', 'components/roundie_board/sensor_codec.c',
+                    ('codec', ['components/roundie_board/rtc_time.c', 'components/roundie_board/boards/waveshare_s3_touch_lcd_1_85b/sensor_codec.c',
+                               'tests/test_sensor_codec.c']),
+                    ('protocol', ['main/time_protocol.c', 'components/roundie_board/rtc_time.c',
                                   'tests/test_time_protocol.c'])):
                     output = str(Path(folder) / f'{name}-{standard}')
                     subprocess.run(['cc', f'-std={standard}', '-Wall', '-Wextra', '-Werror',
                                     '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                                    '-Imain', '-Icomponents/roundie_board',
+                                    '-Imain', '-Icomponents/roundie_board/boards/waveshare_s3_touch_lcd_1_85b',
                                     '-Icomponents/roundie_board/include', *sources, '-o', output],
                                    cwd=root, check=True, capture_output=True)
                     subprocess.run([output], check=True, capture_output=True)

@@ -20,6 +20,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lcd_init_tables.h"
+#include "board_pins.h"
 #include "lcd_config.h"
 #include "sensor_codec.h"
 #include "soc/spi_struct.h"
@@ -28,9 +29,6 @@
 #define LCD_HEIGHT ROUNDIE_LCD_HEIGHT
 #define LCD_TRANSFER_BYTES ROUNDIE_LCD_TRANSFER_BYTES
 #define I2C_TIMEOUT_MS 100
-/* Rev1.1: BOOT pulls GPIO0 low and CST816S drives INT low. Both are RTC GPIOs. */
-#define BOOT_BUTTON_GPIO GPIO_NUM_0
-#define TOUCH_INT_GPIO GPIO_NUM_4
 
 static const char *TAG = "roundie_board";
 
@@ -68,9 +66,9 @@ static esp_err_t read_register(i2c_master_dev_handle_t device, uint8_t address,
 static esp_err_t start_i2c(roundie_board_t *board, roundie_board_status_t *status)
 {
     const i2c_master_bus_config_t bus_config = {
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = GPIO_NUM_11,
-        .scl_io_num = GPIO_NUM_10,
+        .i2c_port = BOARD_I2C_PORT,
+        .sda_io_num = BOARD_I2C_SDA,
+        .scl_io_num = BOARD_I2C_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
@@ -84,17 +82,17 @@ static esp_err_t start_i2c(roundie_board_t *board, roundie_board_status_t *statu
         return error;
     }
 
-    status->touch = i2c_master_probe(board->i2c_bus, 0x15, I2C_TIMEOUT_MS);
-    status->rtc = i2c_master_probe(board->i2c_bus, 0x51, I2C_TIMEOUT_MS);
-    status->gauge = i2c_master_probe(board->i2c_bus, 0x55, I2C_TIMEOUT_MS);
+    status->touch = i2c_master_probe(board->i2c_bus, BOARD_TOUCH_ADDRESS, I2C_TIMEOUT_MS);
+    status->rtc = i2c_master_probe(board->i2c_bus, BOARD_RTC_ADDRESS, I2C_TIMEOUT_MS);
+    status->gauge = i2c_master_probe(board->i2c_bus, BOARD_GAUGE_ADDRESS, I2C_TIMEOUT_MS);
     ESP_LOGI(TAG, "I2C probe CST816S 0x15: %s", esp_err_to_name(status->touch));
     ESP_LOGI(TAG, "I2C probe PCF85063 0x51: %s", esp_err_to_name(status->rtc));
     ESP_LOGI(TAG, "I2C probe BQ27220 0x55: %s", esp_err_to_name(status->gauge));
 
     const i2c_device_config_t rtc_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = 0x51,
-        .scl_speed_hz = 100000,
+        .device_address = BOARD_RTC_ADDRESS,
+        .scl_speed_hz = BOARD_I2C_DEVICE_HZ,
     };
     esp_err_t rtc_add = i2c_master_bus_add_device(board->i2c_bus, &rtc_config,
                                                    &board->rtc);
@@ -105,8 +103,8 @@ static esp_err_t start_i2c(roundie_board_t *board, roundie_board_status_t *statu
 
     const i2c_device_config_t gauge_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = 0x55,
-        .scl_speed_hz = 100000,
+        .device_address = BOARD_GAUGE_ADDRESS,
+        .scl_speed_hz = BOARD_I2C_DEVICE_HZ,
     };
     esp_err_t gauge_add = i2c_master_bus_add_device(board->i2c_bus,
                                                      &gauge_config, &board->gauge);
@@ -126,7 +124,7 @@ static void touch_interrupt(esp_lcd_touch_handle_t touch)
 static esp_err_t start_touch(roundie_board_t *board)
 {
     esp_lcd_panel_io_i2c_config_t io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
-    io_config.scl_speed_hz = 100000;
+    io_config.scl_speed_hz = BOARD_I2C_DEVICE_HZ;
     esp_err_t error = esp_lcd_new_panel_io_i2c(board->i2c_bus, &io_config,
                                                &board->touch_io);
     if (error != ESP_OK) {
@@ -136,8 +134,8 @@ static esp_err_t start_touch(roundie_board_t *board)
     const esp_lcd_touch_config_t touch_config = {
         .x_max = LCD_WIDTH,
         .y_max = LCD_HEIGHT,
-        .rst_gpio_num = GPIO_NUM_1,
-        .int_gpio_num = TOUCH_INT_GPIO,
+        .rst_gpio_num = BOARD_TOUCH_RESET,
+        .int_gpio_num = BOARD_TOUCH_INT,
         .levels = {
             .reset = 0,
             .interrupt = 0,
@@ -173,7 +171,7 @@ cleanup:
 static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *status)
 {
     const gpio_config_t reset_config = {
-        .pin_bit_mask = 1ULL << GPIO_NUM_3,
+        .pin_bit_mask = 1ULL << BOARD_LCD_RESET,
         .mode = GPIO_MODE_OUTPUT,
     };
     esp_err_t error = gpio_config(&reset_config);
@@ -181,23 +179,23 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
         return error;
     }
     board->lcd_reset_owned = true;
-    error = gpio_set_level(GPIO_NUM_3, 0);
+    error = gpio_set_level(BOARD_LCD_RESET, 0);
     if (error != ESP_OK) {
         return error;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
-    error = gpio_set_level(GPIO_NUM_3, 1);
+    error = gpio_set_level(BOARD_LCD_RESET, 1);
     if (error != ESP_OK) {
         return error;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 
     const spi_bus_config_t bus_config = {
-        .sclk_io_num = GPIO_NUM_40,
-        .data0_io_num = GPIO_NUM_46,
-        .data1_io_num = GPIO_NUM_45,
-        .data2_io_num = GPIO_NUM_42,
-        .data3_io_num = GPIO_NUM_41,
+        .sclk_io_num = BOARD_LCD_SCLK,
+        .data0_io_num = BOARD_LCD_DATA0,
+        .data1_io_num = BOARD_LCD_DATA1,
+        .data2_io_num = BOARD_LCD_DATA2,
+        .data3_io_num = BOARD_LCD_DATA3,
         .data4_io_num = -1,
         .data5_io_num = -1,
         .data6_io_num = -1,
@@ -205,14 +203,14 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
         .max_transfer_sz = LCD_TRANSFER_BYTES + 64,
         .flags = SPICOMMON_BUSFLAG_QUAD,
     };
-    error = spi_bus_initialize(SPI2_HOST, &bus_config, SPI_DMA_CH_AUTO);
+    error = spi_bus_initialize(BOARD_LCD_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO);
     if (error != ESP_OK) {
         return error;
     }
     board->spi_started = true;
 
     esp_lcd_panel_io_spi_config_t io_config = {
-        .cs_gpio_num = GPIO_NUM_21,
+        .cs_gpio_num = BOARD_LCD_CS,
         .dc_gpio_num = -1,
         .spi_mode = 0,
         .pclk_hz = ROUNDIE_LCD_READ_HZ,
@@ -221,7 +219,7 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
         .lcd_param_bits = 8,
         .flags.quad_mode = 1,
     };
-    error = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
+    error = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BOARD_LCD_SPI_HOST,
                                      &io_config, &board->lcd_io);
     if (error != ESP_OK) {
         return error;
@@ -260,7 +258,7 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
      * minima. The read IO keeps its proven original timing. */
     io_config.cs_ena_pretrans = 1;
     io_config.cs_ena_posttrans = 1;
-    error = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
+    error = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BOARD_LCD_SPI_HOST,
                                      &io_config, &board->lcd_io);
     if (error != ESP_OK) {
         return error;
@@ -275,14 +273,14 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
         .flags.use_qspi_interface = 1,
     };
     const esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = GPIO_NUM_3,
+        .reset_gpio_num = BOARD_LCD_RESET,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
         .vendor_config = &vendor_config,
     };
     /* The early ID read needed reset GPIO before a panel existed. Transfer
      * ownership to the panel driver before it configures the same pin. */
-    error = gpio_reset_pin(GPIO_NUM_3);
+    error = gpio_reset_pin(BOARD_LCD_RESET);
     if (error != ESP_OK) {
         return error;
     }
@@ -325,7 +323,7 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
     const ledc_timer_config_t timer_config = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
-        .timer_num = LEDC_TIMER_1,
+        .timer_num = BOARD_BACKLIGHT_TIMER,
         .freq_hz = 5000,
         .clk_cfg = LEDC_AUTO_CLK,
     };
@@ -334,10 +332,10 @@ static esp_err_t start_lcd(roundie_board_t *board, roundie_board_status_t *statu
         return error;
     }
     const ledc_channel_config_t channel_config = {
-        .gpio_num = GPIO_NUM_5,
+        .gpio_num = BOARD_BACKLIGHT,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
-        .timer_sel = LEDC_TIMER_1,
+        .channel = BOARD_BACKLIGHT_CHANNEL,
+        .timer_sel = BOARD_BACKLIGHT_TIMER,
         .duty = 0,
         .hpoint = 0,
     };
@@ -376,7 +374,7 @@ static esp_err_t start_board(roundie_board_t **out_board,
         ESP_LOGI(TAG, "CST816S driver: %s", esp_err_to_name(status->touch));
         /* Input only, never driven: GPIO0 stays the ROM Download strap. */
         const gpio_config_t button_config = {
-            .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
+            .pin_bit_mask = 1ULL << BOARD_BOOT_BUTTON,
             .mode = GPIO_MODE_INPUT,
             .pull_up_en = GPIO_PULLUP_ENABLE,
             .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -418,8 +416,8 @@ void roundie_board_stop(roundie_board_t *board)
     }
     if (board->backlight_started) {
         log_cleanup_error("backlight PWM",
-                          ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0));
-        log_cleanup_error("backlight GPIO", gpio_reset_pin(GPIO_NUM_5));
+                          ledc_stop(LEDC_LOW_SPEED_MODE, BOARD_BACKLIGHT_CHANNEL, 0));
+        log_cleanup_error("backlight GPIO", gpio_reset_pin(BOARD_BACKLIGHT));
     }
     if (board->panel != NULL) {
         log_cleanup_error("LCD panel", esp_lcd_panel_del(board->panel));
@@ -428,10 +426,10 @@ void roundie_board_stop(roundie_board_t *board)
         log_cleanup_error("LCD IO", esp_lcd_panel_io_del(board->lcd_io));
     }
     if (board->spi_started) {
-        log_cleanup_error("LCD SPI bus", spi_bus_free(SPI2_HOST));
+        log_cleanup_error("LCD SPI bus", spi_bus_free(BOARD_LCD_SPI_HOST));
     }
     if (board->lcd_reset_owned) {
-        log_cleanup_error("LCD reset GPIO", gpio_reset_pin(GPIO_NUM_3));
+        log_cleanup_error("LCD reset GPIO", gpio_reset_pin(BOARD_LCD_RESET));
     }
     if (board->touch != NULL) {
         log_cleanup_error("touch", esp_lcd_touch_del(board->touch));
@@ -507,11 +505,11 @@ esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent)
         return ESP_ERR_INVALID_ARG;
     }
     uint32_t duty = 1023U * percent / 100U;
-    esp_err_t error = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+    esp_err_t error = ledc_set_duty(LEDC_LOW_SPEED_MODE, BOARD_BACKLIGHT_CHANNEL, duty);
     if (error != ESP_OK) {
         return error;
     }
-    return ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    return ledc_update_duty(LEDC_LOW_SPEED_MODE, BOARD_BACKLIGHT_CHANNEL);
 }
 
 esp_err_t roundie_board_display_reinit(roundie_board_t *board)
@@ -544,7 +542,7 @@ bool roundie_board_boot_pressed(roundie_board_t *board)
     if (board == NULL || !board->boot_button_ready) {
         return false;
     }
-    return gpio_get_level(BOOT_BUTTON_GPIO) == 0;
+    return gpio_get_level(BOARD_BOOT_BUTTON) == 0;
 }
 
 bool roundie_board_wake_source_active(roundie_board_t *board)
@@ -552,7 +550,7 @@ bool roundie_board_wake_source_active(roundie_board_t *board)
     if (board == NULL) {
         return false;
     }
-    bool touch_low = board->touch != NULL && gpio_get_level(TOUCH_INT_GPIO) == 0;
+    bool touch_low = board->touch != NULL && gpio_get_level(BOARD_TOUCH_INT) == 0;
     return touch_low || roundie_board_boot_pressed(board);
 }
 
@@ -569,13 +567,13 @@ esp_err_t roundie_board_wake_arm(roundie_board_t *board)
     if (board->touch != NULL) {
         /* Level wake replaces the edge type; keep the CPU interrupt off so a
          * held touch cannot retrigger it until roundie_board_wake_disarm(). */
-        error = gpio_intr_disable(TOUCH_INT_GPIO);
+        error = gpio_intr_disable(BOARD_TOUCH_INT);
         if (error == ESP_OK) {
-            error = gpio_wakeup_enable(TOUCH_INT_GPIO, GPIO_INTR_LOW_LEVEL);
+            error = gpio_wakeup_enable(BOARD_TOUCH_INT, GPIO_INTR_LOW_LEVEL);
         }
     }
     if (error == ESP_OK && board->boot_button_ready) {
-        error = gpio_wakeup_enable(BOOT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+        error = gpio_wakeup_enable(BOARD_BOOT_BUTTON, GPIO_INTR_LOW_LEVEL);
     }
     if (error == ESP_OK) {
         error = esp_sleep_enable_gpio_wakeup();
@@ -599,19 +597,19 @@ void roundie_board_wake_disarm(roundie_board_t *board)
     log_cleanup_error("GPIO wake source",
                       esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO));
     if (board->boot_button_ready) {
-        log_cleanup_error("BOOT wake", gpio_wakeup_disable(BOOT_BUTTON_GPIO));
+        log_cleanup_error("BOOT wake", gpio_wakeup_disable(BOARD_BOOT_BUTTON));
         log_cleanup_error("BOOT interrupt type",
-                          gpio_set_intr_type(BOOT_BUTTON_GPIO, GPIO_INTR_DISABLE));
+                          gpio_set_intr_type(BOARD_BOOT_BUTTON, GPIO_INTR_DISABLE));
     }
     if (board->touch != NULL) {
         /* Sample before restoring: low means CST816S is reporting a touch
          * and answers I2C. A read after a BOOT or timer wake could find it
          * in auto-sleep and fail into the 5 s touch retry backoff. */
-        bool touch_low = gpio_get_level(TOUCH_INT_GPIO) == 0;
-        log_cleanup_error("touch wake", gpio_wakeup_disable(TOUCH_INT_GPIO));
+        bool touch_low = gpio_get_level(BOARD_TOUCH_INT) == 0;
+        log_cleanup_error("touch wake", gpio_wakeup_disable(BOARD_TOUCH_INT));
         log_cleanup_error("touch interrupt type",
-                          gpio_set_intr_type(TOUCH_INT_GPIO, GPIO_INTR_NEGEDGE));
-        log_cleanup_error("touch interrupt", gpio_intr_enable(TOUCH_INT_GPIO));
+                          gpio_set_intr_type(BOARD_TOUCH_INT, GPIO_INTR_NEGEDGE));
+        log_cleanup_error("touch interrupt", gpio_intr_enable(BOARD_TOUCH_INT));
         /* The waking edge happened while the interrupt was off. */
         if (touch_low) {
             board->touch_irq_pending = true;
@@ -667,7 +665,7 @@ void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample
         }
     }
     sample->error = error;
-    sample->state = sensor_error(board, 0x51, error);
+    sample->state = sensor_error(board, BOARD_RTC_ADDRESS, error);
 }
 
 esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
@@ -726,7 +724,7 @@ static void sample_error(roundie_board_t *board, roundie_battery_sample_t *sampl
 {
     if (error != ESP_OK && sample->error == ESP_OK) {
         sample->error = error;
-        sample->state = sensor_error(board, 0x55, error);
+        sample->state = sensor_error(board, BOARD_GAUGE_ADDRESS, error);
     }
 }
 
@@ -746,7 +744,7 @@ void roundie_board_battery_read(roundie_board_t *board,
     esp_err_t error = gauge_read_word(board, 0x0a, &sample->battery_flags);
     if (error != ESP_OK) {
         sample->error = error;
-        sample->state = sensor_error(board, 0x55, error);
+        sample->state = sensor_error(board, BOARD_GAUGE_ADDRESS, error);
         return;
     }
     sample->battery_present = (sample->battery_flags & 0x0008) != 0;
@@ -758,7 +756,7 @@ void roundie_board_battery_read(roundie_board_t *board,
     error = gauge_read_word(board, 0x3a, &sample->operation_flags);
     if (error != ESP_OK) {
         sample->error = error;
-        sample->state = sensor_error(board, 0x55, error);
+        sample->state = sensor_error(board, BOARD_GAUGE_ADDRESS, error);
         return;
     }
     sample->initialized = (sample->operation_flags & 0x0020) != 0 &&

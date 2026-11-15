@@ -220,13 +220,14 @@ Reproduce host checks (outputs under `/tmp`, no serial device needed):
 ```sh
 for STANDARD in c11 c23; do
     cc -std="$STANDARD" -Wall -Wextra -Werror \
-      -Icomponents/roundie_board/include -Icomponents/roundie_board \
-      components/roundie_board/sensor_codec.c tests/test_sensor_codec.c \
+      -Icomponents/roundie_board/include -Icomponents/roundie_board/boards/waveshare_s3_touch_lcd_1_85b \
+      components/roundie_board/rtc_time.c components/roundie_board/boards/waveshare_s3_touch_lcd_1_85b/sensor_codec.c \
+      tests/test_sensor_codec.c \
       -o /tmp/roundie-sensor-tests
     /tmp/roundie-sensor-tests
     cc -std="$STANDARD" -Wall -Wextra -Werror -Imain \
-      -Icomponents/roundie_board/include -Icomponents/roundie_board \
-      components/roundie_board/sensor_codec.c main/time_protocol.c \
+      -Icomponents/roundie_board/include \
+      components/roundie_board/rtc_time.c main/time_protocol.c \
       tests/test_time_protocol.c -o /tmp/roundie-time-protocol-tests
     /tmp/roundie-time-protocol-tests
 done

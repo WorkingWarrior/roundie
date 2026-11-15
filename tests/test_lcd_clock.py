@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+BOARD = ROOT / 'components/roundie_board/boards/waveshare_s3_touch_lcd_1_85b'
 
 
 class LcdClockTests(unittest.TestCase):
@@ -61,12 +62,12 @@ int main(void)
             c.write_text('#include "lcd_config.h"\n' + harness)
             subprocess.run(['cc', '-std=gnu23', '-Wall', '-Wextra', '-Werror',
                             '-fsanitize=address,undefined', '-g', '-I' + temporary,
-                            '-I' + str(ROOT / 'components/roundie_board'), str(c), '-o', str(exe)],
+                            '-I' + str(BOARD), '-I' + str(BOARD / 'include'), str(c), '-o', str(exe)],
                            check=True, capture_output=True)
             subprocess.run([str(exe)], check=True, timeout=5)
 
     def test_profiles_and_io_ownership(self):
-        source = (ROOT / 'components/roundie_board/board.c').read_text()
+        source = (BOARD / 'board.c').read_text()
         block = source[source.index('    const spi_bus_config_t bus_config = {',
                                      source.index('static esp_err_t start_lcd(')):
                        source.index('    size_t command_count = 0;')]
@@ -76,6 +77,7 @@ int main(void)
 #include <stdint.h>
 #include <string.h>
 #include "lcd_config.h"
+#include "board_pins.h" /* GPIO_NUM_* below; driver/gpio.h is an empty stub */
 #define LCD_TRANSFER_BYTES ROUNDIE_LCD_TRANSFER_BYTES
 #define ESP_OK 0
 #define ESP_ERR_NOT_SUPPORTED 99
@@ -182,6 +184,8 @@ int main(void)
         with tempfile.TemporaryDirectory(prefix='roundie-clock-') as temporary:
             directory = Path(temporary)
             (directory / 'sdkconfig.h').touch()
+            (directory / 'driver').mkdir()
+            (directory / 'driver' / 'gpio.h').touch()
             c = directory / 'clock.c'
             c.write_text(harness)
             for hz in (3000000, 10000000, 20000000, 30000000, 40000000, 0, 60000000, 80000000):
@@ -189,7 +193,7 @@ int main(void)
                            '-fsanitize=address,undefined', '-g',
                            f'-DCONFIG_ROUNDIE_LCD_WRITE_HZ={hz}', '-DCONFIG_ROUNDIE_LCD_STRIP_LINES=20',
                            '-I' + temporary,
-                           '-I' + str(ROOT / 'components/roundie_board'), str(c),
+                           '-I' + str(BOARD), '-I' + str(BOARD / 'include'), str(c),
                            '-o', str(directory / 'clock')]
                 compiled = subprocess.run(command, capture_output=True)
                 if hz in (0, 60000000, 80000000):
