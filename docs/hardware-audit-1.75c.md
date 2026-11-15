@@ -3,6 +3,7 @@
 **Date:** 2026-11-15
 **Scope:** source and schematic audit for the second board implementation
 (`components/roundie_board/boards/waveshare_s3_touch_amoled_1_75c/`).
+**Status:** hardware-ready, hardware-unverified.
 **Evidence level:** desktop inspection and target builds only. No 1.75C was
 connected and nothing was flashed. Every physical behaviour below is PENDING.
 

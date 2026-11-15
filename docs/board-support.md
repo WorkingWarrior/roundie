@@ -3,8 +3,9 @@
 **Status, 2026-11-15:** two boards implemented, the Waveshare
 ESP32-S3-Touch-LCD-1.85B and ESP32-S3-Touch-AMOLED-1.75C. The boundary below is
 an architectural decision of this refactor. Host tests and target builds of
-both boards pass. The 1.85B device results are recorded at the end; the 1.75C
-has not been run on hardware ([hardware-audit-1.75c.md](hardware-audit-1.75c.md)).
+both boards pass. The 1.85B device results are recorded at the end. The 1.75C
+is **hardware-ready, hardware-unverified**: it has not been run on hardware
+([hardware-audit-1.75c.md](hardware-audit-1.75c.md)).
 
 ## Boards
 
@@ -19,7 +20,7 @@ has not been run on hardware ([hardware-audit-1.75c.md](hardware-audit-1.75c.md)
 | Speaker | ES8311 | ES8311 |
 | Wake | Touch INT, BOOT | Touch INT, BOOT |
 | Flash, PSRAM | 16 MB, 8 MB Octal | 32 MB per wiki, 16 MB per schematic; 16 MiB image header, 8 MB Octal |
-| Device-tested | Yes (results below) | No |
+| Status | Hardware-verified (results below) | Hardware-ready, hardware-unverified: builds and host tests only |
 
 ## Boundary
 
