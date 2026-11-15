@@ -1,0 +1,191 @@
+# Roundie Core and the Linux Desktop platform
+
+**Status, 2026-11-15:** dependency audit done; first milestone (M1) in progress.
+This document is the migration plan. Terms as in AGENTS.md: **verified fact**
+(source and check), **decision** (recorded here), **assumption**, **pending**.
+
+## Goal
+
+Run as much of the same production code as possible on two platforms:
+
+| Layer | Contents |
+|---|---|
+| **Roundie Core** | System logic shared by every platform: launcher, application UI bridge, power policy, package registry, time logic, display scaling, REP API semantics. Plain C plus LVGL, no FreeRTOS or ESP-IDF calls. |
+| **ESP-IDF Platform** | ESP32-S3, FreeRTOS, the board BSPs (`roundie_board`), LCD DMA, LittleFS, OTA, TinyUSB, light sleep, BootGuard persistence. |
+| **Linux Desktop Platform** | SDL3 window and input, Vulkan presentation, emulated peripherals at the `roundie_board.h` boundary, file-backed storage. |
+| **REP Runtime** | One application contract (REP v3 API table and lifecycle). The loader and executor are per CPU architecture. |
+
+The 1.85B and 1.75C firmware keep their current code paths; a Core extraction
+must leave their machine code and behaviour unchanged unless a change is
+stated and tested.
+
+## Audit (verified from the sources at `75c504e`)
+
+Method: every `#include` of every C file in `components/` and `main/` (fonts
+excluded), classified by what it pulls in, then the call sites of each
+platform symbol in the files considered for Core.
+
+### 1. Already independent of hardware and ESP-IDF
+
+| Code | Notes |
+|---|---|
+| `roundie_power/power.c` | Screen and sleep policy, pure state machine. |
+| `roundie_packages/format.c`, `manager.c` | POSIX file I/O and PSA SHA-256; integration through the seams in `roundie_packages/platform.h`; directory set by `PACKAGES_DIRECTORY`. Public header includes `esp_err.h` only for the type. |
+| `roundie_elf/validate.c` | ELF checks; portable C, but the accepted machine is Xtensa (category 4). |
+| `roundie_app_ui/render.c` | LVGL only. |
+| `roundie_audio/stream.c`, `tone.c` | Sample generation and stream logic. |
+| `roundie_ota/ota_protocol.c`, `roundie_storage_mode/import.c`, `session.c` | Protocol and session logic. |
+| `roundie_board/rtc_time.c`, 1.75C `board_logic.c`, 1.85B `sensor_codec.c` | Decoders, host-tested. |
+| `main/display_scale.c`, `clock_retention.c`, `time_protocol.c`, `clock_diagnostic.c` | Host-tested. |
+
+### 2. FreeRTOS or `esp_timer` only, portable through a small seam
+
+| Code | Platform symbols used |
+|---|---|
+| `roundie_launcher/launcher.c` | `esp_timer_get_time`, `portMUX` critical sections, `uxTaskGetStackHighWaterMark` |
+| `roundie_launcher/render.c` | `esp_timer_get_time`, `xTaskGetCurrentTaskHandle` (GUI owner check) |
+| `roundie_app_ui/bridge.c` | the above plus `vTaskDelay` in the bounded transition wait |
+
+Moved to `roundie_platform.h` in M1 (decision D1).
+
+### 3. Direct ESP-IDF use
+
+| Code | Why | Plan |
+|---|---|---|
+| `main/main.c` | Board start, LCD flush and DMA completion, GUI loop, sensors, serial commands, watchdog, OTA health | Keep; extract portable pieces (touch pipeline, GUI iteration order) as they are needed. |
+| `main/power_manager.c` | GUI half: LVGL power menu, screen policy, BOOT; worker half: `esp_light_sleep_start`, `esp_restart`, storage-mode request | Split GUI half into Core, worker half stays per platform (M2). |
+| `main/local_time.c` | NVS for the time zone, `esp_timer` | Storage seam (M3). |
+| `main/app_runtime.c` | `heap_caps`, OTA state, ELF manager | Per platform; implements the package seams. |
+| `roundie_audio/audio.c` | `esp_codec_dev`, FreeRTOS queue and task | Mixer logic to Core, output per platform (M6). |
+| `roundie_storage/storage.c`, `main/storage_*.c`, `*_diagnostics.c` | LittleFS, partitions, TinyUSB, USB Serial/JTAG | Platform. |
+| `roundie_boot_guard` | RTC no-init memory, NVS | Platform. |
+
+### 4. Specific to Xtensa, ESP32 memory or the ELF loader
+
+`roundie_elf/manager.c` (`esp_elf`, executable memory from `heap_caps`),
+`executor.c` (task watchdog), the `EM_XTENSA` check in `validate.c`, the
+package target string `esp32s3.rep1`, `main/lvgl_iram.lf`, and the example
+application builds. The REP API table semantics are shared; the loader is not.
+
+### 5. Must stay platform-specific
+
+Bootloader and partition table, `roundie_ota/ota.c`, board drivers under
+`roundie_board/boards/`, TinyUSB MSC/MTP, BootGuard persistence, light sleep
+and wake sources, ROM Download recovery, the flashing tools.
+
+### The BSP alone is not the portability boundary
+
+`roundie_board.h` hides the chips, but not the platform: it returns
+`esp_err_t`, exposes `esp_codec_dev_handle_t` for the speaker, and the code
+above it still uses FreeRTOS, `esp_timer`, NVS, LittleFS and the LCD DMA
+completion model. The desktop emulates peripherals at this boundary (stage
+4), while the platform seam covers the rest.
+
+## Dependency diagram
+
+```mermaid
+flowchart TB
+  subgraph Core["Roundie Core (portable C + LVGL)"]
+    launcher[roundie_launcher]
+    appui[roundie_app_ui]
+    packages[roundie_packages]
+    power[roundie_power policy]
+    scale[display_scale]
+    validate[roundie_elf/validate]
+  end
+  seam[roundie_platform.h<br/>time, lock, thread, sleep]
+  board[roundie_board.h<br/>BSP boundary]
+  subgraph IDF["ESP-IDF Platform"]
+    idfport[roundie_platform idf port]
+    mainc[main.c GUI loop, LCD DMA]
+    elfmgr[roundie_elf manager + executor]
+    bsp[1.85B / 1.75C boards]
+    ota[OTA, BootGuard, LittleFS, TinyUSB]
+  end
+  subgraph Linux["Linux Desktop Platform"]
+    linport[roundie_platform linux port]
+    desk[desktop main: SDL3 + Vulkan]
+    emu[emulated board]
+    files[file-backed storage]
+  end
+  launcher --> appui
+  launcher --> packages
+  launcher --> seam
+  appui --> seam
+  packages --> validate
+  seam --> idfport
+  seam --> linport
+  mainc --> launcher
+  mainc --> board
+  board --> bsp
+  launcher -. runtime status .-> elfmgr
+  desk --> launcher
+  desk --> board
+  board --> emu
+  packages --> files
+```
+
+## Decisions
+
+- **D1 Platform seam.** Core code uses `roundie_platform.h`: monotonic
+  microseconds, a short critical section, the calling thread's identity, its
+  unused stack and a yielding sleep. ESP-IDF implements it as inline wrappers
+  of the calls Core made before, so the firmware compiles to the same code;
+  this is checked by comparing disassembly. It is not a FreeRTOS replacement:
+  no queues, tasks or timers.
+- **D2 Status codes.** `esp_err_t` stays the Core status type. It is an `int`
+  used by every Core API, and renaming it would touch every component without
+  a behaviour gain. The Linux platform supplies an `esp_err.h` with the same
+  numeric values for the codes Core uses.
+- **D3 Builds.** Firmware keeps CMake and ESP-IDF. The desktop builds with
+  Meson from `meson.build` at the repository root and compiles LVGL from
+  `managed_components/lvgl__lvgl`, the same pinned 9.5.0 sources as the
+  firmware (`dependencies.lock`), so no second LVGL copy exists. Running the
+  IDF build (or `idf.py reconfigure`) once fetches it.
+- **D4 Presentation.** LVGL renders the 360 × 360 canvas in software as on the
+  board. The desktop scales it with `display_scale.c` to the physical profile
+  (360 or 466) and Vulkan presents that frame by a buffer-to-image copy and a
+  blit into the swapchain. No widget renderer in Vulkan.
+- **D5 Threads.** As on the board, one GUI thread owns LVGL (the SDL main
+  thread) and one system worker thread runs the launcher and package work.
+  The owner checks in `render.c` and `bridge.c` use `roundie_thread_self()`.
+- **D6 Applications on the desktop.** Not decided. Proposal for stage 5: the
+  same application sources and REP v3 API table, built as a separate x86-64
+  package target and loaded natively; the ESP32 package format, target string
+  `esp32s3.rep1` and ABI stay unchanged. A design note comes before any code.
+  Until then the desktop reports native execution as not supported.
+
+## Migration plan
+
+Each step ends with the four firmware builds without new warnings, the full
+host test suite, and the step's own check.
+
+| Step | Content | Check |
+|---|---|---|
+| M1a | `roundie_platform` seam; launcher and UI bridge use it | Builds, host tests, identical disassembly of the changed objects on all four configurations |
+| M1b | Meson desktop target: LVGL, Core launcher and UI bridge, package manager on files, SDL3 window, Vulkan presentation, mouse touch, 360 and 466 profiles, screenshots, headless scripted runs | Desktop run shows the launcher; scripted test with screenshots; ASan/UBSan build |
+| M2 | Power manager split: GUI half (menu, screen policy, BOOT) to Core; sleep and restart per platform; desktop BOOT/PWR keys | BOOT key opens the real power menu on the desktop; firmware unchanged in behaviour |
+| M3 | Time: local time zone storage seam; emulated RTC with loss of time; battery emulation | Clock tests; desktop fault injection |
+| M4 | Storage: file-backed application data and package install on the desktop | Package tests on the desktop store |
+| M5 | REP applications on x86-64 (D6) | Design note, then example applications running natively |
+| M6 | Audio: mixer to Core, SDL3 audio output | Tone and stream tests |
+
+Pending experiments and limits are listed per step in the step's commit and
+in the section below as they arise.
+
+## Results
+
+**M1a (verified, four configurations, `xtensa-esp32s3-elf-objdump -d` of the
+changed objects, sections compared by name):** `launcher.c` and
+`roundie_app_ui/render.c` compile to identical code. `bridge.c` and the
+launcher's `render.c` differ only in the operand order of symmetric
+`beq`/`bne` comparisons; in the legacy profile `count_objects` (unchanged
+source) also moves by two bytes of loop alignment and encodes one register
+move as `or a10, a2, a2` instead of `mov.n`. Application image sizes are
+unchanged. Builds have no warnings; host tests pass.
+
+## Pending
+
+- Firmware after M1a is checked by builds and code comparison, not on a
+  device; the code is equivalent, so no device run is planned for it. Any
+  later step that changes firmware code needs its own device check.

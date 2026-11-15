@@ -3,13 +3,11 @@
 #include <inttypes.h>
 #include <math.h>
 #include <string.h>
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "roundie_platform.h"
 #include "lvgl.h"
 #include "roundie_app_ui.h"
 
-static TaskHandle_t gui_task;
+static roundie_thread_t gui_task;
 static lv_obj_t *screen;
 static lv_obj_t *title;
 static lv_obj_t *list;
@@ -343,7 +341,7 @@ static lv_obj_t *label(lv_obj_t *parent, int width, int x, int y)
 
 static bool create(void)
 {
-    int64_t started = esp_timer_get_time();
+    int64_t started = roundie_time_us();
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     if (memory.free_size < 16384) {
@@ -499,7 +497,7 @@ static bool create(void)
     lv_obj_set_size(retry, 140, 44);
     lv_label_set_text(text, "Odśwież");
     lv_obj_center(text);
-    create_time = (uint32_t)(esp_timer_get_time() - started);
+    create_time = (uint32_t)(roundie_time_us() - started);
     return true;
 }
 
@@ -510,7 +508,7 @@ void roundie_launcher_gui_set_quick_settings(const roundie_launcher_quick_t *qui
 
 void roundie_launcher_gui_bind(void)
 {
-    gui_task = xTaskGetCurrentTaskHandle();
+    gui_task = roundie_thread_self();
     roundie_launcher_gui_report(true, false, 0, 0, 0, 0);
 }
 
@@ -528,7 +526,7 @@ static uint32_t count_objects(lv_obj_t *object)
 
 void roundie_launcher_gui_pump(bool safe)
 {
-    if (gui_task == NULL || xTaskGetCurrentTaskHandle() != gui_task) {
+    if (gui_task == ROUNDIE_THREAD_NONE || roundie_thread_self() != gui_task) {
         return;
     }
     if (safe) {
@@ -586,7 +584,7 @@ void roundie_launcher_gui_pump(bool safe)
     uint32_t latency = 0;
     if (painted_state != model.state || painted_revision != model.revision ||
         painted_change != model.changed_us || painted_generation != model.generation) {
-        int64_t apply_started = esp_timer_get_time();
+        int64_t apply_started = roundie_time_us();
         latency = model.changed_us > 0 ? elapsed_us(apply_started, model.changed_us) : 0;
         reset_input();
         painted_state = model.state;
@@ -699,7 +697,7 @@ void roundie_launcher_gui_pump(bool safe)
             lv_screen_load(screen);
         }
         if (result) {
-            int64_t applied_at = esp_timer_get_time();
+            int64_t applied_at = roundie_time_us();
             char expected[24];
             snprintf(expected, sizeof(expected), "%" PRId32, model.app_result);
             roundie_launcher_result_report(model.result_request,
@@ -709,7 +707,7 @@ void roundie_launcher_gui_pump(bool safe)
                 elapsed_us(applied_at, apply_started), model.completed_us > 0 ?
                     elapsed_us(applied_at, model.completed_us) : 0);
         }
-        int64_t applied_at = esp_timer_get_time();
+        int64_t applied_at = roundie_time_us();
         roundie_launcher_painted(model.state, model.request, model.generation, applied_at,
             elapsed_us(applied_at, model.changed_us));
     }

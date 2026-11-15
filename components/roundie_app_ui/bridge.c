@@ -1,11 +1,9 @@
 #include "ui_private.h"
 #include <string.h>
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "roundie_platform.h"
 
-static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
-static TaskHandle_t gui;
+static roundie_lock_t lock = ROUNDIE_LOCK_INITIALIZER;
+static roundie_thread_t gui;
 static roundie_ui_status_t status;
 static roundie_ui_event_sink_t event_sink;
 static uint32_t handle_serial;
@@ -234,7 +232,7 @@ static bool enqueue(roundie_ui_command_t *command)
     if (count == ROUNDIE_UI_QUEUE_CAPACITY || status.submitted == UINT32_MAX) {
         return false;
     }
-    command->posted_us = esp_timer_get_time();
+    command->posted_us = roundie_time_us();
     commands[(head + count) % ROUNDIE_UI_QUEUE_CAPACITY] = *command;
     count++;
     status.submitted++;
@@ -245,7 +243,7 @@ static bool enqueue(roundie_ui_command_t *command)
 
 bool roundie_ui_open(uint32_t generation, roundie_ui_event_sink_t sink)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool valid = gui != NULL && generation != 0 && status.generation == 0;
     if (valid) {
         uint32_t flushes = status.flushes;
@@ -261,13 +259,13 @@ bool roundie_ui_open(uint32_t generation, roundie_ui_event_sink_t sink)
         completed = 0;
         transition = 0;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return valid;
 }
 
 uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *request)
 {
-    int64_t started = esp_timer_get_time();
+    int64_t started = roundie_time_us();
     const rep_ui_widget_t *widget = &request->base;
     uint32_t items = 0;
     bool round = widget->version == 2;
@@ -279,7 +277,7 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
         widget->height > 0 && widget->height <= ROUNDIE_UI_HEIGHT - widget->y &&
         (widget->type != REP_UI_BUTTON || (widget->width >= 44 && widget->height >= 44)) &&
         text_valid(widget->text, widget->text_length);
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool root = widget->type == REP_UI_VIEW;
     bool parent = root ? widget->parent == 0 && status.view == 0 &&
         widget->x == 0 && widget->y == 0 && widget->width == ROUNDIE_UI_WIDTH && widget->height == ROUNDIE_UI_HEIGHT :
@@ -339,14 +337,14 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
     if (result == 0) {
         status.rejected++;
     }
-    maximum(&status.enqueue_max_us, (uint32_t)(esp_timer_get_time() - started));
-    portEXIT_CRITICAL(&lock);
+    maximum(&status.enqueue_max_us, (uint32_t)(roundie_time_us() - started));
+    roundie_unlock(&lock);
     return result;
 }
 
 int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
 {
-    int64_t started = esp_timer_get_time();
+    int64_t started = roundie_time_us();
     bool format = update->version == 1 && update->struct_size == sizeof(*update) &&
         (update->property == REP_UI_TEXT ? text_valid(update->text, update->value) :
          update->property == REP_UI_VALUE ||
@@ -354,7 +352,7 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
          ((update->property == REP_UI_VISIBLE || update->property == REP_UI_ENABLED) && update->value <= 1));
     uint32_t fields = update->property == REP_UI_TEXT ? roundie_ui_text_fields(update->text, update->value) : 0;
     int32_t value = (int32_t)update->value;
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     int index = find(update->widget);
     bool valid = format && admission(generation) && index >= 0;
     if (valid && update->property != REP_UI_COLOR) {
@@ -401,23 +399,23 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
     if (!valid) {
         status.rejected++;
     }
-    maximum(&status.enqueue_max_us, (uint32_t)(esp_timer_get_time() - started));
-    portEXIT_CRITICAL(&lock);
+    maximum(&status.enqueue_max_us, (uint32_t)(roundie_time_us() - started));
+    roundie_unlock(&lock);
     return valid ? 0 : -1;
 }
 
 void roundie_ui_close_admission(uint32_t generation)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     if (generation == status.generation) {
         status.admitting = false;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }
 
 int32_t roundie_ui_destroy(uint32_t generation, uint32_t view)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool valid = admission(generation) && view != 0 && view == status.view;
     if (valid) {
         closed = true;
@@ -427,27 +425,27 @@ int32_t roundie_ui_destroy(uint32_t generation, uint32_t view)
     } else {
         status.rejected++;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return valid ? 0 : -1;
 }
 
 bool roundie_ui_transition(uint32_t generation, roundie_ui_transition_t operation)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     if (generation != status.generation || operation < ROUNDIE_UI_SHOW || operation > ROUNDIE_UI_DESTROY) {
-        portEXIT_CRITICAL(&lock);
+        roundie_unlock(&lock);
         return false;
     }
     if (requested == completed) {
         if (operation == ROUNDIE_UI_DESTROY && closed && status.widgets == 0) {
-            portEXIT_CRITICAL(&lock);
+            roundie_unlock(&lock);
             return true;
         }
         transition = operation;
         requested++;
     } else if (transition != operation) {
         /* Do not overtake an in-flight GUI control. Retain and retry cleanup. */
-        portEXIT_CRITICAL(&lock);
+        roundie_unlock(&lock);
         return false;
     }
     uint32_t serial = requested;
@@ -455,24 +453,24 @@ bool roundie_ui_transition(uint32_t generation, roundie_ui_transition_t operatio
     if (operation == ROUNDIE_UI_DESTROY) {
         closed = true;
     }
-    portEXIT_CRITICAL(&lock);
-    int64_t deadline = esp_timer_get_time() + 1000000;
+    roundie_unlock(&lock);
+    int64_t deadline = roundie_time_us() + 1000000;
     do {
-        portENTER_CRITICAL(&lock);
+        roundie_lock(&lock);
         bool done = completed == serial;
         bool result = transition_result;
-        portEXIT_CRITICAL(&lock);
+        roundie_unlock(&lock);
         if (done) {
             return result;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    } while (esp_timer_get_time() < deadline);
+        roundie_sleep_ms(10);
+    } while (roundie_time_us() < deadline);
     return false;
 }
 
 bool roundie_ui_retire(uint32_t generation)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool valid = generation == status.generation && closed && status.widgets == 0 &&
         count == 0 && completed == requested;
     if (valid) {
@@ -480,23 +478,23 @@ bool roundie_ui_retire(uint32_t generation)
         status.admitting = false;
         event_sink = NULL;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return valid;
 }
 
 void roundie_ui_status(roundie_ui_status_t *out)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     *out = status;
     out->pending = count;
     out->outstanding = status.acquired - status.released;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }
 
 bool roundie_ui_shadow(uint32_t generation, uint32_t widget, int32_t *committed,
                        int32_t *requested, uint32_t *pending)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     int index = find(widget);
     bool valid = generation != 0 && generation == status.generation && index >= 0 &&
         (value_type(slots[index].type) || slots[index].type == REP_UI_DIALOG);
@@ -505,7 +503,7 @@ bool roundie_ui_shadow(uint32_t generation, uint32_t widget, int32_t *committed,
         *requested = slots[index].requested;
         *pending = slots[index].pending != 0;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return valid;
 }
 
@@ -544,7 +542,7 @@ static bool value_valid(int index, int32_t value)
  * the dialog hides itself, so it stays valid while the widget is enabled. */
 bool roundie_ui_event_valid(uint32_t generation, uint32_t type, uint32_t widget, uint32_t payload)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool valid = false;
     if (type == REP3_EVENT_BUTTON) {
         valid = input_valid(generation, widget);
@@ -558,25 +556,25 @@ bool roundie_ui_event_valid(uint32_t generation, uint32_t type, uint32_t widget,
                 (int32_t)payload == slots[index].committed;
         }
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return valid;
 }
 
 bool roundie_ui_input(uint32_t generation, uint32_t widget, uint32_t origin)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool valid = input_valid(generation, widget) && event_sink != NULL &&
         (origin == REP3_ORIGIN_TOUCH || origin == REP3_ORIGIN_INJECTED);
     roundie_ui_event_sink_t sink = event_sink;
     if (!valid) {
         status.input_rejected++;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     if (!valid) {
         return false;
     }
-    bool accepted = sink(generation, REP3_EVENT_BUTTON, widget, origin, false, esp_timer_get_time());
-    portENTER_CRITICAL(&lock);
+    bool accepted = sink(generation, REP3_EVENT_BUTTON, widget, origin, false, roundie_time_us());
+    roundie_lock(&lock);
     if (accepted) {
         status.input_accepted++;
         status.physical += origin == REP3_ORIGIN_TOUCH;
@@ -584,13 +582,13 @@ bool roundie_ui_input(uint32_t generation, uint32_t widget, uint32_t origin)
     } else {
         status.input_dropped++;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return accepted;
 }
 
 bool roundie_ui_value_input(uint32_t generation, uint32_t widget, int32_t value, uint32_t origin)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     int index = find(widget);
     bool valid = target_valid(generation, index) && event_sink != NULL && value_valid(index, value) &&
         (origin == REP3_ORIGIN_TOUCH || origin == REP3_ORIGIN_INJECTED);
@@ -606,12 +604,12 @@ bool roundie_ui_value_input(uint32_t generation, uint32_t widget, int32_t value,
     if (!valid) {
         status.input_rejected++;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     if (!valid) {
         return false;
     }
-    bool accepted = sink(generation, REP3_EVENT_VALUE, widget, (uint32_t)value, !dialog, esp_timer_get_time());
-    portENTER_CRITICAL(&lock);
+    bool accepted = sink(generation, REP3_EVENT_VALUE, widget, (uint32_t)value, !dialog, roundie_time_us());
+    roundie_lock(&lock);
     index = find(widget);
     if (accepted) {
         status.input_accepted++;
@@ -627,13 +625,13 @@ bool roundie_ui_value_input(uint32_t generation, uint32_t widget, int32_t value,
     } else {
         status.input_dropped++;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return accepted;
 }
 
 bool roundie_ui_inject_value(uint32_t generation, uint32_t widget, int32_t value)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool valid = admission(generation) && find(widget) >= 0 && !injection.pending;
     if (valid) {
         injection.pending = true;
@@ -643,44 +641,44 @@ bool roundie_ui_inject_value(uint32_t generation, uint32_t widget, int32_t value
     } else {
         status.input_rejected++;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return valid;
 }
 
 void roundie_ui_delivered(uint32_t generation, uint32_t latency_us)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     if (generation == status.generation) {
         status.delivered++;
         maximum(&status.input_latency_max_us, latency_us);
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }
 
 void roundie_ui_gui_bind(void)
 {
-    portENTER_CRITICAL(&lock);
-    if (gui == NULL) {
-        gui = xTaskGetCurrentTaskHandle();
+    roundie_lock(&lock);
+    if (gui == ROUNDIE_THREAD_NONE) {
+        gui = roundie_thread_self();
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }
 
 static unsigned batch_limit = ROUNDIE_UI_QUEUE_CAPACITY;
 
 void roundie_ui_gui_batch(unsigned limit)
 {
-    if (gui == xTaskGetCurrentTaskHandle() && (limit == ROUNDIE_UI_BATCH || limit == ROUNDIE_UI_QUEUE_CAPACITY)) {
+    if (gui == roundie_thread_self() && (limit == ROUNDIE_UI_BATCH || limit == ROUNDIE_UI_QUEUE_CAPACITY)) {
         batch_limit = limit;
     }
 }
 
 void roundie_ui_gui_pump(void)
 {
-    if (gui == NULL || gui != xTaskGetCurrentTaskHandle()) {
+    if (gui == ROUNDIE_THREAD_NONE || gui != roundie_thread_self()) {
         return;
     }
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool inject = injection.pending;
     uint32_t inject_generation = injection.generation;
     uint32_t inject_widget = injection.widget;
@@ -694,12 +692,12 @@ void roundie_ui_gui_pump(void)
             status.input_rejected++;
         }
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     if (inject) {
         roundie_ui_render_inject(inject_generation, inject_widget, inject_value);
     }
     for (unsigned n = 0; n < batch_limit; n++) {
-        portENTER_CRITICAL(&lock);
+        roundie_lock(&lock);
         roundie_ui_transition_t control = requested != completed ? transition : 0;
         bool destroy = control == ROUNDIE_UI_DESTROY;
         bool execute_control = control != 0 && (control != ROUNDIE_UI_SHOW || count == 0);
@@ -712,8 +710,8 @@ void roundie_ui_gui_pump(void)
                 head = 0;
             }
             bool healthy = status.error == 0 && status.view != 0;
-            portEXIT_CRITICAL(&lock);
-            int64_t started = esp_timer_get_time();
+            roundie_unlock(&lock);
+            int64_t started = roundie_time_us();
             bool success = true;
             if (destroy) {
                 roundie_ui_render_destroy();
@@ -726,7 +724,7 @@ void roundie_ui_gui_pump(void)
             uint32_t pool_free;
             uint32_t objects;
             roundie_ui_render_metrics(&pool_before, &pool_free, &objects);
-            portENTER_CRITICAL(&lock);
+            roundie_lock(&lock);
             status.pool_before = pool_before;
             status.pool_free = pool_free;
             status.realized_objects = objects;
@@ -744,31 +742,31 @@ void roundie_ui_gui_pump(void)
                 status.widgets = 0;
                 status.view = 0;
                 status.button = 0;
-                status.teardown_us = (uint32_t)(esp_timer_get_time() - started);
+                status.teardown_us = (uint32_t)(roundie_time_us() - started);
             }
             transition_result = success;
             completed = serial;
-            portEXIT_CRITICAL(&lock);
+            roundie_unlock(&lock);
             break;
         }
         if (count == 0) {
-            portEXIT_CRITICAL(&lock);
+            roundie_unlock(&lock);
             break;
         }
         roundie_ui_command_t command = commands[head];
         head = (head + 1) % ROUNDIE_UI_QUEUE_CAPACITY;
         count--;
         bool valid = command.generation == status.generation && !closed && status.error == 0;
-        portEXIT_CRITICAL(&lock);
-        int64_t started = esp_timer_get_time();
+        roundie_unlock(&lock);
+        int64_t started = roundie_time_us();
         bool success = valid && roundie_ui_render(&command);
-        uint32_t elapsed = (uint32_t)(esp_timer_get_time() - started);
+        uint32_t elapsed = (uint32_t)(roundie_time_us() - started);
         uint32_t bytes = roundie_ui_render_bytes();
         uint32_t pool_before;
         uint32_t pool_free;
         uint32_t objects;
         roundie_ui_render_metrics(&pool_before, &pool_free, &objects);
-        portENTER_CRITICAL(&lock);
+        roundie_lock(&lock);
         status.pool_before = pool_before;
         status.pool_free = pool_free;
         status.realized_objects = objects;
@@ -818,14 +816,14 @@ void roundie_ui_gui_pump(void)
         maximum(command.operation == 0 ? &status.create_max_us : &status.update_max_us, elapsed);
         status.lvgl_bytes = bytes;
         maximum(&status.lvgl_peak, bytes);
-        portEXIT_CRITICAL(&lock);
+        roundie_unlock(&lock);
     }
 }
 
 void roundie_ui_display_progress(uint32_t completed_flushes, uint32_t errors)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     status.flushes = completed_flushes;
     status.flush_errors = errors;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }

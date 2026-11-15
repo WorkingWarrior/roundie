@@ -24,7 +24,7 @@ add_executable(ui_tests ../test_app_ui.c
     "${ROOT}/components/roundie_elf/validate.c"
     "${ROOT}/examples/ui_elf/ui.c")
 target_compile_options(ui_tests PRIVATE -Wall -Wextra -Werror)
-target_include_directories(ui_tests PRIVATE ../elf_mocks "${ROOT}/include"
+target_include_directories(ui_tests PRIVATE ../elf_mocks "${ROOT}/components/roundie_platform/include" "${ROOT}/components/roundie_platform/idf" "${ROOT}/include"
     "${ROOT}/components/roundie_fonts/include"
     "${ROOT}/components/roundie_launcher/include" "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include"
@@ -46,7 +46,7 @@ set_source_files_properties("${ROOT}/examples/stopwatch_elf/stopwatch.c" PROPERT
 set_source_files_properties("${ROOT}/examples/sound_elf/sound.c" PROPERTIES COMPILE_DEFINITIONS
     "rep_app_entry_v3=sound_app_entry_v3;rep_abi_metadata=sound_abi_metadata")
 target_compile_options(round_tests PRIVATE -Wall -Wextra -Werror)
-target_include_directories(round_tests PRIVATE ../elf_mocks "${ROOT}/include"
+target_include_directories(round_tests PRIVATE ../elf_mocks "${ROOT}/components/roundie_platform/include" "${ROOT}/components/roundie_platform/idf" "${ROOT}/include"
     "${ROOT}/components/roundie_fonts/include" "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include"
     "${ROOT}/components/roundie_audio/include")
 target_link_libraries(round_tests PRIVATE roundie_fonts lvgl m pthread)
@@ -56,7 +56,7 @@ add_executable(launcher_tests ../test_launcher.c
     "${ROOT}/components/roundie_launcher/render.c"
     "${ROOT}/components/roundie_packages/format.c")
 target_compile_options(launcher_tests PRIVATE -Wall -Wextra -Werror)
-target_include_directories(launcher_tests PRIVATE ../elf_mocks ../gui_mocks "${ROOT}/include" "${ROOT}/main"
+target_include_directories(launcher_tests PRIVATE ../elf_mocks "${ROOT}/components/roundie_platform/include" "${ROOT}/components/roundie_platform/idf" ../gui_mocks "${ROOT}/include" "${ROOT}/main"
     "${ROOT}/components/roundie_launcher/include"
     "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include"
