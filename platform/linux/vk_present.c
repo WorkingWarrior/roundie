@@ -505,20 +505,27 @@ bool vk_present_frame(vk_present_t *present, const uint32_t *pixels)
     if (!check(vkWaitForFences(present->device, 1, &present->done, VK_TRUE, UINT64_MAX), "wait fence")) {
         return false;
     }
-    if (present->swapchain_stale || present->swapchain == VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(present->device);
-        if (!create_swapchain(present)) {
-            return false;
+    uint32_t index = 0;
+    VkResult result = VK_ERROR_OUT_OF_DATE_KHR;
+    /* A swapchain out of date at acquire is recreated once, so the frame
+     * still reaches the window. */
+    for (int attempt = 0; attempt < 2 && result == VK_ERROR_OUT_OF_DATE_KHR; attempt++) {
+        if (present->swapchain_stale || present->swapchain == VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(present->device);
+            if (!create_swapchain(present)) {
+                return false;
+            }
+            if (present->swapchain == VK_NULL_HANDLE) {
+                return true; /* minimised */
+            }
         }
-        if (present->swapchain == VK_NULL_HANDLE) {
-            return true; /* minimised */
+        result = vkAcquireNextImageKHR(present->device, present->swapchain, UINT64_MAX, present->acquired,
+                                       VK_NULL_HANDLE, &index);
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            present->swapchain_stale = true;
         }
     }
-    uint32_t index = 0;
-    VkResult result = vkAcquireNextImageKHR(present->device, present->swapchain, UINT64_MAX, present->acquired,
-                                            VK_NULL_HANDLE, &index);
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-        present->swapchain_stale = true;
         return true;
     }
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
@@ -556,6 +563,11 @@ bool vk_present_frame(vk_present_t *present, const uint32_t *pixels)
         return true;
     }
     return check(result, "present");
+}
+
+void vk_present_resized(vk_present_t *present)
+{
+    present->swapchain_stale = true;
 }
 
 const char *vk_present_device(const vk_present_t *present)

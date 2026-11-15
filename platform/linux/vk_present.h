@@ -16,6 +16,10 @@ vk_present_t *vk_present_create(SDL_Window *window, uint32_t width, uint32_t hei
 /* Copies pixels (width * height, B8G8R8A8) and presents them. False on an
  * unrecoverable device error. A resized or minimised window is handled. */
 bool vk_present_frame(vk_present_t *present, const uint32_t *pixels);
+/* The window's pixel size changed: the next frame recreates the swapchain.
+ * Not every WSI reports a resize through OUT_OF_DATE or SUBOPTIMAL (the
+ * Gamescope WSI layer does not). */
+void vk_present_resized(vk_present_t *present);
 /* Window pixel position to panel pixel, by the layout of the last present;
  * clamped to the panel. Returns whether the position is on the panel. */
 bool vk_present_map(const vk_present_t *present, float x, float y, int32_t *panel_x, int32_t *panel_y);

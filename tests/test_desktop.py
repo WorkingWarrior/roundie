@@ -93,14 +93,18 @@ class DesktopContractTests(unittest.TestCase):
         if not configs:
             self.skipTest("no generated sdkconfig; build the firmware first")
         desktop = defines(ROOT / "platform/linux/lv_conf.h")
-        self.assertEqual(desktop["LV_FONT_DEFAULT"], "&lv_font_montserrat_14")
+        # The firmware's default font comes from the top-level CMakeLists, not Kconfig.
+        cmake = (ROOT / "CMakeLists.txt").read_text()
+        for name in ("LV_FONT_DEFAULT", "LV_FONT_CUSTOM_DECLARE"):
+            match = re.search(rf'"{name}=([^"]+)"', cmake)
+            self.assertIsNotNone(match, name)
+            self.assertEqual(desktop[name], match.group(1), name)
         for config in configs:
             firmware = {}
             for line in config.read_text().splitlines():
                 if line.startswith("CONFIG_LV_") and "=" in line:
                     name, value = line.split("=", 1)
                     firmware[name] = value
-            self.assertEqual(firmware.get("CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14"), "y", config.name)
             self.assertEqual(firmware.get("CONFIG_LV_DRAW_SW_ASM_NONE"), "y", config.name)
             for name, (kconfig, convert) in LVGL_KCONFIG.items():
                 expected = firmware[kconfig]
@@ -176,6 +180,49 @@ class DesktopRunTests(unittest.TestCase):
         result, _ = self.run_desktop("1.85b", script, install=False)
         self.assertEqual(result.returncode, 1)
         self.assertIn("timed out", result.stderr)
+
+    def test_window_in_gamescope(self):
+        """Vulkan presentation, mouse, keys and resizing through a real
+        compositor: gamescope's headless backend is a virtual monitor."""
+        tools = [tool for tool in ("gamescope", "gamescopectl", "xdotool") if shutil.which(tool) is None]
+        if tools:
+            self.skipTest("missing " + ", ".join(tools))
+        directory = Path(tempfile.mkdtemp(dir=self.work))
+        # The application checks every transition; the driver only clicks.
+        (directory / "script.txt").write_text(
+            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait-nav RESULT 15000\nwait 500\nstatus\nquit\n")
+        installs = " ".join(f"--install {package}" for package in self.packages)
+        click = "xdotool mousemove --sync {} {}; sleep 0.2; xdotool mousedown 1; sleep 0.15; xdotool mouseup 1"
+        (directory / "drive.sh").write_text(f"""#!/bin/bash
+cd {directory}
+{self.binary} --board 1.75c --zoom 2 --data {directory}/data {installs} --script script.txt > app.log 2>&1 &
+app=$!
+sleep 4
+xdotool key b
+window=$(xdotool getactivewindow)
+xdotool windowsize --sync "$window" 700 500
+sleep 1.5
+gamescopectl screenshot {directory}/resized.png
+sleep 1
+{click.format(350, 399)}
+sleep 2
+{click.format(350, 153)}
+wait $app
+echo "exit $?" >> app.log
+""")
+        (directory / "drive.sh").chmod(0o755)
+        env = dict(os.environ, UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
+                   ASAN_OPTIONS="detect_leaks=0")  # the graphics stack leaks on unload
+        subprocess.run(["gamescope", "--backend", "headless", "-W", "932", "-H", "932", "--",
+                        str(directory / "drive.sh")], capture_output=True, timeout=90, env=env)
+        log = (directory / "app.log").read_text()
+        self.assertIn("exit 0", log, log)
+        self.assertIn("launcher state=RESULT", log)
+        self.assertIn("request=2", log)  # the second launch came from the mouse
+        self.assertIn("boot pressed", log)
+        self.assertNotIn("runtime error", log)
+        self.assertGreaterEqual(log.count("Creating swapchain"), 2, "resize did not recreate the swapchain")
+        self.assertEqual(png_size(directory / "resized.png"), (700, 500))  # the resized window
 
     def test_empty_registry_lists_no_packages(self):
         script = "wait-nav LIST 5000\nscreenshot empty.png\n"

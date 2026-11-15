@@ -21,7 +21,10 @@
 #define LV_USE_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
 
 #define LV_FONT_MONTSERRAT_14 1
-#define LV_FONT_DEFAULT &lv_font_montserrat_14
+/* Google Sans Flex Medium with Polish letters, as the firmware's top-level
+ * CMakeLists.txt sets it (LVGL's Kconfig cannot name a custom default). */
+#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(roundie_font_14)
+#define LV_FONT_DEFAULT &roundie_font_14
 #define LV_USE_FLEX 1
 #define LV_USE_GRID 1
 

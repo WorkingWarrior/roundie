@@ -584,7 +584,9 @@ static void prepare_data(const char *directory)
     }
 }
 
-static void handle_event(const SDL_Event *event, vk_present_t *present, SDL_Window *window)
+/* Handles one SDL event; returns whether the window needs the last frame
+ * presented again. */
+static bool handle_event(const SDL_Event *event, vk_present_t *present, SDL_Window *window)
 {
     float density = SDL_GetWindowPixelDensity(window);
     int32_t x = 0;
@@ -594,6 +596,11 @@ static void handle_event(const SDL_Event *event, vk_present_t *present, SDL_Wind
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
         atomic_store(&quit_requested, true);
         break;
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        vk_present_resized(present);
+        return true;
+    case SDL_EVENT_WINDOW_EXPOSED:
+        return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (event->button.button == SDL_BUTTON_LEFT &&
             vk_present_map(present, event->button.x * density, event->button.y * density, &x, &y)) {
@@ -627,6 +634,7 @@ static void handle_event(const SDL_Event *event, vk_present_t *present, SDL_Wind
     default:
         break;
     }
+    return false;
 }
 
 int main(int argc, char **argv)
@@ -735,11 +743,14 @@ int main(int argc, char **argv)
     }
 
     int exit_code = 0;
+    bool present_again = false;
     while (!atomic_load(&quit_requested)) {
         if (window != NULL) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
-                handle_event(&event, present, window);
+                if (handle_event(&event, present, window)) {
+                    present_again = true;
+                }
             }
         }
         if (script.count > 0) {
@@ -753,7 +764,8 @@ int main(int argc, char **argv)
         roundie_ui_gui_pump();
         roundie_launcher_gui_pump(false);
         uint32_t next_ms = lv_timer_handler();
-        if (gui.dirty && present != NULL) {
+        if ((gui.dirty || present_again) && present != NULL) {
+            present_again = false;
             compose();
             if (!vk_present_frame(present, gui.presented)) {
                 fprintf(stderr, "roundie-desktop: presentation failed\n");

@@ -259,22 +259,31 @@ unchanged. Builds have no warnings; host tests pass.
   in build time, ELF and image hashes and the build directory path that a
   generated file embeds through `__FILE__`. Builds have no warnings; the host
   suite passes; the storage layout validator accepts all four builds.
-- The launcher sets no font, so its text uses `LV_FONT_DEFAULT`, Montserrat 14
-  on the firmware and on the desktop. That font covers 0x20–0x7F, 0xB0 and
-  0x2022 only (its generator options in LVGL's source), so Polish letters such
-  as `ś` and `ż` in "Odśwież" render as missing glyphs on the desktop, and by
-  the same configuration on the board (not observed on a device). The host
-  tests' `lv_conf.h` uses `roundie_font_14` as the default instead, so they do
-  not show it. Existing behaviour, not changed here.
+- Font: the firmware's default font is `roundie_font_14` (Google Sans Flex
+  Medium with Polish letters), set by the top-level `CMakeLists.txt`, not by
+  LVGL's Kconfig; `platform/linux/lv_conf.h` sets the same default and the
+  test compares it with `CMakeLists.txt`.
+- Window through a real compositor: `test_window_in_gamescope` runs the
+  windowed desktop in gamescope's headless backend (a virtual monitor) when
+  `gamescope`, `gamescopectl` and `xdotool` are installed. The Gamescope WSI
+  layer accepts the B8G8R8A8_UNORM sRGB swapchain; xdotool mouse clicks
+  through Xwayland reach the launcher (Back, then a package launch), the B key
+  reaches the emulated BOOT button, and resizing the window to 700 × 500
+  recreates the swapchain, centres the panel at zoom 1 and maps clicks to the
+  new layout. Compositor screenshots (`gamescopectl screenshot`) show the
+  same image as the headless screenshots, 2x nearest-neighbour with the round
+  mask. The Gamescope WSI does not report a resize through OUT_OF_DATE or
+  SUBOPTIMAL, so the desktop recreates the swapchain on SDL's pixel size
+  event and presents the last frame again after a resize or expose.
 
 ## Pending
 
 - Firmware after M1a is checked by builds and code comparison, not on a
   device; the code is equivalent, so no device run is planned for it. Any
   later step that changes firmware code needs its own device check.
-- M1b on the desktop is not checked by a person yet: the image in the window
-  (the scripted runs check the frame Roundie hands to Vulkan, not what the
-  compositor shows), mouse touch, resizing and the window on a HiDPI output.
+- Not checked yet: the window on the KDE Plasma Wayland session itself
+  (gamescope ran the client through Xwayland), a HiDPI output with a pixel
+  density above 1, and a mouse drag as a swipe in a window.
 - BOOT and PWR are emulated and logged, but nothing consumes them before M2:
   on the board the power manager in `main/power_manager.c` handles them.
 - Desktop applications (D6) need the design note of M5; until then every
