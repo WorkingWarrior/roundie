@@ -263,7 +263,7 @@ screenshot before.png
 key boot
 wait 300
 screenshot menu.png
-tap 180 157
+tap 180 198
 wait 300
 power
 tap 180 280
@@ -297,7 +297,7 @@ expect-nav RESULT
         self.assertNotIn("runtime error", result.stderr)
         before = (directory / "before.png").read_bytes()
         self.assertNotEqual((directory / "menu.png").read_bytes(), before)
-        # Restart is refused on the desktop and Anuluj closes the menu.
+        # USB storage mode is refused on the desktop and Anuluj closes the menu.
         self.assertIn('power state=active lit=1 sleeps=0 screen_offs=0 message="Niedostępne na komputerze"',
                       output)
         self.assertEqual((directory / "closed.png").read_bytes(), before)
@@ -1012,6 +1012,221 @@ echo "exit $?" >> app.log
         self.assertIn("binding at", result.stderr)
         self.assertIn('callbacks=0 outstanding=0 busy=0 error="loader-relocation"', result.stdout)
         self.assertIn("resources image_mappings=0", result.stdout)
+
+
+    # ---- Virtual hardware lab (M6, docs/virtual-hardware.md) ---------------------
+    # The lab's commands change the emulated peripherals while Roundie Core runs;
+    # with --virtual-time every scenario gives the same output on every run.
+
+    def run_lab(self, script, *, board="1.85b", real_time_fields=(), **options):
+        """Runs a lab script twice in virtual time and returns the first run and
+        its "hw" lines as dictionaries."""
+        runs = [self.run_desktop(board, script, virtual=True, **options) for _ in range(2)]
+        texts = []
+        for result, _ in runs:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("runtime error", result.stderr)
+            self.assertNotIn("ERROR: AddressSanitizer", result.stderr)
+            text = result.stdout
+            for field in real_time_fields:
+                text = re.sub(rf"\b{field}=\d+", f"{field}=*", text)
+            texts.append(text)
+        self.assertEqual(texts[0], texts[1])
+        result, directory = runs[0]
+        states = [dict(field.split("=", 1) for field in line.split()[1:])
+                  for line in result.stdout.splitlines() if line.startswith("hw ")]
+        return result, directory, states
+
+    def test_lab_battery_discharge_and_charge(self):
+        """A 100 mAh cell at 6 % under 600 mA runs flat in 36 s: the gauge's
+        state of charge falls, the board loses power and stays off; USB starts
+        it and charges the cell at 250 mA; unplugged, it runs on the battery."""
+        script = ("wait-nav LIST 5000\nbattery capacity 100\nbattery soc 6\nbattery load 600 10\nhw\nwait 20000\nhw\n"
+                  "wait 20000\nhw\nusb 1\nwait-nav LIST 5000\nhw\nwait 60000\nhw\nusb 0\nwait 1000\nhw\nquit\n")
+        result, _, states = self.run_lab(script, install=False)
+        summary = [(state["powered"], state["off"], state["soc"], state["current"]) for state in states]
+        self.assertEqual(summary, [("1", "none", "6", "-600"), ("1", "none", "3", "-600"), ("0", "depleted", "0", "0"),
+                                   ("1", "none", "0", "250"), ("1", "none", "4", "250"), ("1", "none", "4", "-600")])
+        # 250 mA for 60 s is 4167 uAh.
+        self.assertEqual(int(states[4]["charge_uah"]) - int(states[3]["charge_uah"]), 4167)
+        self.assertLess(int(states[1]["mv"]), int(states[1]["ocv"]))  # the voltage sags under load
+        self.assertGreater(int(states[3]["mv"]), int(states[3]["ocv"]))  # and rises while charging
+        # The firmware's sensor worker reads the falling state of charge through the gauge.
+        self.assertIn("gauge SoC 5% (accuracy unverified), flags=0x0009", result.stderr)
+        self.assertIn("roundie-desktop: power lost: depleted", result.stderr)
+        self.assertIn("roundie-desktop: the board is off (depleted)", result.stderr)
+        self.assertIn("flags=0x0008", result.stderr)  # charging: not discharging
+
+    def test_lab_screen_off_and_wake(self):
+        """The power menu's screen off and BOOT wake; a failed display
+        re-initialisation is reported and the GUI's repaint restores the panel."""
+        off_and_wake = "key boot\nwait 300\ntap 180 116\nwait-power screen_off 2000\n{shot}key boot\nwait 300\n"
+        script = ("wait-nav LIST 5000\nscreenshot on.png\n" + off_and_wake.format(shot="screenshot off.png\n") +
+                  "screenshot woke.png\ndisplay-fault restore\n" + off_and_wake.format(shot="") +
+                  "power\nscreenshot lost.png\ndisplay-fault none\n" + off_and_wake.format(shot="") +
+                  "power\nscreenshot restored.png\nquit\n")
+        result, directory, _ = self.run_lab(script)
+        reinit = re.findall(r"Display re-initialised after screen off: (\w+)", result.stderr)
+        self.assertEqual(reinit, ["ESP_OK", "ESP_ERR_TIMEOUT", "ESP_OK"])
+        self.assertEqual(result.stdout.count("power state=active lit=1"), 2)
+        shot = lambda name: (directory / name).read_bytes()
+        self.assertNotEqual(shot("off.png"), shot("on.png"))
+        for name in ("woke.png", "lost.png", "restored.png"):
+            self.assertEqual(shot(name), shot("on.png"), name)
+
+    def test_lab_rtc_failure_and_restore(self):
+        """The PCF85063 missing, then back; a power cut keeps its time on the
+        backup cell and loses it without one."""
+        script = ("wait-nav LIST 5000\nrt1 SET 1792314126\nrtc-fault absent\nwait-clock invalid 7000\nrt1 GET\n"
+                  "rtc-fault none\nrt1 SET 1792314126\nwait-clock valid 7000\nclock\npower-cut\nwait 2000\nhw\n"
+                  "power-restore\nwait-nav LIST 5000\nclock\nrtc-backup 0\npower-cut\nwait 1000\npower-restore\n"
+                  "wait-nav LIST 5000\nrt1 GET\nclock\nquit\n")
+        result, _, states = self.run_lab(script, install=False)
+        replies = [line for line in result.stdout.splitlines() if line.startswith("!RT1 ")]
+        clocks = [dict(field.split("=", 1) for field in line.split()[1:])
+                  for line in result.stdout.splitlines() if line.startswith("clock ")]
+        self.assertIn("RTC_READ state=1 os=-1 rtc=-1 wall=-1 err=261", replies[1])  # ESP_ERR_NOT_FOUND
+        self.assertIn("marked unsynchronized after RTC failure", result.stderr)
+        self.assertEqual((states[0]["powered"], states[0]["off"]), ("0", "cut"))
+        # On the backup cell the chip counted the 2 s without power.
+        self.assertEqual(clocks[1]["valid"], "1")
+        self.assertEqual(int(clocks[1]["wall"]) - int(clocks[0]["wall"]), 2)
+        # Without it the oscillator-stop flag is set and time is not trusted.
+        self.assertIn("RTC_INVALID state=3 os=1", replies[3])
+        self.assertEqual((clocks[2]["valid"], clocks[2]["wall"]), ("0", "-1"))
+
+    def test_lab_unresponsive_peripherals(self):
+        """A touch controller that times out: one log line, no input, and
+        touch works again at the firmware's retry 5 s after the failure. A gauge that times out reports an
+        I2C error at the next sample and valid data once it answers."""
+        script = ("wait-nav LIST 5000\ntouch-fault timeout\nmark\ntap 180 135\nwait 500\nexpect-nav LIST\n"
+                  "touch-fault none\nwait 4000\ntap 180 135\nwait 500\nexpect-nav LIST\nwait 1000\ntap 180 135\n"
+                  "wait-nav RESULT 5000\ngauge-fault timeout\nwait 6000\n"
+                  "gauge-fault none\nwait 6000\nquit\n")
+        result, _, _ = self.run_lab(script, packages=[self.native["hello"]])
+        self.assertEqual(result.stderr.count("Touch read failed: ESP_ERR_TIMEOUT"), 1)
+        gauge = re.findall(r"Gauge ([\w ]+), present=(\d)", result.stderr)
+        self.assertEqual(gauge, [("valid", "1"), ("I2C error", "0"), ("valid", "1")])
+
+    def test_lab_storage_faults(self):
+        """Storage: too little space refuses an application's data write, an I/O
+        error fails a launch, a missing medium refuses package work; with the
+        fault cleared the same application starts."""
+        back = "tap 180 295\nwait-nav LIST 3000\n"
+        script = ("wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nui-press 2\nwait 500\nstorage-limit 8\n" +
+                  HOME_TO_LIST + "wait-app UNLOADED 5000\nwait-nav LIST 5000\nwait 200\nstorage-limit 0\n"
+                  "storage-fault io\ntap 180 135\nwait 1000\nstatus\nscreenshot io.png\n" + back +
+                  "storage-fault absent\ntap 180 135\nwait 1000\nstatus\n" + back +
+                  "storage-fault none\ntap 180 135\nwait-app RUNNING 5000\napp\nquit\n")
+        result, directory, _ = self.run_lab(script, packages=[self.native["watch"]], native=True)
+        self.assertIn("org.roundie.watch: 2 bytes not saved: error 257 (data-storage-reserve)", result.stderr)
+        self.assertFalse((directory / "data/storage/packages/org.roundie.watch/data").exists())
+        launches = re.findall(r"launcher state=RESULT .* launch=(-?\d+)", result.stdout)
+        self.assertEqual(launches, ["-1", "259"])  # ESP_FAIL from the I/O error, ESP_ERR_INVALID_STATE
+        self.assertIn("app state=RUNNING instance=2 abi=3", result.stdout)
+
+    def test_lab_audio_faults_and_close_during_playback(self):
+        """Sound: an underrun is counted; an output device that fails mid-tune
+        releases the stream with an error; the closed application leaves
+        nothing behind and the next instance plays."""
+        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\nwait 1000\n"
+                  "audio-underrun\nwait 200\naudio\naudio-fault unavailable\nwait 200\naudio\n" + CLOSE_APP +
+                  "wait-app UNLOADED 5000\naudio-fault none\nwait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\n"
+                  "wait 300\ntap 180 224\nwait 500\naudio\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\naudio\n"
+                  "resources\nquit\n")
+        result, _, _ = self.run_lab(script, packages=[self.native["sound"]], native=True, real_time_fields=("ring", "phase"))
+        audio = re.findall(r"audio initialized=1 playing=(\d) plays=(\d+) errors=(\d+) volume=\d+ stream=(\d) "
+                           r"phase=\d ring=\d+ underruns=(\d+)", result.stdout)
+        # The counters are the device's since start.
+        self.assertEqual(audio, [("1", "0", "0", "1", "1"), ("0", "1", "1", "0", "1"), ("1", "1", "1", "1", "1"),
+                                 ("0", "2", "1", "0", "1")])
+        self.assertIn("lab: buffered audio dropped", result.stderr)
+        self.assertIn("write: output device unavailable (lab)", result.stderr)
+        self.assertIn('app state=UNLOADED instance=2 abi=3 completed=2 loader=0 result=0', result.stdout)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
+
+    def test_lab_restart_light_sleep_and_power_loss(self):
+        """The power menu's restart is a software reset of the process; light
+        sleep draws the sleep current; PWR held 2 s on battery switches the
+        board off and 1 s switches it on; with USB the latch cannot; a watchdog
+        reset restarts it."""
+        script = ("wait-nav LIST 5000\nkey boot\nwait 300\ntap 180 157\nwait-nav LIST 5000\nhw\nkey boot\nwait 300\n"
+                  "tap 180 75\nwait-power light_sleep 3000\nwait 1000\nhw\nkey boot\nwait-power active 3000\nhw\n"
+                  "key pwr 2500\nhw\nwait 100\nkey pwr 1200\nwait-nav LIST 5000\nhw\nusb 1\nkey pwr 3000\nwait 100\n"
+                  "hw\nreboot wdt\nwait-nav LIST 5000\nhw\nquit\n")
+        result, _, states = self.run_lab(script, install=False)
+        summary = [(state["powered"], state["off"], state["sleeping"], state["current"], state["cycles"])
+                   for state in states]
+        self.assertEqual(summary, [("1", "none", "0", "-120", "0"), ("1", "none", "1", "-10", "0"),
+                                   ("1", "none", "0", "-120", "0"), ("0", "latch", "0", "0", "0"),
+                                   ("1", "none", "0", "-120", "1"), ("1", "none", "0", "250", "1"),
+                                   ("1", "none", "0", "250", "1")])
+        starts = re.findall(r"roundie-desktop: (start after \w+ reset|the board is off \(\w+\)|power on)", result.stderr)
+        self.assertEqual(starts, ["start after sw reset", "the board is off (latch)", "power on",
+                                  "start after wdt reset"])
+        self.assertIn("power menu restart: planned software reset", result.stderr)
+
+    def test_hung_application_in_virtual_time(self):
+        """A callback that never returns: after a second of real time, virtual
+        time moves on without it, so the stall is reported at 5000 ms and the
+        script runs on, the same on every run."""
+        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 300\n" +
+                  CLOSE_APP + "wait 6000\nstatus\napp\nscreenshot hung.png\nquit\n")
+        result, _, _ = self.run_lab(script, packages=[self.native["hang"]], native=True)
+        self.assertIn("instance 1 has not returned for 5000 ms", result.stderr)
+        self.assertIn("app state=RUNNING instance=1 abi=2", result.stdout)
+
+    def test_lab_panel_controls(self):
+        """Each control of the panel is a lab command: clicks at frame pixels
+        give the command and its effect, and the frame shows the state."""
+        script = ("wait-nav LIST 5000\npanel-screenshot before.png\npanel-click 100 73\npanel-click 120 290\n"
+                  "panel-click 92 64\nhw\npanel-screenshot after.png\nquit\n")
+        result, directory, states = self.run_lab(script, install=False)
+        self.assertEqual(re.findall(r"panel-click (.+)", result.stdout),
+                         ["usb 1", "audio-fault unavailable", "usb 1"])
+        self.assertEqual((states[0]["usb"], states[0]["audio"], states[0]["current"]), ("1", "unavailable", "250"))
+        self.assertNotEqual((directory / "before.png").read_bytes(), (directory / "after.png").read_bytes())
+        self.assertEqual(png_size(directory / "after.png"), (360, 392))
+        # Off a control: the script stops.
+        failed, _ = self.run_desktop("1.85b", "wait-nav LIST 5000\npanel-click 5 5\nquit\n", install=False)
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("no panel control there", failed.stderr)
+
+    def test_lab_panel_window_in_gamescope(self):
+        """--lab-panel opens the panel in a second Vulkan window; a mouse click
+        on it applies the command while Roundie Core runs."""
+        if shutil.which("gamescope") is None or shutil.which("xdotool") is None:
+            self.skipTest("missing gamescope or xdotool")
+        directory = Path(tempfile.mkdtemp(dir=self.work))
+        (directory / "script.txt").write_text("wait 7000\nhw\nquit\n")
+        (directory / "drive.sh").write_text(f"""#!/bin/bash
+cd {directory}
+{self.binary} --board 1.85b --zoom 1 --lab-panel --data {directory}/data --script script.txt > app.log 2>&1 &
+app=$!
+sleep 3
+window=$(xdotool search --name 'Roundie virtual hardware' | head -1)
+xdotool windowactivate --sync $window
+sleep 0.5
+xdotool mousemove --sync 100 73
+sleep 0.2
+xdotool mousedown 1; sleep 0.15; xdotool mouseup 1
+sleep 1
+gamescopectl screenshot {directory}/panel.png
+wait $app
+echo "exit $?" >> app.log
+""")
+        (directory / "drive.sh").chmod(0o755)
+        env = dict(os.environ, UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1", ASAN_OPTIONS="detect_leaks=0",
+                   SDL_AUDIO_DRIVER="dummy")
+        subprocess.run(["gamescope", "--backend", "headless", "-W", "800", "-H", "800", "--",
+                        str(directory / "drive.sh")], capture_output=True, timeout=120, env=env)
+        log = (directory / "app.log").read_text()
+        self.assertIn("exit 0", log, log)
+        self.assertNotIn("runtime error", log)
+        self.assertIn("vulkan: swapchain 360x392, panel shown 360x392", log)
+        self.assertIn("roundie-desktop: lab panel: usb 1", log)
+        self.assertRegex(log, r"hw powered=1 off=none usb=1 .* current=250 ")
 
 
 if __name__ == "__main__":
