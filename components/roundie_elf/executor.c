@@ -2,7 +2,9 @@
 #include "esp_heap_caps.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 #include <stdatomic.h>
 
 typedef struct {

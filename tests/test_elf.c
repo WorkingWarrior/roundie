@@ -9,6 +9,7 @@
  * IDF/loader backend. No Xtensa code is executed on the host. */
 #include "../components/roundie_elf/manager.c"
 #include "../components/roundie_elf/executor.c"
+#include "../components/roundie_elf/idf/loader.c"
 
 /* rep_audio_v1 backend: roundie_audio's stream calls, mocked. The ring takes
  * up to ROUNDIE_AUDIO_RING_BYTES; tests empty it as playback would. */

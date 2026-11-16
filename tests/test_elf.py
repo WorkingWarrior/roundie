@@ -29,6 +29,8 @@ class ElfTests(unittest.TestCase):
                             "-fsanitize=address,undefined", "-pthread",
                             "-I" + str(ROOT / "tests/elf_mocks"), "-I" + str(ROOT / "include"),
                             "-I" + str(ROOT / "components/roundie_elf/include"),
+                            "-I" + str(ROOT / "components/roundie_platform/include"),
+                            "-I" + str(ROOT / "components/roundie_platform/idf"),
                             "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             "-I" + str(ROOT / "components/roundie_audio/include"),
                             str(ROOT / "tests/test_elf.c"), str(ROOT / "components/roundie_elf/validate.c"),

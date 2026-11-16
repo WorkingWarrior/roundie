@@ -3,11 +3,9 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <string.h>
-#include "esp_elf.h"
-#include "private/elf_platform.h"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_timer.h"
+#include "loader.h"
+#include "roundie_platform.h"
 #include "rep/rep_app.h"
 #include "rep/rep_app_v2.h"
 #include "rep/rep_storage_v1.h"
@@ -18,12 +16,11 @@
 #endif
 #include "roundie_app_ui.h"
 
-static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
+static roundie_lock_t lock = ROUNDIE_LOCK_INITIALIZER;
 static roundie_elf_status_t status;
 static roundie_elf_status_t snapshot;
 static atomic_bool allowed;
-static esp_elf_t image;
-static TaskHandle_t executor;
+static roundie_thread_t executor = ROUNDIE_THREAD_NONE;
 static bool callback_active;
 static bool loader_initialized;
 static bool lifecycle_initialized;
@@ -81,25 +78,12 @@ static struct {
 
 static roundie_elf_memory_t memory(void)
 {
-#if CONFIG_ELF_LOADER_LOAD_PSRAM
-    const uint32_t code_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-#elif defined(MALLOC_CAP_EXEC)
-    const uint32_t code_caps = MALLOC_CAP_EXEC;
-#else
-    const uint32_t code_caps = MALLOC_CAP_8BIT | MALLOC_CAP_32BIT;
-#endif
-    return (roundie_elf_memory_t){
-        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-        heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
-        heap_caps_get_free_size(code_caps),
-        heap_caps_get_largest_free_block(code_caps),
-    };
+    return roundie_elf_loader_memory();
 }
 
 void roundie_elf_status(roundie_elf_status_t *out)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     *out = snapshot;
     out->queue_depth = mailbox.count;
     out->events_dropped = mailbox.dropped;
@@ -111,7 +95,7 @@ void roundie_elf_status(roundie_elf_status_t *out)
     out->control_submitted = mailbox.submitted;
     out->control_completed = mailbox.completed;
     out->control_result = mailbox.result;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     roundie_ui_status_t ui;
     roundie_ui_status(&ui);
     if (out->abi_version == 3) {
@@ -123,10 +107,10 @@ void roundie_elf_status(roundie_elf_status_t *out)
 
 static void state(roundie_elf_state_t next)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     status.state = next;
     snapshot = status;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }
 
 bool roundie_elf_busy(void)
@@ -138,9 +122,9 @@ bool roundie_elf_busy(void)
 
 bool roundie_elf_prepare(void)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     if (!atomic_load(&allowed) || status.state != ROUNDIE_ELF_UNLOADED || status.instance == UINT32_MAX) {
-        portEXIT_CRITICAL(&lock);
+        roundie_unlock(&lock);
         return false;
     }
     uint32_t instance = status.instance + 1;
@@ -151,30 +135,30 @@ bool roundie_elf_prepare(void)
     status.completed = completed;
     status.state = ROUNDIE_ELF_LOADING;
     snapshot = status;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return true;
 }
 
 void roundie_elf_cancel_prepare(void)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     if (status.state == ROUNDIE_ELF_LOADING) {
         snprintf(status.error, sizeof(status.error), "executor-start-failed");
         status.state = ROUNDIE_ELF_UNLOADED;
         snapshot = status;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }
 
 void roundie_elf_set_allowed(bool value)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     atomic_store(&allowed, value);
     if (!value) {
         mailbox.admitting = false;
         mailbox.shutdown = true;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     if (!value) {
         roundie_ui_status_t ui;
         roundie_ui_status(&ui);
@@ -182,37 +166,20 @@ void roundie_elf_set_allowed(bool value)
     }
 }
 
-void roundie_elf_bind_executor(TaskHandle_t task)
+void roundie_elf_bind_executor(roundie_thread_t task)
 {
     executor = task;
 }
 
 static bool owner(uint32_t instance)
 {
-    return executor != NULL && xTaskGetCurrentTaskHandle() == executor && callback_active &&
+    return executor != ROUNDIE_THREAD_NONE && roundie_thread_self() == executor && callback_active &&
         instance == status.instance;
 }
 
 static bool loaded_range(const void *pointer, uint32_t bytes, bool code)
 {
-    uintptr_t address = (uintptr_t)pointer;
-    for (unsigned i = 0; i < ELF_SECS; i++) {
-        if ((i == ELF_SEC_TEXT) != code) {
-            continue;
-        }
-        const esp_elf_sec_t *part = &image.sec[i];
-        uintptr_t begin = part->addr;
-#if CONFIG_ELF_LOADER_CACHE_OFFSET
-        if (code) {
-            begin = elf_remap_text(&image, begin);
-        }
-#endif
-        if (part->size != 0 && address >= begin && address - begin <= part->size &&
-            bytes <= part->size - (address - begin)) {
-            return true;
-        }
-    }
-    return false;
+    return roundie_elf_loader_contains(pointer, bytes, code ? ROUNDIE_ELF_REGION_CODE : ROUNDIE_ELF_REGION_DATA);
 }
 
 static bool owned_range(const void *pointer, uint32_t bytes)
@@ -231,16 +198,8 @@ static bool owned_range(const void *pointer, uint32_t bytes)
 
 static bool writable_range(const void *pointer, uint32_t bytes)
 {
-    uintptr_t address = (uintptr_t)pointer;
-    for (unsigned i = 0; i < ELF_SECS; i++) {
-        if (i == ELF_SEC_TEXT || i == ELF_SEC_RODATA) {
-            continue;
-        }
-        const esp_elf_sec_t *part = &image.sec[i];
-        if (part->size != 0 && address >= part->addr && address - part->addr <= part->size &&
-            bytes <= part->size - (address - part->addr)) {
-            return true;
-        }
+    if (roundie_elf_loader_contains(pointer, bytes, ROUNDIE_ELF_REGION_WRITABLE)) {
+        return true;
     }
     return owned_range(pointer, bytes);
 }
@@ -350,7 +309,7 @@ static uint64_t app_monotonic(uint32_t instance)
         return 0;
     }
     status.api_calls++;
-    uint64_t milliseconds = (uint64_t)esp_timer_get_time() / 1000U;
+    uint64_t milliseconds = (uint64_t)roundie_time_us() / 1000U;
     ESP_LOGI("rep_app", "instance=%" PRIu32 " uptime_ms=%" PRIu64, instance, milliseconds);
     return milliseconds;
 }
@@ -363,7 +322,7 @@ static void *app_alloc(uint32_t instance, uint32_t bytes)
     }
     for (unsigned i = 0; i < 4; i++) {
         if (allocations[i].pointer == NULL) {
-            void *pointer = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            void *pointer = roundie_elf_loader_alloc(bytes);
             if (pointer != NULL) {
                 allocations[i].pointer = pointer;
                 allocations[i].bytes = bytes;
@@ -388,7 +347,7 @@ static int32_t app_release(uint32_t instance, void *pointer)
     }
     for (unsigned i = 0; i < 4; i++) {
         if (allocations[i].pointer == pointer && allocations[i].generation == instance) {
-            heap_caps_free(pointer);
+            roundie_elf_loader_free(pointer);
             allocations[i].pointer = NULL;
             status.alloc_bytes -= allocations[i].bytes;
             allocations[i].bytes = 0;
@@ -424,7 +383,7 @@ static uint32_t app_timer_start(uint32_t instance, uint32_t period_ms)
     }
     status.timer_handle = ++timer_serial;
     timer_period_ms = period_ms;
-    timer_due_us = esp_timer_get_time() + (int64_t)period_ms * 1000;
+    timer_due_us = roundie_time_us() + (int64_t)period_ms * 1000;
     status.resources_acquired++;
     return status.timer_handle;
 }
@@ -438,7 +397,7 @@ static int32_t app_timer_cancel(uint32_t instance, uint32_t handle)
     timer_period_ms = 0;
     timer_due_us = 0;
     status.resources_released++;
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     uint32_t kept = 0;
     for (uint32_t i = 0; i < mailbox.count; i++) {
         rep_event_v2_t event = mailbox.events[(mailbox.head + i) % ROUNDIE_ELF_EVENT_CAPACITY];
@@ -450,7 +409,7 @@ static int32_t app_timer_cancel(uint32_t instance, uint32_t handle)
         }
     }
     mailbox.count = kept;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return 0;
 }
 
@@ -685,7 +644,7 @@ static uintptr_t resolver(const char *name)
 
 static void callback_finished(int64_t started)
 {
-    uint32_t elapsed = (uint32_t)(esp_timer_get_time() - started);
+    uint32_t elapsed = (uint32_t)(roundie_time_us() - started);
     status.callbacks++;
     status.execute_us = elapsed;
     if (elapsed > status.callback_max_us) {
@@ -701,7 +660,7 @@ static void callback_finished(int64_t started)
 static int32_t invoke(rep_callback_v2_t callback)
 {
     rep_context_v2_t context = {status.abi_version, sizeof(context), status.instance, 0};
-    int64_t started = esp_timer_get_time();
+    int64_t started = roundie_time_us();
     callback_active = true;
     int32_t result = callback(&context);
     callback_finished(started);
@@ -713,18 +672,18 @@ static int32_t invoke(rep_callback_v2_t callback)
 
 static void clear_events(void)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     mailbox.admitting = false;
     mailbox.released += mailbox.count;
     mailbox.count = 0;
     mailbox.head = 0;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
 }
 
 static bool stop_lifecycle(void)
 {
     if (!lifecycle_stopped) {
-        int64_t started = esp_timer_get_time();
+        int64_t started = roundie_time_us();
         clear_events();
         if (status.timer_handle != 0) {
             status.timer_handle = 0;
@@ -745,7 +704,7 @@ static bool stop_lifecycle(void)
         }
         release_audio(); /* after stop, so the app may close its own stream there */
         lifecycle_stopped = true;
-        status.shutdown_us = (uint32_t)(esp_timer_get_time() - started);
+        status.shutdown_us = (uint32_t)(roundie_time_us() - started);
     }
     if (ui_owned && !roundie_ui_transition(status.instance, ROUNDIE_UI_DESTROY)) {
         snprintf(status.error, sizeof(status.error), "ui-teardown-pending");
@@ -762,7 +721,7 @@ static void unload(void)
     if (status.abi_version >= 2 && !stop_lifecycle()) {
         return;
     }
-    int64_t started = esp_timer_get_time();
+    int64_t started = roundie_time_us();
     state(ROUNDIE_ELF_UNLOADING);
     if (lifecycle_initialized) {
         if (invoke(lifecycle.destroy) != 0 && status.error[0] == '\0') {
@@ -782,7 +741,7 @@ static void unload(void)
     memset(&lifecycle, 0, sizeof(lifecycle));
     for (unsigned i = 0; i < 4; i++) {
         if (allocations[i].pointer != NULL) {
-            heap_caps_free(allocations[i].pointer);
+            roundie_elf_loader_free(allocations[i].pointer);
             status.resources_reclaimed++;
         }
         allocations[i].pointer = NULL;
@@ -794,22 +753,22 @@ static void unload(void)
     storage.available = false;
     release_audio(); /* ABI 1 and 2 never open one; ABI 3 released it at stop */
     if (loader_initialized) {
-        esp_elf_deinit(&image);
+        roundie_elf_loader_unload();
         loader_initialized = false;
         status.resources_released++;
     }
     /* Per-instance record and copied callback references retire after destroy. */
     status.resources_released += 2;
     status.after = memory();
-    status.unload_us = (uint32_t)(esp_timer_get_time() - started);
+    status.unload_us = (uint32_t)(roundie_time_us() - started);
     status.completed++;
-    status.completed_us = esp_timer_get_time();
+    status.completed_us = roundie_time_us();
     state(ROUNDIE_ELF_UNLOADED);
 }
 
 esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation)
 {
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     roundie_elf_state_t current = snapshot.state;
     bool valid = instance != 0 && instance == snapshot.instance && snapshot.abi_version >= 2 &&
         operation >= ROUNDIE_ELF_SUSPEND && operation <= ROUNDIE_ELF_UNLOAD &&
@@ -824,7 +783,7 @@ esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation
         mailbox.submitted++;
         mailbox.admitting = false;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     if (valid) {
         roundie_ui_close_admission(instance);
     }
@@ -839,7 +798,7 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
                                   uint32_t origin, bool coalesce, int64_t posted_us)
 {
     esp_err_t result = ESP_OK;
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     if (!atomic_load(&allowed) || !mailbox.admitting || instance != snapshot.instance ||
         snapshot.abi_version < 2 || snapshot.state != ROUNDIE_ELF_RUNNING) {
         mailbox.rejected++;
@@ -875,7 +834,7 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
             mailbox.acquired++;
         }
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     return result;
 }
 
@@ -921,20 +880,20 @@ static bool ui_input(uint32_t instance, uint32_t type, uint32_t widget, uint32_t
 
 esp_err_t roundie_elf_post(uint32_t instance, uint32_t value)
 {
-    return post_event(instance, REP2_EVENT_USER, value, esp_timer_get_time());
+    return post_event(instance, REP2_EVENT_USER, value, roundie_time_us());
 }
 
 void roundie_elf_step(int64_t now_us)
 {
-    if (executor == NULL || xTaskGetCurrentTaskHandle() != executor || callback_active) {
+    if (executor == ROUNDIE_THREAD_NONE || roundie_thread_self() != executor || callback_active) {
         return;
     }
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     bool shutdown = mailbox.shutdown || !atomic_load(&allowed);
     roundie_elf_control_t control = mailbox.control;
     mailbox.control = 0;
     uint32_t serial = mailbox.submitted;
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     int32_t result = 0;
     roundie_ui_status_t ui;
     roundie_ui_status(&ui);
@@ -954,9 +913,9 @@ void roundie_elf_step(int64_t now_us)
         stop_lifecycle();
     } else if (control == ROUNDIE_ELF_SUSPEND) {
         state(ROUNDIE_ELF_SUSPENDING);
-        int64_t started = esp_timer_get_time();
+        int64_t started = roundie_time_us();
         result = invoke(lifecycle.suspend);
-        status.suspend_us = (uint32_t)(esp_timer_get_time() - started);
+        status.suspend_us = (uint32_t)(roundie_time_us() - started);
         /* Already queued ordinary work is canceled, never replayed on resume. */
         clear_events();
         if (ui_owned && !roundie_ui_transition(status.instance, ROUNDIE_UI_HIDE)) {
@@ -965,12 +924,12 @@ void roundie_elf_step(int64_t now_us)
         state(ROUNDIE_ELF_SUSPENDED);
     } else if (control == ROUNDIE_ELF_RESUME) {
         state(ROUNDIE_ELF_RESUMING);
-        int64_t started = esp_timer_get_time();
+        int64_t started = roundie_time_us();
         result = invoke(lifecycle.resume);
         if (result == 0 && ui_owned && !roundie_ui_transition(status.instance, ROUNDIE_UI_SHOW)) {
             result = -1;
         }
-        status.resume_us = (uint32_t)(esp_timer_get_time() - started);
+        status.resume_us = (uint32_t)(roundie_time_us() - started);
         timer_due_us = now_us + (int64_t)timer_period_ms * 1000;
         state(ROUNDIE_ELF_RUNNING);
     }
@@ -984,11 +943,11 @@ void roundie_elf_step(int64_t now_us)
         if (status.error[0] != '\0') {
             result = -1;
         }
-        portENTER_CRITICAL(&lock);
+        roundie_lock(&lock);
         mailbox.result = result;
         mailbox.completed = serial;
         mailbox.admitting = atomic_load(&allowed) && status.state == ROUNDIE_ELF_RUNNING;
-        portEXIT_CRITICAL(&lock);
+        roundie_unlock(&lock);
         state(status.state);
         return;
     }
@@ -1002,7 +961,7 @@ void roundie_elf_step(int64_t now_us)
     clock_step(now_us);
     rep_event_v2_t event;
     bool dispatch = false;
-    portENTER_CRITICAL(&lock);
+    roundie_lock(&lock);
     /* Callback admission is linearized here against shutdown/control requests. */
     if (mailbox.admitting && atomic_load(&allowed) && mailbox.count != 0) {
         event = mailbox.events[mailbox.head];
@@ -1011,17 +970,17 @@ void roundie_elf_step(int64_t now_us)
         mailbox.released++;
         dispatch = true;
     }
-    portEXIT_CRITICAL(&lock);
+    roundie_unlock(&lock);
     if (dispatch) {
         bool ui_event = event.type == REP3_EVENT_BUTTON || event.type == REP3_EVENT_VALUE;
         if (ui_event && !roundie_ui_event_valid(status.instance, event.type, event.value, event.reserved)) {
-            portENTER_CRITICAL(&lock);
+            roundie_lock(&lock);
             mailbox.rejected++;
-            portEXIT_CRITICAL(&lock);
+            roundie_unlock(&lock);
             return;
         }
         rep_context_v2_t context = {status.abi_version, sizeof(context), status.instance, 0};
-        int64_t started = esp_timer_get_time();
+        int64_t started = roundie_time_us();
         uint32_t latency = (uint32_t)((uint64_t)started - event.posted_us);
         if (latency > status.latency_max_us) {
             status.latency_max_us = latency;
@@ -1051,13 +1010,13 @@ void roundie_elf_step(int64_t now_us)
 
 bool roundie_elf_execute(const uint8_t *bytes, size_t size)
 {
-    if (executor == NULL || xTaskGetCurrentTaskHandle() != executor ||
+    if (executor == ROUNDIE_THREAD_NONE || roundie_thread_self() != executor ||
         status.state != ROUNDIE_ELF_LOADING || callback_active) {
         return false;
     }
     /* Only state() publishes the executor-owned work record to readers. */
     roundie_elf_info_t info;
-    int64_t started = esp_timer_get_time();
+    int64_t started = roundie_time_us();
     status.before = memory();
     loader_initialized = false;
     lifecycle_initialized = false;
@@ -1076,43 +1035,37 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
     status.code_bytes = info.code_bytes;
     status.data_bytes = info.data_bytes;
     status.abi_version = info.abi_version;
-    if (status.before.internal_free < 49152U ||
-        status.before.psram_free < 65536U + info.code_bytes + info.data_bytes ||
-        status.before.exec_largest < info.code_bytes) {
+    if (!roundie_elf_loader_reserve(&status.before, &info)) {
         snprintf(status.error, sizeof(status.error), "executable-memory-reserve");
         goto cleanup;
     }
-    /* Permanent strict hook; never reset to upstream's broad default tables. */
-    elf_set_symbol_resolver(resolver);
-    status.loader_result = esp_elf_init(&image);
+    status.loader_result = roundie_elf_loader_init();
     if (status.loader_result != 0) {
         snprintf(status.error, sizeof(status.error), "loader-init");
         goto cleanup;
     }
     loader_initialized = true;
     status.resources_acquired++;
-    status.loader_result = esp_elf_relocate(&image, bytes);
+    status.loader_result = roundie_elf_loader_relocate(bytes, size, resolver);
     if (status.loader_result != 0) {
         snprintf(status.error, sizeof(status.error), "loader-relocation");
         goto cleanup;
     }
     status.relocated = memory();
-    ESP_LOGI("elf", "instance=%" PRIu32 " text_write=%p text_execute=%p data=%p code=%" PRIu32
-             " data_allocation=%" PRIu32 " relocations=%" PRIu32,
-             status.instance, image.ptext, (void *)image.entry, image.pdata,
-             info.code_bytes, info.data_bytes, info.relocations);
-    status.load_us = (uint32_t)(esp_timer_get_time() - started);
+    roundie_elf_loader_describe(status.instance, &info);
+    status.load_us = (uint32_t)(roundie_time_us() - started);
     state(ROUNDIE_ELF_READY);
     if (!atomic_load(&allowed)) {
         snprintf(status.error, sizeof(status.error), "system-policy");
         goto cleanup;
     }
-    started = esp_timer_get_time();
+    started = roundie_time_us();
     if (status.abi_version >= 2) {
         typedef const rep_descriptor_v2_t *(*entry_v2_t)(const rep_api_v2_t *);
         entry_v2_t entry_v2;
-        _Static_assert(sizeof(entry_v2) == sizeof(image.entry), "Loader entry pointer");
-        memcpy(&entry_v2, &image.entry, sizeof(entry_v2));
+        roundie_elf_entry_t loaded = roundie_elf_loader_entry();
+        _Static_assert(sizeof(entry_v2) == sizeof(loaded), "Loader entry pointer");
+        memcpy(&entry_v2, &loaded, sizeof(entry_v2));
         callback_active = true;
         const rep_descriptor_v2_t *descriptor;
         if (status.abi_version == 3) {
@@ -1128,7 +1081,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
             }
             typedef const rep_descriptor_v3_t *(*entry_v3_t)(const rep_api_v3_t *);
             entry_v3_t entry_v3;
-            memcpy(&entry_v3, &image.entry, sizeof(entry_v3));
+            memcpy(&entry_v3, &loaded, sizeof(entry_v3));
             const rep_descriptor_v3_t *v3 = entry_v3(&api_v3);
             callback_finished(started);
             if (((uintptr_t)v3 & 3U) != 0 || !loaded_range(v3, sizeof(*v3), false) ||
@@ -1168,9 +1121,9 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         }
         /* Destroy is required even after a failed init to release partial state. */
         lifecycle_initialized = true;
-        started = esp_timer_get_time();
+        started = roundie_time_us();
         int32_t result = invoke(lifecycle.init);
-        status.init_us = (uint32_t)(esp_timer_get_time() - started);
+        status.init_us = (uint32_t)(roundie_time_us() - started);
         if (result != 0) {
             snprintf(status.error, sizeof(status.error), "callback-init");
             goto cleanup;
@@ -1195,15 +1148,16 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         status.subscriptions = 1;
         status.resources_acquired++;
         state(ROUNDIE_ELF_RUNNING);
-        portENTER_CRITICAL(&lock);
+        roundie_lock(&lock);
         mailbox.admitting = atomic_load(&allowed) && !mailbox.shutdown && mailbox.control == 0;
-        portEXIT_CRITICAL(&lock);
+        roundie_unlock(&lock);
         return true;
     }
     typedef const rep_app_descriptor_t *(*entry_t)(const rep_api_t *);
     entry_t entry;
-    _Static_assert(sizeof(entry) == sizeof(image.entry), "Loader entry pointer representation");
-    memcpy(&entry, &image.entry, sizeof(entry));
+    roundie_elf_entry_t loaded = roundie_elf_loader_entry();
+    _Static_assert(sizeof(entry) == sizeof(loaded), "Loader entry pointer representation");
+    memcpy(&entry, &loaded, sizeof(entry));
     callback_active = true;
     const rep_app_descriptor_t *descriptor = entry(&api);
     callback_finished(started);
@@ -1221,7 +1175,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
     state(ROUNDIE_ELF_RUNNING);
     status.during = memory();
     status.executed = true;
-    started = esp_timer_get_time();
+    started = roundie_time_us();
     callback_active = true;
     status.app_result = descriptor->on_start(&context);
     callback_finished(started);
