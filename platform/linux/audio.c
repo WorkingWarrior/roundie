@@ -6,7 +6,11 @@
  * firmware's audio task, one thread owns the output: it plays a chunk whenever
  * SDL has less than LEAD_CHUNKS of them queued, which stands in for the codec's
  * blocking I2S write. Tones and the melody are firmware diagnostics and are
- * not provided here. */
+ * not provided here.
+ *
+ * Virtual hardware lab (vhw.h): an unavailable output device fails the start
+ * and every later write, as a codec or I2S failure does on the board; a
+ * requested underrun drops what the ring holds. */
 
 #include "roundie_audio.h"
 #include <pthread.h>
@@ -17,6 +21,7 @@
 #include "esp_log.h"
 #include "roundie_platform.h"
 #include "roundie_stream.h"
+#include "vhw.h"
 
 #define CHUNK_FRAMES 256U
 #define LEAD_CHUNKS 2U          /* queued in SDL before the thread waits, about 32 ms at 16 kHz */
@@ -100,6 +105,13 @@ static void stream_release(bool play_out)
     pthread_mutex_unlock(&stream_mutex);
 }
 
+static bool output_unavailable(void)
+{
+    vhw_state_t state;
+    vhw_get(&state, roundie_time_us());
+    return state.audio == VHW_AUDIO_UNAVAILABLE;
+}
+
 /* Audio thread only: decides and plays chunks until SDL holds enough or it has to wait. */
 static void stream_service(void)
 {
@@ -107,6 +119,12 @@ static void stream_service(void)
     static int16_t pcm[2U * CHUNK_FRAMES];
     const size_t chunk_bytes = (size_t)CHUNK_FRAMES * stream.channels * sizeof(int16_t);
     for (;;) {
+        if (stream.device_open && output_unavailable()) {
+            ESP_LOGE(TAG, "write: output device unavailable (lab)");
+            count_error();
+            stream_release(false);
+            return;
+        }
         pthread_mutex_lock(&stream_mutex);
         bool closing = stream.closing;
         bool drain = stream.drain;
@@ -119,12 +137,26 @@ static void stream_service(void)
         if (stream.device_open && SDL_GetAudioStreamQueued(output) >= (int)(LEAD_CHUNKS * sizeof(stereo))) {
             return; /* the "codec" is busy: come back after a poll */
         }
+        if (vhw_take_underrun()) {
+            /* The ring runs dry before this decision, as when the producer falls behind. */
+            pthread_mutex_lock(&stream_mutex);
+            roundie_ring_clear(&stream.ring);
+            pthread_mutex_unlock(&stream_mutex);
+            used = 0;
+            ESP_LOGW(TAG, "lab: buffered audio dropped");
+        }
         stream.playback.drain = closing && drain;
         roundie_playback_action_t action = roundie_playback_step(&stream.playback, used, chunk_bytes,
                                                                  roundie_time_us());
         if (action == ROUNDIE_PLAYBACK_ACTION_START) {
             SDL_AudioSpec format = {SDL_AUDIO_S16, 2, (int)stream.sample_rate};
             uint8_t volume = volume_for_master();
+            if (output_unavailable()) {
+                ESP_LOGE(TAG, "open: output device unavailable (lab)");
+                count_error();
+                stream_release(false);
+                return;
+            }
             if (!SDL_SetAudioStreamFormat(output, &format, NULL) ||
                 !SDL_SetAudioStreamGain(output, (float)volume / 100.0f) || !SDL_ResumeAudioStreamDevice(output)) {
                 ESP_LOGE(TAG, "open: %s", SDL_GetError());
@@ -195,6 +227,14 @@ esp_err_t roundie_audio_init(roundie_board_t *board)
     status.init_step = "start";
     roundie_unlock(&status_lock);
     SDL_AudioSpec format = {SDL_AUDIO_S16, 2, (int)ROUNDIE_AUDIO_SAMPLE_RATE};
+    if (output_unavailable()) {
+        ESP_LOGE(TAG, "speaker: output device unavailable (lab)");
+        roundie_lock(&status_lock);
+        status.init_error = ESP_FAIL;
+        status.init_step = "speaker (lab)";
+        roundie_unlock(&status_lock);
+        return ESP_FAIL;
+    }
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
         ESP_LOGE(TAG, "SDL audio: %s", SDL_GetError());
         roundie_lock(&status_lock);

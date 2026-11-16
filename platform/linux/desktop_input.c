@@ -53,6 +53,11 @@ void roundie_desktop_touch_swipe(roundie_desktop_input_t *input, int32_t x1, int
 
 void roundie_desktop_input_poll(roundie_desktop_input_t *input, int64_t now_us)
 {
+    for (int key = 0; key < ROUNDIE_DESKTOP_KEY_COUNT; key++) {
+        if (input->key_release_us[key] != 0 && now_us >= input->key_release_us[key]) {
+            roundie_desktop_key(input, (roundie_desktop_key_t)key, false);
+        }
+    }
     if (!input->swiping) {
         return;
     }
@@ -81,6 +86,7 @@ void roundie_desktop_touch_read(const roundie_desktop_input_t *input, bool *pres
 
 void roundie_desktop_key(roundie_desktop_input_t *input, roundie_desktop_key_t key, bool pressed)
 {
+    input->key_release_us[key] = 0;
     if (input->keys[key] == pressed) {
         return;
     }
@@ -88,7 +94,8 @@ void roundie_desktop_key(roundie_desktop_input_t *input, roundie_desktop_key_t k
     if (pressed) {
         input->key_presses[key]++;
         /* The power manager reads BOOT through the emulated board
-         * (board.c). Nothing reads PWR: the firmware has no PWR handler. */
+         * (board.c). The firmware has no PWR handler; the virtual
+         * hardware's power latch reads PWR (vhw.h). */
         fprintf(stderr, "roundie-desktop: %s pressed\n", key_names[key]);
     }
 }
@@ -102,6 +109,19 @@ bool roundie_desktop_key_name(roundie_desktop_input_t *input, const char *name, 
         }
     }
     return false;
+}
+
+bool roundie_desktop_key_hold(roundie_desktop_input_t *input, const char *name, int64_t release_us)
+{
+    if (!roundie_desktop_key_name(input, name, true)) {
+        return false;
+    }
+    for (int key = 0; key < ROUNDIE_DESKTOP_KEY_COUNT; key++) {
+        if (strcmp(name, key_names[key]) == 0) {
+            input->key_release_us[key] = release_us;
+        }
+    }
+    return true;
 }
 
 bool roundie_desktop_key_pressed(const roundie_desktop_input_t *input, roundie_desktop_key_t key)

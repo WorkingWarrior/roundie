@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "roundie_elf.h"
 
 /* Emulated timekeeping hardware of the Linux desktop (docs/roundie-core.md,
@@ -26,6 +27,7 @@ typedef enum {
     ROUNDIE_DESKTOP_RTC_RUNNING,
     ROUNDIE_DESKTOP_RTC_STOPPED, /* oscillator stopped: time frozen, OS flag set */
     ROUNDIE_DESKTOP_RTC_BUS,     /* I2C transactions time out */
+    ROUNDIE_DESKTOP_RTC_ABSENT,  /* no acknowledge: the chip is missing; it keeps its time */
 } roundie_desktop_rtc_fault_t;
 
 /* Main thread, before any other thread. zone_path holds the stored time zone
@@ -44,12 +46,23 @@ void roundie_desktop_clock_jump_wall(int64_t us);
  * (chip = true), parts per million. */
 void roundie_desktop_clock_drift(bool chip, int32_t ppm);
 void roundie_desktop_clock_rtc_fault(roundie_desktop_rtc_fault_t fault);
+roundie_desktop_rtc_fault_t roundie_desktop_clock_rtc_fault_get(void);
 
 /* Hardware effect of a reset at this moment: what the RTC domain keeps, and
  * the system time that ESP-IDF restores at startup from the boot-time register
  * and the RTC timer. The caller then reruns the firmware's startup path. */
 void roundie_desktop_clock_reset(roundie_desktop_reset_t reset);
 const char *roundie_desktop_reset_name(roundie_desktop_reset_t reset);
+
+/* Virtual hardware lab (vhw.h): the board lost its supply and the PCF85063
+ * has no backup, so it restarts from its reset value with the OS flag set. */
+void roundie_desktop_clock_chip_power_lost(void);
+/* Restart of the desktop process: "clock.KEY VALUE" lines of the timekeeping
+ * hardware, read back after roundie_desktop_clock_init(). gap_us is the time
+ * that passed in between (0 under virtual time). The caller then applies the
+ * reset with roundie_desktop_clock_reset(). */
+void roundie_desktop_clock_save(FILE *file);
+bool roundie_desktop_clock_load_line(const char *key, const char *value, int64_t gap_us);
 bool roundie_desktop_reset_parse(const char *name, roundie_desktop_reset_t *reset);
 
 /* Light sleep: ESP-IDF advances the system clock by the RTC timer's count of

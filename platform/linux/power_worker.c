@@ -3,14 +3,18 @@
  * main/power_gui.c. Light sleep is emulated: the GUI parks as on the board,
  * then the worker "sleeps" until the BOOT key or the touch panel wakes it, or
  * the sleep safety timer ends it, which keeps the screen off as a pure timer
- * wake does on the board. Restarts and USB storage mode do not exist on the
- * desktop and are refused with a message in the power menu. */
+ * wake does on the board. Restart is a planned software reset of the virtual
+ * hardware (vhw.h), which restarts the desktop process. USB storage mode and
+ * Safe Mode do not exist on the desktop and are refused with a message in the
+ * power menu. */
 
 #include <stdio.h>
 #include "clock.h"
 #include "power_manager.h"
 #include "power_shared.h"
 #include "recovery_diagnostics.h"
+#include "roundie_platform.h"
+#include "vhw.h"
 
 /* As on the board: touch INT must be high within a second after the GUI parked. */
 #define WAKE_SOURCE_WAIT_US 1000000
@@ -60,10 +64,15 @@ void roundie_power_worker_poll(int64_t now_us)
     if (board == NULL) {
         return;
     }
-    if (command != COMMAND_NONE) {
+    if (command == COMMAND_RESTART) {
+        /* main/power_manager.c first parks the home application; the
+         * desktop's process restart ends any application at once. */
+        fprintf(stderr, "roundie-desktop: power menu restart: planned software reset\n");
+        vhw_request_reset(ROUNDIE_DESKTOP_RESET_SW);
+    } else if (command != COMMAND_NONE) {
         report("Niedostępne na komputerze");
         fprintf(stderr, "roundie-desktop: power menu %s refused: not available on the desktop\n",
-                command == COMMAND_STORAGE ? "USB storage" : command == COMMAND_SAFE_MODE ? "Safe Mode" : "restart");
+                command == COMMAND_STORAGE ? "USB storage" : "Safe Mode");
     }
     if (phase == SLEEP_REQUESTED) {
         /* The desktop runtime never runs an application (D6), so no
@@ -96,6 +105,7 @@ void roundie_power_worker_poll(int64_t now_us)
         sleeping = true;
         sleep_started_us = now_us;
         roundie_desktop_clock_sleep_enter();
+        vhw_set_sleeping(true, now_us);
         fprintf(stderr, "roundie-desktop: light sleep (emulated), safety timer %u s\n", (unsigned)limit_s);
         return;
     }
@@ -106,6 +116,7 @@ void roundie_power_worker_poll(int64_t now_us)
     sleeping = false;
     int64_t slept_us = now_us - sleep_started_us;
     roundie_desktop_clock_sleep_exit();
+    vhw_set_sleeping(false, now_us);
     fprintf(stderr, "roundie-desktop: woke after %lld ms by %s\n", (long long)(slept_us / 1000),
             wake_source ? "BOOT or touch" : "the safety timer");
     finish_sleep(wake_source, ROUNDIE_POWER_ALLOWED, ESP_OK, slept_us);

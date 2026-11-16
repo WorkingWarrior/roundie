@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #include "app_runtime.h"
 #include <errno.h>
+#include <ftw.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -27,6 +28,7 @@
 #include "roundie_elf.h"
 #include "roundie_packages.h"
 #include "roundie_platform.h"
+#include "vhw.h"
 
 /* An executor call running this long is reported as an application that does not return. */
 #define STALL_REPORT_US (5 * 1000 * 1000)
@@ -197,6 +199,13 @@ bool roundie_desktop_apps_startup(void)
     return true;
 }
 
+void roundie_desktop_apps_forget_loaded(void)
+{
+    if (unlink(LOADED_MARKER) != 0 && errno != ENOENT) {
+        ESP_LOGW("elf", "%s not removed: %s", LOADED_MARKER, strerror(errno));
+    }
+}
+
 void roundie_desktop_apps_shutdown(void)
 {
     clear_loaded(); /* a planned exit, like the board's planned restart */
@@ -243,9 +252,11 @@ void roundie_desktop_apps_poll(int64_t now_us)
     }
 }
 
+/* "storage-fault absent" (docs/virtual-hardware.md): as main/app_runtime.c
+ * without a mounted storage partition, no package work is admitted. */
 bool roundie_packages_allowed(void)
 {
-    return true;
+    return vhw_storage_fault() != VHW_STORAGE_ABSENT;
 }
 
 bool roundie_packages_runtime_busy(void)
@@ -253,13 +264,44 @@ bool roundie_packages_runtime_busy(void)
     return roundie_elf_busy();
 }
 
+/* nftw passes no context: the walk of the calling thread. */
+static _Thread_local uint64_t storage_used;
+
+static int add_file_size(const char *path, const struct stat *info, int type, struct FTW *walk)
+{
+    (void)path;
+    (void)walk;
+    if (type == FTW_F) {
+        storage_used += (uint64_t)info->st_size;
+    }
+    return 0;
+}
+
+/* The host's free space, or with "storage-limit" what is left of that limit
+ * after the files under storage/. */
 bool roundie_packages_capacity(size_t *free_bytes)
 {
+    vhw_state_t lab;
+    vhw_get(&lab, roundie_time_us());
+    if (lab.storage == VHW_STORAGE_ABSENT) {
+        return false;
+    }
     struct statvfs info;
     if (statvfs(".", &info) != 0) {
         return false;
     }
-    *free_bytes = (size_t)info.f_bavail * (size_t)info.f_frsize;
+    uint64_t available = (uint64_t)info.f_bavail * (uint64_t)info.f_frsize;
+    if (lab.storage_limit_bytes != 0) {
+        storage_used = 0;
+        if (nftw("storage", add_file_size, 16, FTW_PHYS) != 0) {
+            return false;
+        }
+        uint64_t left = lab.storage_limit_bytes > storage_used ? lab.storage_limit_bytes - storage_used : 0;
+        if (left < available) {
+            available = left;
+        }
+    }
+    *free_bytes = (size_t)available;
     return true;
 }
 

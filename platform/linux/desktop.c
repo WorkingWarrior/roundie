@@ -7,6 +7,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <SDL3/SDL.h>
 #include "psa/crypto.h"
@@ -31,6 +33,10 @@
 #include "power_shared.h"
 #include "roundie_power.h"
 #include "vk_present.h"
+#include "esp_log.h"
+#include "lab.h"
+#include "panel.h"
+#include "vhw.h"
 #include "app_runtime.h"
 #include "clock.h"
 #include "local_time.h"
@@ -43,6 +49,9 @@
 #define SCRIPT_LINES 512U
 #define SCRIPT_LINE 256U
 #define INSTALLS_MAX 8U
+#define LAB_STATE_FILE "lab-state"
+/* main/main.c's touch retry after a failed read. */
+#define TOUCH_RETRY_US 5000000
 
 /* Profiles of the supported boards; the values mirror each board's
  * include/roundie_board_config.h and the 1.85B's default
@@ -54,12 +63,13 @@ typedef struct {
     uint32_t align;
     uint32_t strip_lines;
     bool round;
-    bool rtc; /* ROUNDIE_BOARD_CAP_RTC: PCF85063 */
+    bool rtc;   /* ROUNDIE_BOARD_CAP_RTC: PCF85063 */
+    bool gauge; /* BQ27220 fuel gauge; otherwise the AXP2101 PMIC */
 } profile_t;
 
 static const profile_t profiles[] = {
-    {"1.85b", 360, 360, 1, 20, true, true},
-    {"1.75c", 466, 466, 2, 24, true, false},
+    {"1.85b", 360, 360, 1, 20, true, true, true},
+    {"1.75c", 466, 466, 2, 24, true, false, false},
 };
 
 typedef struct {
@@ -83,6 +93,11 @@ typedef struct {
     uint32_t touch_reads;
     roundie_board_t *board;
     bool lit; /* the panel's light as last composed */
+    uint32_t backlight; /* the backlight percentage as last composed */
+    int64_t touch_retry_after_us;
+    bool touch_error_logged;
+    uint32_t touch_noise;
+    lab_panel_t *lab_panel; /* the lab's control panel; its window only with --lab-panel */
 } gui_t;
 
 static gui_t gui;
@@ -93,8 +108,13 @@ static char *caller_directory; /* script paths are relative to it */
 static char *installs[INSTALLS_MAX];
 static uint32_t install_count;
 static atomic_bool install_failed;
+/* GUI thread: Roundie Core runs; false while the virtual board is off or its bring-up stopped. */
+static bool core_running;
+/* The command line, for a restart of the process (restart_process). */
+static int saved_argc;
+static char **saved_argv;
 
-static void fail(const char *format, ...)
+static _Noreturn void fail(const char *format, ...)
 {
     va_list arguments;
     va_start(arguments, format);
@@ -171,17 +191,10 @@ static void *allocate(size_t bytes)
     return memory;
 }
 
-static void create_display(void)
+/* Panel memory and the round glass, before the board powers on. */
+static void create_panel(void)
 {
     const profile_t *profile = gui.profile;
-    gui.scaled = profile->width != ROUNDIE_UI_WIDTH || profile->height != ROUNDIE_UI_HEIGHT;
-    gui.geometry = (roundie_scale_geometry_t){
-        .logical_width = ROUNDIE_UI_WIDTH,
-        .logical_height = ROUNDIE_UI_HEIGHT,
-        .physical_width = profile->width,
-        .physical_height = profile->height,
-        .align = profile->align,
-    };
     size_t panel_pixels = (size_t)profile->width * profile->height;
     gui.panel = allocate(panel_pixels * sizeof(uint16_t));
     gui.presented = allocate(panel_pixels * sizeof(uint32_t));
@@ -194,6 +207,19 @@ static void create_display(void)
             gui.glass[(size_t)y * profile->width + x] = !profile->round || dx * dx + dy * dy <= radius * radius;
         }
     }
+}
+
+static void create_display(void)
+{
+    const profile_t *profile = gui.profile;
+    gui.scaled = profile->width != ROUNDIE_UI_WIDTH || profile->height != ROUNDIE_UI_HEIGHT;
+    gui.geometry = (roundie_scale_geometry_t){
+        .logical_width = ROUNDIE_UI_WIDTH,
+        .logical_height = ROUNDIE_UI_HEIGHT,
+        .physical_width = profile->width,
+        .physical_height = profile->height,
+        .align = profile->align,
+    };
     /* Strip height as the firmware chooses it for the board's DMA chunks. */
     size_t buffer_bytes = 0;
     if (gui.scaled) {
@@ -224,10 +250,14 @@ static void create_display(void)
     lv_display_set_buffers(gui.display, buffer, NULL, (uint32_t)buffer_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 }
 
-static void compose(void)
+/* dim: the window shows the backlight level; screenshots keep full intensity,
+ * so they compare equal at any brightness. */
+static void compose(bool dim)
 {
     size_t pixels = (size_t)gui.profile->width * gui.profile->height;
-    gui.lit = roundie_desktop_board_lit(gui.board);
+    gui.lit = core_running && roundie_desktop_board_lit(gui.board);
+    gui.backlight = roundie_desktop_board_backlight(gui.board);
+    uint32_t level = dim ? gui.backlight : 100U;
     if (!gui.lit) {
         /* Panel or backlight off: the glass is black, the panel keeps its memory. */
         for (size_t i = 0; i < pixels; i++) {
@@ -243,6 +273,9 @@ static void compose(void)
         r = (r << 3) | (r >> 2);
         g = (g << 2) | (g >> 4);
         b = (b << 3) | (b >> 2);
+        r = r * level / 100U;
+        g = g * level / 100U;
+        b = b * level / 100U;
         uint32_t value = 0xFF000000U | (r << 16) | (g << 8) | b;
         gui.presented[i] = gui.glass[i] ? value : 0xFF000000U;
     }
@@ -250,7 +283,7 @@ static void compose(void)
 
 static bool save_png(const char *path)
 {
-    compose();
+    compose(false);
     SDL_Surface *surface = SDL_CreateSurfaceFrom((int)gui.profile->width, (int)gui.profile->height,
                                                  SDL_PIXELFORMAT_ARGB8888, gui.presented,
                                                  (int)(gui.profile->width * 4U));
@@ -268,14 +301,61 @@ static bool save_png(const char *path)
 
 /* ---- Touch: emulated panel coordinates to the canvas -------------------- */
 
+/* roundie_board_touch_read() of the virtual touch controller: the emulated
+ * panel, or the lab's fault (vhw.h). Spurious points may lie off the panel,
+ * as a controller's corrupted report may. */
+static esp_err_t touch_read(bool *pressed, uint16_t *x, uint16_t *y)
+{
+    vhw_state_t state;
+    vhw_get(&state, roundie_time_us());
+    *pressed = false;
+    if (state.touch == VHW_TOUCH_ABSENT) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (state.touch == VHW_TOUCH_TIMEOUT) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (state.touch == VHW_TOUCH_NOISE) {
+        /* xorshift32: the same points on every run. */
+        uint32_t value = gui.touch_noise == 0 ? 0x2545F491U : gui.touch_noise;
+        value ^= value << 13;
+        value ^= value >> 17;
+        value ^= value << 5;
+        gui.touch_noise = value;
+        *pressed = (value & 3U) != 0;
+        *x = (uint16_t)((value >> 8) & 0x3FFU);
+        *y = (uint16_t)((value >> 20) & 0x3FFU);
+        return ESP_OK;
+    }
+    roundie_desktop_touch_read(&gui.input, pressed, x, y);
+    return ESP_OK;
+}
+
 static void read_touch(lv_indev_t *device, lv_indev_data_t *data)
 {
     (void)device;
     gui.touch_reads++;
     bool pressed = false;
-    uint16_t x = 0;
-    uint16_t y = 0;
-    roundie_desktop_touch_read(&gui.input, &pressed, &x, &y);
+    uint16_t x = gui.last_x;
+    uint16_t y = gui.last_y;
+    int64_t now = roundie_time_us();
+    /* main/main.c's policy: after a failed read, released for 5 s. */
+    if (now < gui.touch_retry_after_us) {
+        data->state = LV_INDEV_STATE_RELEASED;
+        data->point.x = gui.last_x;
+        data->point.y = gui.last_y;
+        return;
+    }
+    esp_err_t error = touch_read(&pressed, &x, &y);
+    if (error != ESP_OK && error != ESP_ERR_NOT_FOUND) {
+        if (!gui.touch_error_logged) {
+            ESP_LOGE("roundie", "Touch read failed: %s", esp_err_to_name(error));
+            gui.touch_error_logged = true;
+        }
+        gui.touch_retry_after_us = now + TOUCH_RETRY_US;
+    } else if (error == ESP_OK) {
+        gui.touch_error_logged = false;
+    }
     if (pressed && gui.scaled) {
         /* The board reports panel coordinates; LVGL works on the canvas. */
         x = (uint16_t)roundie_scale_touch(x, ROUNDIE_UI_WIDTH, gui.profile->width);
@@ -431,6 +511,101 @@ static void time_rt1(const char *arguments)
     fflush(stdout);
 }
 
+/* ---- Battery: the firmware's sensor sample on the virtual gauge or PMIC ---- */
+
+/* The latest sample, for quick settings on the GUI thread. */
+static struct {
+    roundie_lock_t lock;
+    roundie_battery_sample_t battery;
+} sensors = {.lock = ROUNDIE_LOCK_INITIALIZER};
+
+static const char *sensor_state_name(roundie_sensor_state_t state)
+{
+    switch (state) {
+    case ROUNDIE_SENSOR_VALID: return "valid";
+    case ROUNDIE_SENSOR_NOT_FOUND: return "not found";
+    case ROUNDIE_SENSOR_COMM_ERROR: return "I2C error";
+    case ROUNDIE_SENSOR_INVALID: return "invalid data";
+    case ROUNDIE_SENSOR_UNAVAILABLE: return "unavailable";
+    case ROUNDIE_SENSOR_BATTERY_ABSENT: return "battery absent";
+    case ROUNDIE_SENSOR_UNCALIBRATED: return "gauge unverified";
+    }
+    return "unknown";
+}
+
+/* main/main.c's sensor worker: one battery sample, logged on a state change or
+ * a change of 50 mV or 5 %. System worker. */
+static void sample_battery(void)
+{
+    static bool first = true;
+    static roundie_sensor_state_t last_state;
+    static uint16_t last_voltage;
+    static uint16_t last_soc;
+    roundie_battery_sample_t battery;
+    roundie_board_battery_read(gui.board, &battery);
+    if (first || battery.state != last_state) {
+        ESP_LOGI("roundie", "Gauge %s, present=%u, initialized=%u, error=%s", sensor_state_name(battery.state),
+                 battery.battery_present, battery.initialized, esp_err_to_name(battery.error));
+        last_state = battery.state;
+    }
+    if (battery.voltage_valid &&
+        (first || abs((int)battery.voltage_mv - last_voltage) >= 50 ||
+         (battery.soc_valid && abs((int)battery.soc_percent - last_soc) >= 5))) {
+        if (battery.soc_valid) {
+            ESP_LOGI("roundie", "Battery %u mV, gauge SoC %u%% (accuracy unverified), flags=0x%04x, op=0x%04x",
+                     battery.voltage_mv, battery.soc_percent, battery.battery_flags, battery.operation_flags);
+        } else {
+            ESP_LOGI("roundie", "Battery %u mV, gauge SoC unavailable, flags=0x%04x, op=0x%04x",
+                     battery.voltage_mv, battery.battery_flags, battery.operation_flags);
+        }
+        last_voltage = battery.voltage_mv;
+        last_soc = battery.soc_percent;
+    }
+    first = false;
+    roundie_lock(&sensors.lock);
+    sensors.battery = battery;
+    roundie_unlock(&sensors.lock);
+}
+
+/* Quick settings on the home application, as main/main.c's (docs/quick-settings.md). GUI thread. */
+static bool quick_battery(uint8_t *percent, bool *charging)
+{
+    roundie_lock(&sensors.lock);
+    roundie_battery_sample_t battery = sensors.battery;
+    roundie_unlock(&sensors.lock);
+    if (battery.state != ROUNDIE_SENSOR_VALID || !battery.battery_present || !battery.soc_valid ||
+        battery.soc_percent > 100) {
+        return false;
+    }
+    *percent = (uint8_t)battery.soc_percent;
+    *charging = battery.current_valid && battery.current_ma > 0;
+    return true;
+}
+
+/* 30, 60, 100, 30 ... percent, as main/main.c's step_backlight(). */
+static uint8_t quick_brightness(bool cycle)
+{
+    if (cycle) {
+        uint8_t next_percent = 30;
+        if (brightness_percent < 60) {
+            next_percent = 60;
+        } else if (brightness_percent < 100) {
+            next_percent = 100;
+        }
+        esp_err_t error = roundie_board_backlight_set(gui.board, next_percent);
+        if (error != ESP_OK) {
+            ESP_LOGE("roundie", "Backlight change: %s", esp_err_to_name(error));
+        } else {
+            brightness_percent = next_percent;
+        }
+    }
+    return brightness_percent;
+}
+
+static const roundie_launcher_quick_t quick_settings = {
+    quick_battery, quick_brightness, roundie_power_gui_screen_off, roundie_power_gui_sleep,
+};
+
 static void time_worker_poll(int64_t now, int64_t *polled_us)
 {
     roundie_lock(&time_mailbox.lock);
@@ -459,6 +634,7 @@ static void time_worker_poll(int64_t now, int64_t *polled_us)
         roundie_rtc_sample_t rtc;
         roundie_board_rtc_read(gui.board, &rtc);
         roundie_wall_clock_poll(&rtc);
+        sample_battery();
     }
 }
 
@@ -475,6 +651,7 @@ static void *system_worker(void *argument)
     bool previous_failed = roundie_desktop_apps_startup();
     roundie_launcher_set_home(ROUNDIE_LAUNCHER_HOME_PACKAGE, !previous_failed);
     int64_t clock_polled_us = roundie_time_us();
+    sample_battery();
     while (!atomic_load(&quit_requested)) {
         int64_t now = roundie_time_us();
         roundie_desktop_apps_poll(now);
@@ -532,18 +709,43 @@ typedef struct {
 static script_t script;
 
 #define VIRTUAL_STEP_US 5000
+/* Real time after which a callback that has not returned counts as hung. */
+#define CALLBACK_HUNG_REAL_NS (1000LL * 1000 * 1000)
+
+static int64_t real_time_ns(void)
+{
+    struct timespec real;
+    clock_gettime(CLOCK_MONOTONIC, &real);
+    return (int64_t)real.tv_sec * 1000000000LL + real.tv_nsec;
+}
 
 /* --virtual-time: while the script waits, time moves in steps of at most
  * VIRTUAL_STEP_US, each taken only after the executor and the system worker
  * have handled the previous one (the worker takes turns with this loop), so
- * applications, the launcher and the clock see the same times on every run. An application that does not return stops
- * time, and the script with it. */
+ * applications, the launcher and the clock see the same times on every run.
+ * A callback still running after CALLBACK_HUNG_REAL_NS of real time is taken
+ * as hung: time then moves on without the executor, as it does on the board,
+ * so the stall report and the script's deadlines come at the same virtual
+ * times on every run. */
 static void virtual_time_step(void)
 {
+    static int64_t callback_since_us; /* the busy callback, by its start */
+    static int64_t callback_seen_ns;  /* real time it was first seen busy */
     int64_t now = roundie_time_us();
     if (!roundie_elf_executor_settled(now)) {
         roundie_elf_executor_kick();
-        return;
+        int64_t since = roundie_elf_executor_busy_since();
+        if (since == 0) {
+            return;
+        }
+        if (since != callback_since_us) {
+            callback_since_us = since;
+            callback_seen_ns = real_time_ns();
+            return;
+        }
+        if (real_time_ns() - callback_seen_ns < CALLBACK_HUNG_REAL_NS) {
+            return;
+        }
     }
     int64_t step = VIRTUAL_STEP_US;
     if (script.resume_us > now && script.resume_us - now < step) {
@@ -687,6 +889,56 @@ static void script_clock(void)
     fflush(stdout);
 }
 
+/* A command of the virtual hardware lab (lab.h). The script continues on a
+ * later loop iteration, after the desktop has carried out what the machine does
+ * next (lab_poll), so no line runs in a process that is about to restart. */
+static void script_lab(const char *line, int64_t now)
+{
+    uint32_t hold_ms = 0;
+    char command[64] = "";
+    char word[64] = "";
+    int x = 0;
+    int y = 0;
+    sscanf(line, "%63s", word);
+    if (strcmp(word, "panel-screenshot") == 0 && sscanf(line, "%*s %63s", word) == 1) {
+        char path[4096];
+        if (word[0] == '/' || caller_directory == NULL) {
+            snprintf(path, sizeof(path), "%s", word);
+        } else {
+            snprintf(path, sizeof(path), "%s/%s", caller_directory, word);
+        }
+        if (gui.lab_panel == NULL || !lab_panel_save(gui.lab_panel, now, path)) {
+            script_fail(line, "panel screenshot failed");
+            return;
+        }
+        script.next++;
+        return;
+    }
+    if (strcmp(word, "panel-click") == 0) {
+        /* The panel's control at a frame pixel, then its lab command. */
+        if (sscanf(line, "%*s %d %d", &x, &y) != 2 || gui.lab_panel == NULL ||
+            !lab_panel_command_at(gui.lab_panel, x, y, now, command, sizeof(command))) {
+            script_fail(line, "no panel control there");
+            return;
+        }
+        printf("panel-click %s\n", command);
+        fflush(stdout);
+        line = command;
+    }
+    lab_result_t result = lab_command(line, &gui.input, now, &hold_ms);
+    if (result == LAB_UNKNOWN) {
+        script_fail(line, core_running ? "unknown or malformed command" : "unknown command, or the board is off");
+        return;
+    }
+    if (result == LAB_MALFORMED) {
+        script_fail(line, "malformed lab command");
+        return;
+    }
+    script.next++;
+    /* A key stays pressed for its hold time before the next line. */
+    script.resume_us = now + (int64_t)hold_ms * 1000;
+}
+
 /* Runs script lines whose time has come. */
 static void script_step(void)
 {
@@ -707,6 +959,12 @@ static void script_step(void)
             script.next++;
             continue;
         }
+        /* Off or halted: only the lab and the script's own commands. */
+        if (!core_running && strcmp(command, "wait") != 0 && strcmp(command, "release") != 0 &&
+            strcmp(command, "screenshot") != 0 && strcmp(command, "quit") != 0) {
+            script_lab(line, now);
+            return;
+        }
         if (strcmp(command, "wait") == 0 && sscanf(line, "%*s %d", &a) == 1 && a >= 0) {
             script.resume_us = now + (int64_t)a * 1000;
         } else if (strcmp(command, "down") == 0 && sscanf(line, "%*s %d %d", &a, &b) == 2) {
@@ -725,14 +983,6 @@ static void script_step(void)
                    sscanf(line, "%*s %d %d %d %d %d", &a, &b, &c, &d, &e) == 5 && e > 0) {
             roundie_desktop_touch_swipe(&gui.input, a, b, c, d, (uint32_t)e, now);
             script.resume_us = now + (int64_t)e * 1000 + 50000;
-        } else if (strcmp(command, "key") == 0 && sscanf(line, "%*s %63s", word) == 1) {
-            if (!roundie_desktop_key_name(&gui.input, word, true)) {
-                script_fail(line, "unknown key");
-                return;
-            }
-            snprintf(script.lines[script.next], SCRIPT_LINE, "release %s", word);
-            script.resume_us = now + 100000;
-            return;
         } else if (strcmp(command, "release") == 0 && sscanf(line, "%*s %63s", word) == 1) {
             roundie_desktop_key_name(&gui.input, word, false);
         } else if (strcmp(command, "screenshot") == 0 && sscanf(line, "%*s %63s", word) == 1) {
@@ -742,7 +992,9 @@ static void script_step(void)
             } else {
                 snprintf(path, sizeof(path), "%s/%s", caller_directory, word);
             }
-            lv_refr_now(gui.display);
+            if (core_running) {
+                lv_refr_now(gui.display);
+            }
             if (!save_png(path)) {
                 script_fail(line, "screenshot failed");
                 return;
@@ -962,15 +1214,10 @@ static void script_step(void)
         } else if (strcmp(command, "time-drift") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2 &&
                    (strcmp(word, "rtc") == 0 || strcmp(word, "chip") == 0)) {
             roundie_desktop_clock_drift(strcmp(word, "chip") == 0, a);
-        } else if (strcmp(command, "rtc-fault") == 0 && sscanf(line, "%*s %63s", word) == 1 &&
-                   (strcmp(word, "none") == 0 || strcmp(word, "stop") == 0 || strcmp(word, "bus") == 0)) {
-            roundie_desktop_clock_rtc_fault(strcmp(word, "stop") == 0  ? ROUNDIE_DESKTOP_RTC_STOPPED
-                                            : strcmp(word, "bus") == 0 ? ROUNDIE_DESKTOP_RTC_BUS
-                                                                       : ROUNDIE_DESKTOP_RTC_RUNNING);
         } else if (strcmp(command, "quit") == 0) {
             atomic_store(&quit_requested, true);
         } else {
-            script_fail(line, "unknown or malformed command");
+            script_lab(line, now);
             return;
         }
         script.next++;
@@ -985,6 +1232,8 @@ static void usage(void)
           "                       [--headless] [--script FILE] [--install FILE.rpk]...\n"
           "                       [--native-apps]  (run linux-x64.rep1 apps: trusted code, no sandbox)\n"
           "                       [--virtual-time]  (time moves only while a script waits)\n"
+          "                       [--lab-panel]  (virtual hardware control panel in a second window)\n"
+          "                       [--resume FILE]  (internal: restart after a virtual hardware reset)\n"
           "keys: B = BOOT, P = PWR, Esc = quit; the mouse is the touch panel\n", stderr);
 }
 
@@ -1026,6 +1275,9 @@ static void log_window(SDL_Window *window)
  * presented again. */
 static bool handle_event(const SDL_Event *event, vk_present_t *present, SDL_Window *window)
 {
+    if (gui.lab_panel != NULL && lab_panel_event(gui.lab_panel, event, roundie_time_us())) {
+        return false; /* the lab panel's window */
+    }
     float density = SDL_GetWindowPixelDensity(window);
     int32_t x = 0;
     int32_t y = 0;
@@ -1076,13 +1328,352 @@ static bool handle_event(const SDL_Event *event, vk_present_t *present, SDL_Wind
     return false;
 }
 
+/* ---- Virtual hardware: resets and power (docs/virtual-hardware.md) ---------- */
+
+/* What a restarted process takes over from the previous one. */
+typedef struct {
+    bool present;
+    roundie_desktop_reset_t reset;
+    uint32_t script_next;
+    int64_t script_wait_us;
+} resume_t;
+
+static resume_t resume;
+
+/* Descriptors this process opened do not pass to the restarted one. */
+static void close_on_exec_all(void)
+{
+    DIR *fds = opendir("/proc/self/fd");
+    if (fds == NULL) {
+        return;
+    }
+    int own = dirfd(fds);
+    struct dirent *entry;
+    while ((entry = readdir(fds)) != NULL) {
+        int fd = atoi(entry->d_name);
+        if (fd > 2 && fd != own) {
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
+        }
+    }
+    closedir(fds);
+}
+
+/* A reset or a power change of the virtual board restarts the desktop
+ * process, as it ends every task on the board at once: no shutdown and no
+ * cleanup. The machine, the timekeeping hardware and the script position go to
+ * LAB_STATE_FILE in the data directory, and the new process reads them back
+ * (--resume). Package installs on the command line are not repeated. GUI thread. */
+static _Noreturn void restart_process(bool powered, roundie_desktop_reset_t reset, int64_t now)
+{
+    /* BootGuard blames the loaded application only after a panic or a watchdog reset. */
+    if (!powered || (reset != ROUNDIE_DESKTOP_RESET_PANIC && reset != ROUNDIE_DESKTOP_RESET_TASK_WDT)) {
+        roundie_desktop_apps_forget_loaded();
+    }
+    fprintf(stderr, "roundie-desktop: %s%s; restarting the process\n", powered ? roundie_desktop_reset_name(reset) : "power off",
+            powered ? " reset" : "");
+    FILE *file = fopen(LAB_STATE_FILE ".new", "w");
+    if (file == NULL) {
+        fail("%s: %s", LAB_STATE_FILE, strerror(errno));
+    }
+    struct timespec real;
+    clock_gettime(CLOCK_MONOTONIC, &real);
+    int64_t wait_us = script.resume_us > now ? script.resume_us - now : 0;
+    fprintf(file, "lab.reset %d\nlab.script_next %u\nlab.script_wait %lld\nlab.real_ns %lld\n", (int)reset,
+            (unsigned)script.next, (long long)wait_us, (long long)real.tv_sec * 1000000000LL + real.tv_nsec);
+    vhw_save(file, now);
+    roundie_desktop_clock_save(file);
+    if (fclose(file) != 0 || rename(LAB_STATE_FILE ".new", LAB_STATE_FILE) != 0) {
+        fail("%s: %s", LAB_STATE_FILE, strerror(errno));
+    }
+    char *state_path = realpath(LAB_STATE_FILE, NULL);
+    char **arguments = calloc((size_t)saved_argc + 3U, sizeof(char *));
+    if (state_path == NULL || arguments == NULL) {
+        fail("restart: %s", strerror(errno));
+    }
+    static char resume_flag[] = "--resume";
+    int count = 0;
+    arguments[count++] = saved_argv[0];
+    for (int i = 1; i < saved_argc; i++) {
+        bool dropped = strcmp(saved_argv[i], "--install") == 0 || strcmp(saved_argv[i], "--resume") == 0;
+        if (dropped && i + 1 < saved_argc) {
+            i++;
+            continue;
+        }
+        arguments[count++] = saved_argv[i];
+    }
+    arguments[count++] = resume_flag;
+    arguments[count++] = state_path;
+    arguments[count] = NULL;
+    fflush(stdout);
+    fflush(stderr);
+    close_on_exec_all();
+    if (caller_directory != NULL && chdir(caller_directory) != 0) {
+        fail("restart: %s: %s", caller_directory, strerror(errno));
+    }
+    execv("/proc/self/exe", arguments);
+    fail("restart: %s", strerror(errno));
+}
+
+/* Reads LAB_STATE_FILE of the previous process, after vhw_init() and
+ * roundie_desktop_clock_init(), then removes it. */
+static void resume_load(const char *path)
+{
+    FILE *file = fopen(path, "r");
+    if (file == NULL) {
+        fail("resume %s: %s", path, strerror(errno));
+    }
+    int64_t now = roundie_time_us();
+    int64_t gap_us = 0;
+    char line[4096];
+    while (fgets(line, sizeof(line), file) != NULL) {
+        line[strcspn(line, "\n")] = '\0';
+        char *value = strchr(line, ' ');
+        if (value == NULL) {
+            continue;
+        }
+        *value = '\0';
+        value++;
+        long long number = strtoll(value, NULL, 10);
+        if (strcmp(line, "lab.reset") == 0 && number >= 0 && number <= ROUNDIE_DESKTOP_RESET_PIN) {
+            resume.reset = (roundie_desktop_reset_t)number;
+        } else if (strcmp(line, "lab.script_next") == 0 && number >= 0 && number <= SCRIPT_LINES) {
+            resume.script_next = (uint32_t)number;
+        } else if (strcmp(line, "lab.script_wait") == 0 && number >= 0) {
+            resume.script_wait_us = number;
+        } else if (strcmp(line, "lab.real_ns") == 0) {
+            /* In real time the hardware clocks ran on while the process restarted. */
+            struct timespec real;
+            clock_gettime(CLOCK_MONOTONIC, &real);
+            int64_t real_ns = (int64_t)real.tv_sec * 1000000000LL + real.tv_nsec;
+            if (!roundie_desktop_time_frozen() && real_ns > number) {
+                gap_us = (real_ns - number) / 1000;
+            }
+        } else if (!vhw_load_line(line, value, now) && !roundie_desktop_clock_load_line(line, value, gap_us)) {
+            fprintf(stderr, "roundie-desktop: resume: ignored %s\n", line);
+        }
+    }
+    fclose(file);
+    if (unlink(path) != 0) {
+        fprintf(stderr, "roundie-desktop: resume %s: %s\n", path, strerror(errno));
+    }
+    resume.present = true;
+}
+
+/* Carries out what the virtual board does next. Returns true when power came
+ * back to a board that is off. GUI thread. */
+static bool lab_poll(int64_t now)
+{
+    char command[64];
+    bool clicked = false;
+    if (gui.lab_panel != NULL && lab_panel_take_command(gui.lab_panel, command, sizeof(command))) {
+        uint32_t hold_ms = 0;
+        fprintf(stderr, "roundie-desktop: lab panel: %s\n", command);
+        if (lab_command(command, &gui.input, now, &hold_ms) != LAB_DONE) {
+            fprintf(stderr, "roundie-desktop: lab panel: %s refused\n", command);
+        }
+        clicked = true;
+    }
+    if (gui.lab_panel != NULL && !lab_panel_update(gui.lab_panel, now, clicked)) {
+        fprintf(stderr, "roundie-desktop: lab panel presentation failed\n");
+        atomic_store(&quit_requested, true);
+    }
+    vhw_set_pwr(roundie_desktop_key_pressed(&gui.input, ROUNDIE_DESKTOP_KEY_PWR), now);
+    int kind = 0;
+    vhw_action_t action = vhw_poll(now, &kind);
+    if (action == VHW_ACTION_POWER_OFF) {
+        vhw_state_t state;
+        vhw_get(&state, now);
+        fprintf(stderr, "roundie-desktop: power lost: %s\n", vhw_off_name(state.off_reason));
+        restart_process(false, ROUNDIE_DESKTOP_RESET_POWER, now);
+    }
+    if (action == VHW_ACTION_RESET) {
+        restart_process(true, (roundie_desktop_reset_t)kind, now);
+    }
+    return action == VHW_ACTION_POWER_ON;
+}
+
+/* The board is off, or its bring-up stopped (halted): no Roundie Core and a
+ * dark panel; only the lab acts. Returns when power comes back to a board that
+ * is off, or on quit. GUI thread. */
+static void idle_loop(SDL_Window *window, vk_present_t *present, bool halted)
+{
+    bool present_again = true;
+    while (!atomic_load(&quit_requested)) {
+        if (window != NULL) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (handle_event(&event, present, window)) {
+                    present_again = true;
+                }
+            }
+        }
+        if (script.count > 0) {
+            script_step();
+            if (script.next == script.count && !script.failed) {
+                atomic_store(&quit_requested, true);
+            } else if (roundie_desktop_time_frozen() && !script.failed) {
+                /* No Core thread follows virtual time here. */
+                int64_t now = roundie_time_us();
+                int64_t step = VIRTUAL_STEP_US;
+                if (script.resume_us > now && script.resume_us - now < step) {
+                    step = script.resume_us - now;
+                }
+                roundie_desktop_time_advance(step);
+            }
+        }
+        int64_t now = roundie_time_us();
+        roundie_desktop_input_poll(&gui.input, now);
+        if (lab_poll(now) && !halted) {
+            return;
+        }
+        if (present_again && present != NULL) {
+            present_again = false;
+            compose(true);
+            if (!vk_present_frame(present, gui.presented)) {
+                fprintf(stderr, "roundie-desktop: presentation failed\n");
+                atomic_store(&quit_requested, true);
+            }
+        }
+        if (roundie_desktop_time_frozen()) {
+            continue;
+        }
+        if (window != NULL) {
+            SDL_WaitEventTimeout(NULL, 10);
+        } else {
+            roundie_desktop_sleep_real_ms(10);
+        }
+    }
+}
+
+/* Roundie Core on the powered board, until quit. Returns the exit code. */
+static int run_core(SDL_Window *window, vk_present_t *present)
+{
+    /* The speaker; applications get no stream without it, as on a board whose codec failed. */
+    if (roundie_audio_init(NULL) != ESP_OK) {
+        fprintf(stderr, "roundie-desktop: no audio output\n");
+    }
+
+    lv_init();
+    lv_tick_set_cb(tick_ms);
+    create_display();
+    lv_indev_t *pointer = lv_indev_create();
+    if (pointer == NULL) {
+        fail("LVGL input allocation failed");
+    }
+    lv_indev_set_type(pointer, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_display(pointer, gui.display);
+    lv_indev_set_read_cb(pointer, read_touch);
+    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
+    roundie_ui_gui_bind();
+    roundie_launcher_gui_bind();
+    roundie_launcher_gui_set_quick_settings(&quick_settings);
+    gui.lit = true;
+    roundie_power_gui_bind(gui.board, &brightness_percent, roundie_time_us());
+    /* The firmware's time startup (main.c): zone, then wall clock, then the
+     * applications' clock source. */
+    roundie_local_time_init(true, roundie_wall_clock_valid);
+    roundie_wall_clock_init(roundie_desktop_clock_has_rtc());
+    time_start();
+    roundie_desktop_set_app_clock_source(roundie_local_time_now);
+
+    pthread_t worker;
+    if (pthread_create(&worker, NULL, system_worker, NULL) != 0) {
+        fail("system worker thread");
+    }
+
+    int exit_code = 0;
+    bool present_again = false;
+    while (!atomic_load(&quit_requested)) {
+        if (roundie_desktop_time_frozen()) {
+            roundie_desktop_time_wait_follower();
+        }
+        if (window != NULL) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (handle_event(&event, present, window)) {
+                    present_again = true;
+                }
+            }
+        }
+        if (script.count > 0) {
+            script_step();
+            if (script.next == script.count && !script.failed) {
+                atomic_store(&quit_requested, true);
+            } else if (roundie_desktop_time_frozen() && !script.failed) {
+                virtual_time_step();
+            }
+        }
+        roundie_desktop_input_poll(&gui.input, roundie_time_us());
+        roundie_desktop_board_inputs(gui.board, roundie_desktop_key_pressed(&gui.input, ROUNDIE_DESKTOP_KEY_BOOT),
+                                     roundie_desktop_touch_active(&gui.input));
+        lab_poll(roundie_time_us());
+        uint32_t next_ms = GUI_DELAY_MAX_MS;
+        /* The panel flush is synchronous, so no transfer is ever in flight. */
+        bool gui_active = roundie_power_gui_poll(roundie_time_us(), true, false);
+        if (roundie_desktop_board_take_panel_lost(gui.board)) {
+            /* A failed re-initialisation lost the panel memory: what remains
+             * shows until the GUI repaints. */
+            for (size_t i = 0; i < (size_t)gui.profile->width * gui.profile->height; i++) {
+                gui.panel[i] = 0xF81F;
+            }
+            gui.dirty = true;
+        }
+        if (gui_active) {
+            roundie_ui_gui_batch(ROUNDIE_UI_QUEUE_CAPACITY);
+            roundie_ui_gui_pump();
+            roundie_launcher_gui_pump(false);
+            next_ms = lv_timer_handler();
+        }
+        /* Otherwise parked for light sleep: no LVGL work until resumed. */
+        if (roundie_desktop_board_lit(gui.board) != gui.lit ||
+            roundie_desktop_board_backlight(gui.board) != gui.backlight) {
+            gui.dirty = true;
+        }
+        if ((gui.dirty || present_again) && present != NULL) {
+            present_again = false;
+            compose(true);
+            if (!vk_present_frame(present, gui.presented)) {
+                fprintf(stderr, "roundie-desktop: presentation failed\n");
+                exit_code = 1;
+                atomic_store(&quit_requested, true);
+            }
+            gui.dirty = false;
+        }
+        if (next_ms > GUI_DELAY_MAX_MS) {
+            next_ms = GUI_DELAY_MAX_MS;
+        }
+        if (next_ms == 0 || roundie_desktop_time_frozen()) {
+            next_ms = 1;
+        }
+        if (roundie_desktop_time_frozen()) {
+            roundie_desktop_time_gui_done();
+        }
+        if (window != NULL) {
+            SDL_WaitEventTimeout(NULL, (Sint32)next_ms);
+        } else {
+            roundie_desktop_sleep_real_ms(next_ms);
+        }
+    }
+    roundie_desktop_time_release();
+    pthread_join(worker, NULL);
+    if (gui.flush_errors > 0) {
+        fprintf(stderr, "roundie-desktop: %u flush errors\n", (unsigned)gui.flush_errors);
+        exit_code = 1;
+    }
+    return exit_code;
+}
+
 int main(int argc, char **argv)
 {
     const char *board = "1.85b";
     const char *data = NULL;
     const char *script_path = NULL;
+    const char *resume_path = NULL;
     bool headless = false;
+    bool lab_window = false;
     int zoom = 2;
+    saved_argc = argc;
+    saved_argv = argv;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--board") == 0 && i + 1 < argc) {
             board = argv[++i];
@@ -1102,10 +1693,14 @@ int main(int argc, char **argv)
             install_count++;
         } else if (strcmp(argv[i], "--headless") == 0) {
             headless = true;
+        } else if (strcmp(argv[i], "--lab-panel") == 0) {
+            lab_window = true;
         } else if (strcmp(argv[i], "--native-apps") == 0) {
             roundie_desktop_apps_enable(true);
         } else if (strcmp(argv[i], "--virtual-time") == 0) {
             roundie_desktop_time_freeze();
+        } else if (strcmp(argv[i], "--resume") == 0 && i + 1 < argc) {
+            resume_path = argv[++i];
         } else {
             usage();
             return 2;
@@ -1143,6 +1738,18 @@ int main(int argc, char **argv)
         fail("PSA crypto initialisation failed");
     }
 
+    /* The virtual hardware, and what the previous process left of it. */
+    int64_t now = roundie_time_us();
+    vhw_init(gui.profile->gauge ? VHW_CHIP_GAUGE : VHW_CHIP_PMIC, now);
+    roundie_desktop_clock_init(gui.profile->rtc, "clock-tz");
+    if (resume_path != NULL) {
+        resume_load(resume_path);
+        if (resume.script_next <= script.count) {
+            script.next = resume.script_next;
+        }
+        script.resume_us = roundie_time_us() + resume.script_wait_us;
+    }
+
     SDL_Window *window = NULL;
     vk_present_t *present = NULL;
     if (!headless) {
@@ -1169,112 +1776,49 @@ int main(int argc, char **argv)
         log_window(window);
     }
 
-    /* The speaker; applications get no stream without it, as on a board whose codec failed. */
-    if (roundie_audio_init(NULL) != ESP_OK) {
-        fprintf(stderr, "roundie-desktop: no audio output\n");
-    }
-
     roundie_desktop_input_init(&gui.input, gui.profile->width, gui.profile->height);
-    lv_init();
-    lv_tick_set_cb(tick_ms);
-    create_display();
-    lv_indev_t *pointer = lv_indev_create();
-    if (pointer == NULL) {
-        fail("LVGL input allocation failed");
+    create_panel();
+    gui.lab_panel = lab_panel_create();
+    if (gui.lab_panel != NULL && lab_window && !headless && !lab_panel_open_window(gui.lab_panel, zoom)) {
+        fail("lab panel window unavailable");
     }
-    lv_indev_set_type(pointer, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_display(pointer, gui.display);
-    lv_indev_set_read_cb(pointer, read_touch);
-    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
-    roundie_ui_gui_bind();
-    roundie_launcher_gui_bind();
     gui.board = roundie_desktop_board();
-    gui.lit = true;
-    roundie_power_gui_bind(gui.board, &brightness_percent, roundie_time_us());
-    /* The firmware's time startup (main.c): zone, then wall clock, then the
-     * applications' clock source. */
-    roundie_desktop_clock_init(gui.profile->rtc, "clock-tz");
-    roundie_local_time_init(true, roundie_wall_clock_valid);
-    roundie_wall_clock_init(roundie_desktop_clock_has_rtc());
-    time_start();
-    roundie_desktop_set_app_clock_source(roundie_local_time_now);
-
-    pthread_t worker;
-    if (pthread_create(&worker, NULL, system_worker, NULL) != 0) {
-        fail("system worker thread");
-    }
-
+    vhw_state_t state;
+    vhw_get(&state, roundie_time_us());
     int exit_code = 0;
-    bool present_again = false;
-    while (!atomic_load(&quit_requested)) {
-        if (roundie_desktop_time_frozen()) {
-            roundie_desktop_time_wait_follower();
-        }
-        if (window != NULL) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (handle_event(&event, present, window)) {
-                    present_again = true;
-                }
+    bool start = true;
+    if (!state.powered) {
+        fprintf(stderr, "roundie-desktop: the board is off (%s)\n", vhw_off_name(state.off_reason));
+        idle_loop(window, present, false);
+        start = !atomic_load(&quit_requested);
+        if (start) {
+            /* Power-on reset; the PCF85063 kept time only on its backup. */
+            vhw_get(&state, roundie_time_us());
+            if (!state.rtc_backup) {
+                roundie_desktop_clock_chip_power_lost();
             }
+            roundie_desktop_clock_reset(ROUNDIE_DESKTOP_RESET_POWER);
+            fprintf(stderr, "roundie-desktop: power on\n");
         }
-        if (script.count > 0) {
-            script_step();
-            if (script.next == script.count && !script.failed) {
-                atomic_store(&quit_requested, true);
-            } else if (roundie_desktop_time_frozen() && !script.failed) {
-                virtual_time_step();
-            }
-        }
-        roundie_desktop_input_poll(&gui.input, roundie_time_us());
-        roundie_desktop_board_inputs(gui.board, roundie_desktop_key_pressed(&gui.input, ROUNDIE_DESKTOP_KEY_BOOT),
-                                     roundie_desktop_touch_active(&gui.input));
-        uint32_t next_ms = GUI_DELAY_MAX_MS;
-        /* The panel flush is synchronous, so no transfer is ever in flight. */
-        if (roundie_power_gui_poll(roundie_time_us(), true, false)) {
-            roundie_ui_gui_batch(ROUNDIE_UI_QUEUE_CAPACITY);
-            roundie_ui_gui_pump();
-            roundie_launcher_gui_pump(false);
-            next_ms = lv_timer_handler();
-        }
-        /* Otherwise parked for light sleep: no LVGL work until resumed. */
-        if (roundie_desktop_board_lit(gui.board) != gui.lit) {
-            gui.dirty = true;
-        }
-        if ((gui.dirty || present_again) && present != NULL) {
-            present_again = false;
-            compose();
-            if (!vk_present_frame(present, gui.presented)) {
-                fprintf(stderr, "roundie-desktop: presentation failed\n");
-                exit_code = 1;
-                atomic_store(&quit_requested, true);
-            }
-            gui.dirty = false;
-        }
-        if (next_ms > GUI_DELAY_MAX_MS) {
-            next_ms = GUI_DELAY_MAX_MS;
-        }
-        if (next_ms == 0 || roundie_desktop_time_frozen()) {
-            next_ms = 1;
-        }
-        if (roundie_desktop_time_frozen()) {
-            roundie_desktop_time_gui_done();
-        }
-        if (window != NULL) {
-            SDL_WaitEventTimeout(NULL, (Sint32)next_ms);
-        } else {
-            roundie_desktop_sleep_real_ms(next_ms);
-        }
+    } else if (resume.present) {
+        roundie_desktop_clock_reset(resume.reset);
+        fprintf(stderr, "roundie-desktop: start after %s reset\n", roundie_desktop_reset_name(resume.reset));
     }
-    roundie_desktop_time_release();
-    pthread_join(worker, NULL);
+    if (start && state.display == VHW_DISPLAY_INIT) {
+        /* main/main.c: roundie_board_start() failed; the board continues in its
+         * headless recovery, which the desktop does not emulate. */
+        ESP_LOGE("roundie", "Bring-up stopped: %s", esp_err_to_name(ESP_ERR_TIMEOUT));
+        idle_loop(window, present, true);
+        start = false;
+    }
+    if (start) {
+        core_running = true;
+        exit_code = run_core(window, present);
+    }
     if (script.failed || atomic_load(&install_failed)) {
         exit_code = 1;
     }
-    if (gui.flush_errors > 0) {
-        fprintf(stderr, "roundie-desktop: %u flush errors\n", (unsigned)gui.flush_errors);
-        exit_code = 1;
-    }
+    lab_panel_destroy(gui.lab_panel);
     vk_present_destroy(present);
     if (window != NULL) {
         SDL_DestroyWindow(window);

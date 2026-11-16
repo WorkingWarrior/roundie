@@ -13,3 +13,8 @@ roundie_board_t *roundie_desktop_board(void);
 void roundie_desktop_board_inputs(roundie_board_t *board, bool boot, bool touched);
 /* Whether the panel shows anything: display on and backlight above zero. */
 bool roundie_desktop_board_lit(roundie_board_t *board);
+/* Virtual hardware lab (vhw.h): a failed restore lost the panel memory;
+ * true once per loss. GUI thread. */
+bool roundie_desktop_board_take_panel_lost(roundie_board_t *board);
+uint32_t roundie_desktop_board_backlight(roundie_board_t *board);
+uint32_t roundie_desktop_board_restore_failures(roundie_board_t *board);

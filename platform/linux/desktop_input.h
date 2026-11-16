@@ -28,6 +28,7 @@ typedef struct {
     int64_t swipe_duration_us;
     bool keys[ROUNDIE_DESKTOP_KEY_COUNT];
     uint32_t key_presses[ROUNDIE_DESKTOP_KEY_COUNT];
+    int64_t key_release_us[ROUNDIE_DESKTOP_KEY_COUNT]; /* timed hold; 0 when none */
 } roundie_desktop_input_t;
 
 void roundie_desktop_input_init(roundie_desktop_input_t *input, uint32_t panel_width, uint32_t panel_height);
@@ -44,4 +45,7 @@ void roundie_desktop_touch_read(const roundie_desktop_input_t *input, bool *pres
 void roundie_desktop_key(roundie_desktop_input_t *input, roundie_desktop_key_t key, bool pressed);
 /* "boot" or "pwr"; false for any other name. */
 bool roundie_desktop_key_name(roundie_desktop_input_t *input, const char *name, bool pressed);
+/* "boot" or "pwr" pressed now and released by roundie_desktop_input_poll()
+ * at release_us; false for any other name. */
+bool roundie_desktop_key_hold(roundie_desktop_input_t *input, const char *name, int64_t release_us);
 bool roundie_desktop_key_pressed(const roundie_desktop_input_t *input, roundie_desktop_key_t key);

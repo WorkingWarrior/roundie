@@ -38,6 +38,7 @@ static uint32_t power_cycles;
 static oscillator_t chip;            /* PCF85063 */
 static bool chip_os_flag;
 static bool chip_bus_fault;
+static bool chip_absent;
 static int64_t sleep_started_us;
 /* Set before other threads start. */
 static char zone_file[512];
@@ -141,6 +142,7 @@ void roundie_desktop_clock_rtc_fault(roundie_desktop_rtc_fault_t fault)
     roundie_lock(&lock);
     oscillator_anchor(&chip, mono, oscillator_read(&chip, mono));
     chip_bus_fault = fault == ROUNDIE_DESKTOP_RTC_BUS;
+    chip_absent = fault == ROUNDIE_DESKTOP_RTC_ABSENT;
     if (fault == ROUNDIE_DESKTOP_RTC_STOPPED) {
         chip.running = false;
         chip_os_flag = true;
@@ -149,6 +151,21 @@ void roundie_desktop_clock_rtc_fault(roundie_desktop_rtc_fault_t fault)
         chip.running = true;
     }
     roundie_unlock(&lock);
+}
+
+roundie_desktop_rtc_fault_t roundie_desktop_clock_rtc_fault_get(void)
+{
+    roundie_desktop_rtc_fault_t fault = ROUNDIE_DESKTOP_RTC_RUNNING;
+    roundie_lock(&lock);
+    if (chip_absent) {
+        fault = ROUNDIE_DESKTOP_RTC_ABSENT;
+    } else if (chip_bus_fault) {
+        fault = ROUNDIE_DESKTOP_RTC_BUS;
+    } else if (!chip.running) {
+        fault = ROUNDIE_DESKTOP_RTC_STOPPED;
+    }
+    roundie_unlock(&lock);
+    return fault;
 }
 
 void roundie_desktop_clock_reset(roundie_desktop_reset_t reset)
@@ -167,6 +184,75 @@ void roundie_desktop_clock_reset(roundie_desktop_reset_t reset)
     reset_reason = reset;
     restore_system_time(mono);
     roundie_unlock(&lock);
+}
+
+void roundie_desktop_clock_chip_power_lost(void)
+{
+    int64_t mono = roundie_time_us();
+    roundie_lock(&lock);
+    /* Assumption: without a supply the PCF85063 restarts from its reset value. */
+    chip = (oscillator_t){.value_us = CHIP_RESET_US, .anchor_mono_us = mono, .running = true, .ppm = chip.ppm};
+    chip_os_flag = true;
+    roundie_unlock(&lock);
+}
+
+void roundie_desktop_clock_save(FILE *file)
+{
+    int64_t mono = roundie_time_us();
+    roundie_lock(&lock);
+    fprintf(file, "clock.timer %lld %d\nclock.boot_time %lld\nclock.cycles %u\n",
+            (long long)oscillator_read(&rtc_timer, mono), (int)rtc_timer.ppm, (long long)boot_time_us,
+            (unsigned)power_cycles);
+    fprintf(file, "clock.chip %lld %d %d\nclock.chip_flags %d %d %d\n", (long long)oscillator_read(&chip, mono),
+            (int)chip.ppm, (int)chip.running, (int)chip_os_flag, (int)chip_bus_fault, (int)chip_absent);
+    fputs("clock.retained ", file);
+    const uint8_t *bytes = (const uint8_t *)&retained;
+    for (size_t i = 0; i < sizeof(retained); i++) {
+        fprintf(file, "%02x", bytes[i]);
+    }
+    fputc('\n', file);
+    roundie_unlock(&lock);
+}
+
+bool roundie_desktop_clock_load_line(const char *key, const char *value, int64_t gap_us)
+{
+    int64_t mono = roundie_time_us();
+    long long number = 0;
+    int a = 0;
+    int b = 0;
+    int c = 0;
+    bool loaded = true;
+    roundie_lock(&lock);
+    if (strcmp(key, "clock.timer") == 0 && sscanf(value, "%lld %d", &number, &a) == 2) {
+        oscillator_anchor(&rtc_timer, mono, number + gap_us);
+        rtc_timer.ppm = a;
+    } else if (strcmp(key, "clock.boot_time") == 0 && sscanf(value, "%lld", &number) == 1) {
+        boot_time_us = number;
+    } else if (strcmp(key, "clock.cycles") == 0 && sscanf(value, "%lld", &number) == 1) {
+        power_cycles = (uint32_t)number;
+    } else if (strcmp(key, "clock.chip") == 0 && sscanf(value, "%lld %d %d", &number, &a, &b) == 3) {
+        chip.running = b != 0;
+        oscillator_anchor(&chip, mono, number + (chip.running ? gap_us : 0));
+        chip.ppm = a;
+    } else if (strcmp(key, "clock.chip_flags") == 0 && sscanf(value, "%d %d %d", &a, &b, &c) == 3) {
+        chip_os_flag = a != 0;
+        chip_bus_fault = b != 0;
+        chip_absent = c != 0;
+    } else if (strcmp(key, "clock.retained") == 0 && strlen(value) == sizeof(retained) * 2) {
+        uint8_t *bytes = (uint8_t *)&retained;
+        for (size_t i = 0; i < sizeof(retained); i++) {
+            unsigned byte = 0;
+            if (sscanf(value + i * 2, "%2x", &byte) != 1) {
+                loaded = false;
+                break;
+            }
+            bytes[i] = (uint8_t)byte;
+        }
+    } else {
+        loaded = false;
+    }
+    roundie_unlock(&lock);
+    return loaded;
 }
 
 const char *roundie_desktop_reset_name(roundie_desktop_reset_t reset)
@@ -340,7 +426,7 @@ void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample
         return;
     }
     roundie_lock(&lock);
-    bool present = has_rtc;
+    bool present = has_rtc && !chip_absent;
     bool bus_fault = chip_bus_fault;
     int64_t chip_us = oscillator_read(&chip, mono);
     bool os_flag = chip_os_flag;
@@ -387,6 +473,10 @@ esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board, const roundie_rt
     if (!has_rtc) {
         roundie_unlock(&lock);
         return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (chip_absent) {
+        roundie_unlock(&lock);
+        return ESP_ERR_NOT_FOUND;
     }
     if (chip_bus_fault) {
         roundie_unlock(&lock);

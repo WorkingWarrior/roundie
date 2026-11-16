@@ -15,6 +15,10 @@ bool roundie_desktop_apps_enabled(void);
 bool roundie_desktop_apps_startup(void);
 /* System worker on a planned exit: forgets the loaded application. */
 void roundie_desktop_apps_shutdown(void);
+/* GUI thread, just before a virtual hardware reset replaces the process: a
+ * reset after which the board's BootGuard does not blame the loaded
+ * application (planned restart, power-on, brownout, reset pin). */
+void roundie_desktop_apps_forget_loaded(void);
 
 /* System worker: admission, the unloaded instance's storage, stall reports. */
 void roundie_desktop_apps_poll(int64_t now_us);

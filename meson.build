@@ -78,6 +78,13 @@ libdl = cc.find_library('dl', required: false)
 # target, and the REP services ld.so binds their imports to.
 native_args = ['-DROUNDIE_TARGET_LINUX_X64=1']
 rep_exports = meson.current_source_dir() / 'platform/linux/rep_exports.list'
+# Storage faults of the virtual hardware lab (platform/linux/vhw_storage.c):
+# the POSIX calls the package manager makes, as they are named after
+# _FILE_OFFSET_BITS=64.
+storage_wraps = []
+foreach call : ['open64', 'close', 'read', 'write', 'fsync', 'mkdir', 'rmdir', 'unlink', 'rename', 'stat64', 'opendir']
+  storage_wraps += '-Wl,--wrap=' + call
+endforeach
 
 if sdl.found() and vulkan.found() and psa.found()
   executable('roundie-desktop',
@@ -93,10 +100,14 @@ if sdl.found() and vulkan.found() and psa.found()
              'platform/linux/power_worker.c',
              'platform/linux/desktop.c',
              'platform/linux/desktop_input.c',
+             'platform/linux/lab.c',
+             'platform/linux/panel.c',
+             'platform/linux/vhw.c',
+             'platform/linux/vhw_storage.c',
              'platform/linux/vk_present.c',
              include_directories: [core_inc, platform_inc, include_directories('components/roundie_elf')],
              c_args: strict + native_args + ['-DPACKAGES_DIRECTORY="storage/packages"'],
-             link_args: ['-Wl,--dynamic-list=' + rep_exports],
+             link_args: ['-Wl,--dynamic-list=' + rep_exports] + storage_wraps,
              link_depends: rep_exports,
              dependencies: [lvgl_dep, sdl, vulkan, psa, threads, libm, libdl])
 endif
