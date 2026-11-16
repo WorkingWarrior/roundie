@@ -7,6 +7,11 @@ dependencies, bound at load (-z now), non-executable stack. The flags match the
 Xtensa examples' except for the target-specific ones.
 
 usage: roundie_native_app.py --entry rep_app_entry_v3 -o sound.app.so sound.c [-DNAME=VALUE ...]
+
+Developer builds (docs/native-apps.md, N8) pass the same production loader
+validation: --debug adds DWARF and frame pointers for GDB, and
+--sanitize-undefined makes undefined behaviour trap (SIGILL) without importing
+a sanitizer runtime.
 """
 import argparse
 from pathlib import Path
@@ -25,9 +30,17 @@ FLAGS = [
     "-Wl,--undefined=rep_abi_metadata",
 ]
 
+DEBUG_FLAGS = ["-g", "-Og", "-fno-omit-frame-pointer"]
+UNDEFINED_FLAGS = ["-fsanitize=undefined", "-fsanitize-trap=undefined"]
 
-def build(source, output, entry, defines=(), compiler="cc"):
-    command = [*shlex.split(compiler), *FLAGS, f"-Wl,-e,{entry}", f"-I{ROOT / 'include'}",
+
+def build(source, output, entry, defines=(), compiler="cc", debug=False, sanitize_undefined=False):
+    flags = list(FLAGS)
+    if debug:
+        flags = [flag for flag in flags if flag != "-Os"] + DEBUG_FLAGS
+    if sanitize_undefined:
+        flags += UNDEFINED_FLAGS
+    command = [*shlex.split(compiler), *flags, f"-Wl,-e,{entry}", f"-I{ROOT / 'include'}",
                *(f"-D{define}" for define in defines), str(source), "-o", str(output)]
     subprocess.run(command, check=True)
 
@@ -40,9 +53,13 @@ def main(argv=None):
                         choices=("rep_app_entry", "rep_app_entry_v2", "rep_app_entry_v3"))
     parser.add_argument("-D", dest="defines", action="append", default=[])
     parser.add_argument("--cc", default="cc")
+    parser.add_argument("--debug", action="store_true", help="DWARF, -Og and frame pointers for GDB")
+    parser.add_argument("--sanitize-undefined", action="store_true",
+                        help="trap on undefined behaviour (UBSan without a runtime)")
     arguments = parser.parse_args(argv)
     try:
-        build(arguments.source, arguments.output, arguments.entry, arguments.defines, arguments.cc)
+        build(arguments.source, arguments.output, arguments.entry, arguments.defines, arguments.cc,
+              arguments.debug, arguments.sanitize_undefined)
     except subprocess.CalledProcessError as error:
         return error.returncode
     return 0

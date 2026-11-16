@@ -6,6 +6,7 @@ static const rep_api_v2_t *services;
 #define UNUSED __attribute__((unused))
 static UNUSED volatile uint32_t *const volatile null_data = 0;
 static UNUSED void (*const volatile null_code)(void) = 0;
+static UNUSED volatile int32_t largest = INT32_MAX;
 
 static UNUSED uint32_t recurse(uint32_t depth)
 {
@@ -33,6 +34,9 @@ static void fail(void)
     }
 #elif FAULT_KIND == 7
     services->log(0, "", (uint32_t)recurse(0));
+#elif FAULT_KIND == 8
+    /* Signed overflow: traps only in a --sanitize-undefined desktop build. */
+    services->log(0, "", (uint32_t)(largest + 1));
 #else
 #error "Unknown FAULT_KIND"
 #endif
