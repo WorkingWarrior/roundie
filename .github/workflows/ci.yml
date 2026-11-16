@@ -97,8 +97,9 @@ jobs:
     name: Managed components (LVGL for the desktop)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    container:
-      image: docker.io/espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
+    # Not a container job: actions/cache keys an entry also by its compression,
+    # and the IDF image has no zstd, so an entry saved there (gzip) is not found
+    # by the desktop jobs on the runner (zstd). IDF runs through docker instead.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,11 +113,13 @@ jobs:
       - name: Fetch (idf.py reconfigure, checked against dependencies.lock)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          IDF_IMAGE: docker.io/espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
         run: |
-          . "$IDF_PATH/export.sh" > /dev/null
-          cp dependencies.lock /tmp/dependencies.lock
-          idf.py -B build-ci/components -DSDKCONFIG=build-ci/components/sdkconfig reconfigure
-          cmp dependencies.lock /tmp/dependencies.lock
+          cp dependencies.lock "$RUNNER_TEMP/dependencies.lock"
+          docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp --volume "$PWD:/work" --workdir /work "$IDF_IMAGE" \
+              idf.py -B build-ci/components -DSDKCONFIG=build-ci/components/sdkconfig reconfigure
+          cmp dependencies.lock "$RUNNER_TEMP/dependencies.lock"
       - name: Save
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
