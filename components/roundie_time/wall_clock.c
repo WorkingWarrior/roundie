@@ -15,8 +15,9 @@ static bool valid;
 static bool published;
 static uint32_t sync_count;
 static int64_t sync_at_us;
-/* Startup, then the system worker only. */
+/* Set by init() before the system worker exists, then read-only. */
 static bool has_rtc;
+/* Startup, then the system worker only. */
 static bool sync_failed; /* A failed explicit SET requires another successful SET. */
 
 static void set_valid(bool value)
@@ -87,7 +88,12 @@ static bool accept_retained_wall_clock(void)
     return true;
 }
 
-bool roundie_wall_clock_start(bool board_has_rtc, const roundie_rtc_sample_t *rtc)
+void roundie_wall_clock_init(bool board_has_rtc)
+{
+    has_rtc = board_has_rtc;
+}
+
+bool roundie_wall_clock_start(const roundie_rtc_sample_t *rtc)
 {
     roundie_lock(&lock);
     valid = false;
@@ -95,7 +101,6 @@ bool roundie_wall_clock_start(bool board_has_rtc, const roundie_rtc_sample_t *rt
     sync_count = 0;
     sync_at_us = 0;
     roundie_unlock(&lock);
-    has_rtc = board_has_rtc;
     sync_failed = false;
     bool trusted;
     if (has_rtc) {
@@ -198,6 +203,18 @@ const char *roundie_wall_clock_request(roundie_board_t *board, const char *resul
                                        roundie_rtc_sample_t *rtc, esp_err_t *error)
 {
     *error = ESP_OK;
+    if (board == NULL) {
+        /* Board not published: start() may be running. Touch no state. */
+        roundie_board_rtc_read(board, rtc);
+        if (strcmp(result, "OK") == 0 && set) {
+            result = "CLOCK";
+            *error = ESP_ERR_INVALID_STATE;
+        } else if (strcmp(result, "OK") == 0 && has_rtc && rtc->state != ROUNDIE_SENSOR_VALID) {
+            result = rtc->state == ROUNDIE_SENSOR_INVALID ? "RTC_INVALID" : "RTC_READ";
+            *error = rtc->error;
+        }
+        return result;
+    }
     bool wall_valid = current_valid();
     if (strcmp(result, "OK") == 0 && set) {
         wall_valid = false;

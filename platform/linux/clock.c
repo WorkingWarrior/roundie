@@ -327,7 +327,6 @@ static int64_t whole_seconds(int64_t us)
 
 void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample)
 {
-    (void)board;
     if (sample == NULL) {
         return;
     }
@@ -336,6 +335,10 @@ void roundie_board_rtc_read(roundie_board_t *board, roundie_rtc_sample_t *sample
     sample->error = ESP_ERR_NOT_FOUND;
     int64_t mono = roundie_time_us();
     sample->observed_us = mono;
+    /* As the 1.85B driver: no board, no RTC. */
+    if (board == NULL) {
+        return;
+    }
     roundie_lock(&lock);
     bool present = has_rtc;
     bool bus_fault = chip_bus_fault;
@@ -376,7 +379,7 @@ esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board, const roundie_rt
 {
     uint8_t raw[7];
     int64_t seconds;
-    if (time == NULL || !roundie_rtc_encode(time, raw) || !roundie_rtc_unix_seconds(time, &seconds)) {
+    if (board == NULL || time == NULL || !roundie_rtc_encode(time, raw) || !roundie_rtc_unix_seconds(time, &seconds)) {
         return ESP_ERR_INVALID_ARG;
     }
     int64_t mono = roundie_time_us();

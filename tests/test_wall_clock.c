@@ -19,6 +19,10 @@
 
 static int64_t mono_us;
 static char zone_path[4096];
+/* The published board: clock.c needs only a non-NULL handle. NULL is the
+ * firmware's board before publication. */
+static int board_handle;
+#define BOARD ((roundie_board_t *)&board_handle)
 
 int64_t roundie_time_us(void)
 {
@@ -59,17 +63,23 @@ static uint32_t syncs(void)
     return status.sync_count;
 }
 
-/* The firmware's startup after a reset of the given kind. */
-static bool boot(roundie_desktop_reset_t reset)
+/* The firmware's startup after a reset: start, then publish the board. */
+static bool start_and_publish(void)
 {
-    roundie_desktop_clock_reset(reset);
     roundie_rtc_sample_t rtc;
-    roundie_board_rtc_read(NULL, &rtc);
-    bool trusted = roundie_wall_clock_start(roundie_desktop_clock_has_rtc(), &rtc);
+    roundie_board_rtc_read(BOARD, &rtc);
+    bool trusted = roundie_wall_clock_start(&rtc);
     assert(!valid()); /* not before publication */
     roundie_wall_clock_publish();
     assert(valid() == trusted);
     return trusted;
+}
+
+/* The firmware's startup after a reset of the given kind. */
+static bool boot(roundie_desktop_reset_t reset)
+{
+    roundie_desktop_clock_reset(reset);
+    return start_and_publish();
 }
 
 /* A fresh device: power-on with the given board. */
@@ -79,13 +89,14 @@ static void power_on(bool has_rtc, int64_t start_us)
     remove(zone_path);
     roundie_desktop_clock_init(has_rtc, zone_path);
     roundie_local_time_init(true, roundie_wall_clock_valid);
+    roundie_wall_clock_init(has_rtc);
     assert(!boot(ROUNDIE_DESKTOP_RESET_POWER));
 }
 
 static void poll(void)
 {
     roundie_rtc_sample_t rtc;
-    roundie_board_rtc_read(NULL, &rtc);
+    roundie_board_rtc_read(BOARD, &rtc);
     roundie_wall_clock_poll(&rtc);
 }
 
@@ -93,7 +104,7 @@ static const char *request(const char *refusal, bool set, int64_t seconds)
 {
     roundie_rtc_sample_t rtc;
     esp_err_t error;
-    return roundie_wall_clock_request(NULL, refusal, set, seconds, &rtc, &error);
+    return roundie_wall_clock_request(BOARD, refusal, set, seconds, &rtc, &error);
 }
 
 static int64_t wall_seconds(void)
@@ -364,6 +375,45 @@ static void extremes(void)
     puts("extremes: OK");
 }
 
+/* main.c serves RT1 from the system worker before the board is published,
+ * with board NULL, while start() may run. Such a request must change nothing,
+ * so start() cannot overwrite a time the reply acknowledged. */
+static void before_publication(bool has_rtc)
+{
+    power_on(has_rtc, 1000 * SECOND);
+    int64_t set_to = civil_seconds(2026, 11, 16, 12, 0, 0);
+    assert(strcmp(request("OK", true, set_to), "OK") == 0);
+    assert(valid());
+    /* A reset that keeps the time: the PCF85063 across power loss, the RTC
+     * domain across a software reset without it. */
+    roundie_desktop_clock_reset(has_rtc ? ROUNDIE_DESKTOP_RESET_POWER : ROUNDIE_DESKTOP_RESET_SW);
+    int64_t wall_before = roundie_clock_port_wall_us();
+    roundie_clock_retention_t retained_before = *roundie_clock_port_retained();
+
+    roundie_rtc_sample_t rtc;
+    esp_err_t error;
+    const char *result = roundie_wall_clock_request(NULL, "OK", true, set_to + 86400, &rtc, &error);
+    assert(strcmp(result, "CLOCK") == 0);
+    assert(error == ESP_ERR_INVALID_STATE);
+    assert(rtc.state == ROUNDIE_SENSOR_NOT_FOUND);
+    result = roundie_wall_clock_request(NULL, "OK", false, 0, &rtc, &error);
+    assert(strcmp(result, has_rtc ? "RTC_READ" : "OK") == 0);
+    assert(error == (has_rtc ? ESP_ERR_NOT_FOUND : ESP_OK));
+    result = roundie_wall_clock_request(NULL, "OTA_BUSY", true, set_to + 86400, &rtc, &error);
+    assert(strcmp(result, "OTA_BUSY") == 0);
+    assert(roundie_clock_port_wall_us() == wall_before);
+    assert(memcmp(roundie_clock_port_retained(), &retained_before, sizeof(retained_before)) == 0);
+
+    /* Startup is as if the early requests never happened. */
+    assert(start_and_publish());
+    assert(wall_seconds() >= set_to && wall_seconds() <= set_to + 2);
+    /* After publication a SET runs, and the next poll keeps it. */
+    assert(strcmp(request("OK", true, set_to + 86400), "OK") == 0);
+    poll();
+    assert(valid());
+    assert(wall_seconds() >= set_to + 86400 && wall_seconds() <= set_to + 86400 + 2);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -372,5 +422,7 @@ int main(int argc, char **argv)
     with_rtc();
     calendar();
     extremes();
+    before_publication(false);
+    before_publication(true);
     return 0;
 }

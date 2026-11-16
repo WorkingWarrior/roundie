@@ -375,7 +375,7 @@ static void time_start(void)
 {
     roundie_rtc_sample_t rtc;
     roundie_board_rtc_read(gui.board, &rtc);
-    roundie_wall_clock_start(roundie_desktop_clock_has_rtc(), &rtc);
+    roundie_wall_clock_start(&rtc);
     roundie_wall_clock_publish();
 }
 
@@ -1027,6 +1027,7 @@ int main(int argc, char **argv)
      * applications' clock source. */
     roundie_desktop_clock_init(gui.profile->rtc, "clock-tz");
     roundie_local_time_init(true, roundie_wall_clock_valid);
+    roundie_wall_clock_init(roundie_desktop_clock_has_rtc());
     time_start();
     roundie_elf_set_clock_source(roundie_local_time_now);
 

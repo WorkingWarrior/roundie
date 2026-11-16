@@ -188,7 +188,7 @@ bad ID uses response ID `00000000` if a safe matching ID cannot be extracted.
 | `RTC_SET` | Existing calendar-setting API failed, including mode, I²C, OS or immediate readback rejection |
 | `RTC_READ`, `RTC_INVALID` | Fresh RTC read failed or calendar/OS invalid |
 | `RTC_VERIFY` | Frozen/backward/implausible time, or progression observation exceeded its bound |
-| `CLOCK` | Valid RTC could not initialize the system clock |
+| `CLOCK` | Valid RTC could not initialize the system clock; with `err=259` (`ESP_ERR_INVALID_STATE`), a SET before the board is published |
 
 `err` is the underlying ESP-IDF operation error (0 for pure protocol
 rejections). `state` uses existing sensor states: 0 valid, 1 not found,
@@ -196,6 +196,22 @@ rejections). `state` uses existing sensor states: 0 valid, 1 not found,
 `os` is 0/1 after a completed RTC register read, otherwise -1 (unknown).
 `rtc=-1` means no valid RTC UTC; `wall=-1` means explicitly unsynchronized.
 Protocol and transport errors are separate from RTC operation errors.
+
+**Requests before the board is published.** The system worker serves RT1 as
+soon as it starts, before `app_main` has read the startup RTC sample, started
+the wall clock (`roundie_wall_clock_start`) and published the board. Such a
+request has no board and changes no clock state, so startup cannot overwrite
+or invalidate a time the reply acknowledged: SET replies `CLOCK` with
+`err=259` and writes neither the system clock, the RTC nor the retention
+record; GET reports `wall=-1` and, on a board with an RTC, `RTC_READ` with the
+driver's `err=261` (`ESP_ERR_NOT_FOUND`). Repeat the request after startup.
+Before this rule (M3 at `0661e67`), an early SET on the 1.85B set only the
+system clock, replied `OK` and was then replaced by the startup RTC sample;
+an early GET replied `OK state=1`, which `tools/roundie_time.py` reads as a
+board without an RTC. Before M3 the 1.85B replied `RTC_SET`/`RTC_READ`, but
+an early SET on the 1.75C replied `OK` and a power-on startup then
+invalidated it. `tests/test_wall_clock.c` (`before_publication`) covers both
+boards.
 
 ## Calendar, OS and system clock
 

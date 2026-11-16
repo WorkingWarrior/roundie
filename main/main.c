@@ -1142,6 +1142,7 @@ void app_main(void)
     /* The sole serial/sensor owner starts independently of board and GUI.
      * Until board_ready is published it only services USB/OTA/recovery. */
     TaskHandle_t sensor_task = NULL;
+    roundie_wall_clock_init(BOARD_HAS_RTC);
     /* RP1 adds nested validation/hash/VFS calls. Budget 12 KiB, then observe
      * the worker high-water mark through RP1 instead of assuming host stacks
      * establish the Xtensa call-chain margin. */
@@ -1198,7 +1199,7 @@ void app_main(void)
              sensor_state_name(initial_battery.state), initial_battery.battery_present,
              initial_battery.voltage_mv, initial_battery.soc_valid,
              initial_battery.soc_percent, esp_err_to_name(initial_battery.error));
-    roundie_wall_clock_start(BOARD_HAS_RTC, &initial_rtc);
+    roundie_wall_clock_start(&initial_rtc);
 
     lv_init();
     lv_tick_set_cb(lv_tick_now);

@@ -14,8 +14,10 @@
  * Wall time is never used for timeouts or intervals: those use the monotonic
  * roundie_time_us(). Hardware and storage are behind roundie_clock_port.h.
  *
- * Threads: start() runs before any other caller; poll() and request() run on
- * the system worker; valid() and status() may be called from any task. */
+ * Threads: init() runs before the system worker exists; start() may run while
+ * the worker already serves request() with no board (see request()); poll()
+ * and request() run on the system worker; valid() and status() may be called
+ * from any task. */
 
 typedef struct {
     bool valid;          /* trusted and published */
@@ -23,10 +25,12 @@ typedef struct {
     int64_t sync_at_us;  /* roundie_time_us() of the last sync, 0 before publication */
 } roundie_wall_clock_status_t;
 
+/* Before the system worker starts: whether the board has an external RTC. */
+void roundie_wall_clock_init(bool board_has_rtc);
 /* Startup. With an RTC, trusts the startup sample; without one, keeps the
  * system time only after a reset that kept the RTC domain and with an
  * intact retention record. Returns the validity. */
-bool roundie_wall_clock_start(bool board_has_rtc, const roundie_rtc_sample_t *rtc);
+bool roundie_wall_clock_start(const roundie_rtc_sample_t *rtc);
 /* Makes the validity visible to valid() and status(), once the board is
  * published. */
 void roundie_wall_clock_publish(void);
@@ -35,7 +39,11 @@ void roundie_wall_clock_publish(void);
 void roundie_wall_clock_poll(const roundie_rtc_sample_t *rtc);
 /* System worker: RT1 SET and GET. result is "OK" or an earlier refusal
  * such as "OTA_BUSY"; a SET runs only when it is "OK". The RTC is read
- * afterwards in any case and returned in *rtc. Returns the result string. */
+ * afterwards in any case and returned in *rtc. Returns the result string.
+ * board is NULL until the board is published, which is after start(); such
+ * a request changes nothing, so start() cannot overwrite an acknowledged SET:
+ * a SET is refused with "CLOCK" and ESP_ERR_INVALID_STATE, and a GET on a
+ * board with an RTC reports "RTC_READ" with the driver's error. */
 const char *roundie_wall_clock_request(roundie_board_t *board, const char *result, bool set, int64_t seconds,
                                        roundie_rtc_sample_t *rtc, esp_err_t *error);
 /* roundie_local_wall_t for local_time.c. */
