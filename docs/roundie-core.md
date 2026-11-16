@@ -149,12 +149,13 @@ flowchart TB
 - **D5 Threads.** As on the board, one GUI thread owns LVGL (the SDL main
   thread) and one system worker thread runs the launcher and package work.
   The owner checks in `render.c` and `bridge.c` use `roundie_thread_self()`.
-- **D6 Applications on the desktop.** Not decided. The design note
-  [native-apps.md](native-apps.md) proposes the same application sources and
-  REP API, a `linux-x64.rep1` package target loaded with `dlopen` after
-  validation, and a shared runtime split from `manager.c`; the ESP32 package
-  format, target string `esp32s3.rep1` and ABI stay unchanged. Until a
-  decision the desktop reports native execution as not supported.
+- **D6 Applications on the desktop (M5a).** Decided and implemented, see
+  [native-apps.md](native-apps.md): the same application sources and REP API,
+  a `linux-x64.rep1` package target loaded with `dlopen` from a sealed `memfd`
+  after validation, and the firmware's `manager.c` behind a loader port; the
+  ESP32 package format, target string `esp32s3.rep1` and ABI are unchanged.
+  Native applications are trusted developer code, validated but not isolated,
+  and run only with `--native-apps`. REP Audio streams play through SDL3.
 - **D7 Time (M3).** The wall-clock policy (when time is trusted, sync from
   RT1 and the RTC, retention across resets, RTC polling) and local time
   (zone storage, conversion, revision) are one Core component,
@@ -180,7 +181,7 @@ host test suite, and the step's own check.
 | M2 | Power manager split: GUI half (menu, screen policy, BOOT) to Core; sleep and restart per platform; desktop BOOT/PWR keys | BOOT key opens the real power menu on the desktop; firmware unchanged in behaviour |
 | M3 | Time: shared wall-clock policy and local time behind a clock port (D7); emulated RTC, resets and loss of time | Clock tests on the production code; desktop fault injection; differential test against the old code |
 | M4 | Storage: file-backed application data and package install on the desktop | Package tests on the desktop store |
-| M5 | REP applications on x86-64 (D6) | Design note, then example applications running natively |
+| M5 | REP applications on x86-64 (D6); done as M5a, with SDL3 stream audio | Design note, then example applications running natively |
 | M6 | Audio: mixer to Core, SDL3 audio output | Tone and stream tests |
 
 Pending experiments and limits are listed per step in the step's commit and
@@ -242,7 +243,9 @@ menu applies the RTC timer's drift to wall time. The zone is stored in
 | `include/roundie_platform_port.h`, `platform.c` | D1 seam: `CLOCK_MONOTONIC`, pthread mutex, `pthread_self`, `nanosleep` |
 | `include/esp_err.h` | D2 status codes, same values as ESP-IDF v6.1 (tested) |
 | `lv_conf.h` | LVGL options mirroring the firmware Kconfig (tested against the generated `sdkconfig` files) |
-| `app_runtime.c` | Package manager seams on files; application runtime that refuses execution (D6) |
+| `app_runtime.c` | Package manager seams on files; application storage flow; native applications only with `--native-apps`; stall report (D6) |
+| `audio.c` | `roundie_audio.h` stream contract on SDL3 audio, with the firmware's `stream.c` (D6) |
+| `rep_exports.list` | The only symbols the desktop exports: the REP service tables (D6) |
 | `desktop.c` | GUI loop in the firmware's order, system worker thread, display flush through `display_scale.c`, touch, scripts |
 | `desktop_input.c` | Emulated touch panel (mouse, scripted taps and swipes) and BOOT/PWR keys |
 | `board.c` | Emulated board at the `roundie_board.h` boundary for the power manager: display power, backlight, BOOT and touch as wake sources |
@@ -408,8 +411,7 @@ unchanged. Builds have no warnings; host tests pass.
 - One time source: the desktop passes `roundie_local_time_now` to
   `roundie_elf_set_clock_source()` as the firmware does, and the `clock`
   command samples through that stored source, so the watch face and
-  applications read the same function. The desktop still runs no
-  applications (D6).
+  applications read the same function.
 - Finding: RTC-timer drift since the last trusted sync is invisible to the
   retention check until an alignment has happened, because restored wall time
   is then derived from the RTC timer itself. With the 5 s alignment a rate
@@ -447,5 +449,6 @@ unchanged. Builds have no warnings; host tests pass.
   subsystem (not the launcher or LVGL), keeps the monotonic clock and the
   loaded zone; light sleep keeps the monotonic clock exact; the PCF85063
   state does not survive the process; RT1 DIAG and RESTART are refused.
-- Desktop applications (D6) need the design note of M5; until then every
-  launch is refused.
+- Desktop applications (D6): an application that does not return cannot be
+  stopped on the desktop; it is reported and the desktop must be restarted.
+  Device runs of the shared runtime are PENDING (native-apps.md).

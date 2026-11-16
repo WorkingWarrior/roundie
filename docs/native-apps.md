@@ -1,9 +1,11 @@
 # Native REP applications on Linux x86-64 (M5) — design note
 
-**Status: proposal, awaiting decision.** Nothing below is implemented. It
-answers D6 in [roundie-core.md](roundie-core.md): the Roundie Desktop runs real
-REP applications, built from the same sources as the ESP32-S3 packages, through
-the same launcher, runtime services and UI bridge.
+**Status: decided and implemented on the desktop (M5a, `1ea8d2f`..`14df47b`).**
+It answers D6 in [roundie-core.md](roundie-core.md): the Roundie Desktop runs
+real REP applications, built from the same sources as the ESP32-S3 packages,
+through the same launcher, runtime services and UI bridge. The audit and
+experiment below describe the state before the work; the decisions record what
+was built, including where it differs from the proposal.
 
 ## Audit (verified at `c3933d8`)
 
@@ -48,82 +50,106 @@ ran as well: `ld.so` binds undefined symbols from every library in the
 process. Import validation before `dlopen` is therefore mandatory; limiting
 the exported symbols does not restrict imports.
 
-## Proposed decisions
+## Decisions
 
 **N1 Loading: `ET_DYN` shared object, `dlopen` after validation.**
-The ELF is written to a `memfd`, sealed against writes and size changes,
-validated from that sealed copy, and loaded with `dlopen("/proc/self/fd/N",
-RTLD_NOW | RTLD_LOCAL)` on the executor thread; the entry is found with
-`dlsym`. The bytes validated are the bytes loaded. The desktop exports exactly
-the allowlisted `rep_*` functions. Reasons: the same build model as the Xtensa
-target (`ET_DYN`, `-shared`, `-nostdlib`), no relocation code of our own, and
-gdb and sanitizer reports symbolize application frames.
-Not chosen: a custom x86-64 loader (full control of binding, but relocation
-code to maintain and no debugger symbols); one process per application (real
-isolation, but every API call becomes IPC — a different runtime architecture
-from the firmware's).
+`components/roundie_elf/linux/loader.c` writes the ELF to a `memfd`, seals it
+(`F_SEAL_SHRINK | GROW | WRITE | SEAL`), maps the sealed copy, compares it with
+the bytes the package manager validated and validates the mapping again, then
+loads it with `dlopen("/proc/self/fd/N", RTLD_NOW | RTLD_LOCAL)` on the
+executor thread. The bytes validated are the bytes loaded. The entry is
+`base + e_entry` and must equal `dlsym` of the ABI's entry name. No relocation
+code of our own: `ld.so` relocates. After `dlclose` the loader checks with
+`dladdr` that the image is no longer mapped and closes the descriptor.
 
-**N2 x86-64 validation with the same policy.** A second validator for
-ELF64/`EM_X86_64`/`ET_DYN` with the same rules and the shared ABI allowlist:
-only `PT_LOAD`, `PT_DYNAMIC`, `PT_GNU_STACK` (not executable) and
-`PT_GNU_RELRO`; no writable and executable segment; no `PT_INTERP`/`PT_TLS`;
-dynamic tags from an allowlist (no `DT_NEEDED`, `DT_INIT*`, `DT_FINI*`,
-`DT_PREINIT_ARRAY`, `DT_TEXTREL`, `DT_RPATH`, `DT_RUNPATH`); undefined
-symbols exactly within the ABI's imports; relocations `RELATIVE`,
-`GLOB_DAT`, `JUMP_SLOT`, `64` only; `.rep.abi` and entry as on Xtensa. Every
-rejection names its rule, as today.
+`ld.so` binds an undefined symbol to the first definition in the process, and
+a module's own definitions can be preempted the same way. Two measures follow:
+the desktop exports exactly the REP service tables
+(`platform/linux/rep_exports.list`, `--dynamic-list`), and after `dlopen` the
+loader reads every relocation slot of the image and compares it with the
+binding the validator expected: `RELATIVE` = base + addend, an import = the
+desktop's service + addend, a defined symbol = base + its value. A mismatch
+unloads the image and reports `binding at +offset is X, expected Y`
+(`loader-relocation`). Not chosen: a custom x86-64 loader; one process per
+application (see N7).
+
+**N2 x86-64 validation with the same policy.** `validate_x86_64.c` checks
+ELF64/`EM_X86_64`/`ET_DYN` (System V OS ABI): segment set, order, alignment and
+bounds, RELRO and note bounds; no writable code, no executable stack, no
+`PT_INTERP`/`PT_TLS`; dynamic tags from an allowlist (no `DT_NEEDED`, no
+initializers or finalizers, only `BIND_NOW`/`NOW` flags, no `TEXTREL`/`RPATH`);
+GNU hash bounds; the shared ABI import allowlist; relocations `RELATIVE`,
+`GLOB_DAT`, `64` and `JUMP_SLOT` only, into writable image memory, with
+`DT_RELACOUNT` consistent. An application may not define a REP service name
+(`service-symbol-defined`): `ld.so` would bind references to the desktop's
+copy instead. Every rejection names its rule. Xtensa validation is unchanged.
 
 **N3 Package target `linux-x64.rep1`.** RPK1 is unchanged; only the platform
-string differs. The firmware keeps `esp32s3.rep1`. Each build accepts only its
-own target, so an ESP32 package on the desktop (and the reverse) is rejected
-as `platform` before any ELF parsing and reported through the launcher's
-error path. `roundie_package.py` gains `--target`; the default stays
-`esp32s3.rep1`.
+string differs, chosen per build (`ROUNDIE_PACKAGE_TARGET`). The firmware keeps
+`esp32s3.rep1`. Each build reports the other's packages as
+`package-incompatible` before any ELF parsing. `roundie_package.py --target`
+selects it (default `esp32s3.rep1`); `tools/roundie_native_app.py` builds the
+unchanged example sources as self-contained x86-64 shared objects.
 
-**N4 Native ABI.** The same REP ABI 1/2/3 source API. For `linux-x64.rep1`
-the tables and descriptors have LP64 System V layout; the value structures
-are byte-identical to Xtensa (already asserted). LP64 layout assertions are
-added to the SDK headers next to the 32-bit ones; nothing changes for Xtensa.
+**N4 Native ABI.** The same REP ABI 1/2/3 source API. Tables and descriptors
+have LP64 System V layout on `linux-x64.rep1`; the value structures are
+byte-identical to Xtensa. The public headers assert both layouts; nothing
+changed for Xtensa.
 
-**N5 Shared runtime.** `manager.c` is split into a portable runtime
-(lifecycle, services, mailbox, timers, UI, storage, audio ownership, clock
-events), using the D1 seam for locks, time and thread identity, and a small
-loader port: load a validated image, find the entry, tell whether a pointer
-lies in the image's code or data, unload, report memory. ESP-IDF implements
-it with `esp_elf`, the desktop with N1. The executor loop stays per platform
-(FreeRTOS task with the task watchdog; a pthread on the desktop). LVGL keeps
-one owner: callbacks run on the executor, UI requests go through the existing
-bridge queue to the GUI thread.
+**N5 Shared runtime.** `manager.c` (lifecycle, services, mailbox, timers, UI
+ownership, storage, audio ownership, clock events) is one file compiled by
+both builds; it reaches the platform only through the D1 seam and the loader
+port (`loader.h`), implemented by `idf/loader.c` (`esp_elf`, `heap_caps`) and
+`linux/loader.c` (N1). The executor stays per platform: a FreeRTOS task with
+the task watchdog (`executor.c`), a pthread with the same one-slot queue
+(`linux/executor.c`). LVGL keeps one owner: callbacks run on the executor, UI
+requests go through the bridge queue to the GUI thread.
 
-**N6 Audio.** The stream owner and service move out of `audio.c` beside
-`stream.c`; the output (I²S and codec, or an SDL3 audio stream) becomes a
-platform part. Headless tests capture the PCM with SDL's `disk` driver.
+**N6 Audio, as built.** Both platforms implement the `roundie_audio.h` stream
+contract that `manager.c` and `rep_audio_v1` use: the firmware with the ES8311
+(`audio.c`, unchanged), the desktop with an SDL3 playback stream
+(`platform/linux/audio.c`). They share `stream.c` (ring, playback policy,
+PCM conversion); the stream bookkeeping around it (open, write, close, owner
+release, status) is written twice, because moving it out of the firmware's
+`audio.c` would change board audio without a device test. One thread owns the
+SDL output and keeps about two 256-frame chunks queued, in place of the
+codec's blocking write. Tones and the melody remain firmware diagnostics.
+Tests run with SDL's `dummy` driver and capture PCM with the `disk` driver,
+never the session's output.
 
-**N7 Security model (decision needed).** A native application is arbitrary
-code running with the user's rights inside the desktop process. The import
-allowlist is an API control, not isolation: the application can read and
-write any memory of the process and make system calls directly. Proposal:
-native execution is off by default and enabled per run with
-`--native-apps`; only `linux-x64.rep1` packages from the desktop's data
-directory are considered; without the flag a launch is refused as today.
+**N7 Security model: opt-in, trusted developer code.** A native application
+is arbitrary code with the user's rights inside the desktop process. The
+validation and import allowlist are API and compatibility controls, not
+isolation: the application can read and write any memory of the process and
+make system calls directly. Native execution is off by default and enabled per
+run with `--native-apps`; without it every launch is refused
+(`native applications are disabled`). Only `linux-x64.rep1` packages installed
+into the desktop's data directory are run; nothing is fetched or started
+automatically. Separate processes and sandboxing are outside M5a.
 
-## Consequences
+## Limitations
 
-- N5 is the largest firmware change since M2. Disassembly will not be
-  identical, so the firmware is checked by the four builds and host tests of
-  the shared runtime; a device run of Hello, UI, Sound, Watch and repeated
-  start/stop is PENDING until flashing is authorized.
-- An application that never returns blocks the executor. The GUI stays
-  responsive, a stop request cannot complete, and the desktop must be
-  restarted; the firmware's watchdog reset has no desktop equivalent.
-- Application code is not instrumented by ASan (it links no runtime); the
-  sanitizers cover the runtime, bridge, loader and leak checks.
+- An application that does not return cannot be stopped: Linux offers no safe
+  way to end one thread of a process. The executor publishes since when its
+  current call runs; after 5 s the desktop reports the instance once, keeps the
+  GUI running, and refuses new launches until it is restarted. Nothing cancels
+  or kills the thread. The firmware's watchdog reset has no desktop equivalent.
+- Application code is not instrumented by the sanitizers (it links no
+  runtime); they cover the runtime, bridge, loader and audio.
+- Firmware behaviour of the shared runtime is checked by builds and host tests
+  only; a device run of Hello, UI, Sound, Watch and repeated start/stop is
+  PENDING until flashing is authorized.
 
-## Stages
+## Verification (M5a)
 
-| Stage | Content | Check |
-|---|---|---|
-| M5a | N5 split; desktop still refuses | Four firmware builds without warnings; host tests; runtime host tests on Linux |
-| M5b | N2, N3, N4; example applications built for both targets | Validator tests with malformed and forbidden ELFs; package tests |
-| M5c | Desktop executor and loader; launcher integration; N7 | Hello through the real launcher; 100 start/stop cycles under ASan/LSan with mappings and descriptors checked; load and architecture errors reported |
-| M5d | N6 | Sound plays through the desktop backend; captured PCM checked |
+| Check | Result |
+|---|---|
+| Four firmware builds (1.85B and 1.75C, rep and legacy) | exit 0, no warnings |
+| Host suite with the IDF environment | 122 OK, 1 skipped |
+| Validator: every example in C11 and C2x; forbidden constructs; every truncation; 20000 mutations (ASan/UBSan) | rejected by rule, no sanitizer report |
+| Launcher: Watch (ABI 3, UI bridge) closed to the list, then Hello (ABI 1) returns 42 (ASan/UBSan, leak check) | pass |
+| 100 Hello and 36 Stopwatch cycles | no image mapping, descriptor or runtime resource left |
+| Truncated package, ESP32 package, `puts`-interposing object, desktop without `--native-apps` | rejected with the named reason |
+| Hung application | GUI responsive, stall reported, desktop exits cleanly |
+| Sound through SDL3 (`disk` driver) | 6.3 s tune captured, first note 784 Hz, mono on both channels; closing mid-tune releases the stream |
+| ThreadSanitizer: launcher and Sound scenarios (manual run) | no report |
