@@ -69,5 +69,10 @@ _Static_assert(sizeof(rep_api_v2_t) == 36, "REP2 API");
 _Static_assert(offsetof(rep_api_v2_t, timer_start) == 28, "REP2 timer");
 _Static_assert(sizeof(rep_descriptor_v2_t) == 36, "REP2 descriptor");
 _Static_assert(offsetof(rep_descriptor_v2_t, destroy) == 32, "REP2 destroy");
+#elif defined(__x86_64__) && UINTPTR_MAX == UINT64_MAX /* linux-x64.rep1, System V LP64 */
+_Static_assert(sizeof(rep_api_v2_t) == 64, "REP2 API");
+_Static_assert(offsetof(rep_api_v2_t, timer_start) == 48, "REP2 timer");
+_Static_assert(sizeof(rep_descriptor_v2_t) == 64, "REP2 descriptor");
+_Static_assert(offsetof(rep_descriptor_v2_t, destroy) == 56, "REP2 destroy");
 #endif
 #endif

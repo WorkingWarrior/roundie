@@ -18,7 +18,19 @@ MAX_FILE = 65536
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 
-def inspect(path):
+TARGETS = ("esp32s3.rep1", "linux-x64.rep1")
+
+
+def checker_sources(target):
+    """Compiler arguments selecting the target's validator (docs/native-apps.md, N2)."""
+    if target not in TARGETS:
+        raise DeviceError(f"target must be one of {', '.join(TARGETS)}")
+    return ((["-DROUNDIE_TARGET_LINUX_X64=1"] if target == "linux-x64.rep1" else []) +
+            [str(ROOT / "components/roundie_elf/validate.c"),
+             str(ROOT / "components/roundie_elf/validate_x86_64.c")])
+
+
+def inspect(path, target="esp32s3.rep1"):
     path = Path(path).resolve()
     if not 52 <= path.stat().st_size <= MAX_FILE:
         raise DeviceError("ELF size must be 52..65536 bytes")
@@ -28,7 +40,7 @@ def inspect(path):
                         "-I" + str(ROOT / "include"),
                         "-I" + str(ROOT / "components/roundie_elf/include"),
                         str(ROOT / "tools/validate_elf.c"),
-                        str(ROOT / "components/roundie_elf/validate.c"), "-o", checker], check=True)
+                        *checker_sources(target), "-o", checker], check=True)
         checked = subprocess.run([checker, str(path)], capture_output=True, text=True)
         if checked.returncode:
             raise DeviceError(checked.stderr.strip())

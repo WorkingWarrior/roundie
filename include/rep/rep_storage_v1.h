@@ -31,5 +31,8 @@ REP2_EXPORT const rep_storage_v1_t *rep_storage_v1(uint32_t required_version);
 #if UINTPTR_MAX == UINT32_MAX
 _Static_assert(sizeof(rep_storage_v1_t) == 20, "REP storage API");
 _Static_assert(offsetof(rep_storage_v1_t, write) == 16, "REP storage write");
+#elif defined(__x86_64__) && UINTPTR_MAX == UINT64_MAX /* linux-x64.rep1, System V LP64 */
+_Static_assert(sizeof(rep_storage_v1_t) == 32, "REP storage API");
+_Static_assert(offsetof(rep_storage_v1_t, write) == 24, "REP storage write");
 #endif
 #endif

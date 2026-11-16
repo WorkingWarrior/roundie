@@ -29,7 +29,7 @@ def valid_id(value):
     return value
 
 
-def inspect(path):
+def inspect(path, target="esp32s3.rep1"):
     path = Path(path).resolve()
     if not PREFIX + 52 <= path.stat().st_size <= MAX_FILE:
         raise DeviceError("package size out of bounds")
@@ -41,7 +41,7 @@ def inspect(path):
                         "-I" + str(ROOT / "components/roundie_packages/include"),
                         str(ROOT / "tools/validate_package.c"),
                         str(ROOT / "components/roundie_packages/format.c"),
-                        str(ROOT / "components/roundie_elf/validate.c"), "-lcrypto", "-o", checker],
+                        *roundie_elf.checker_sources(target), "-lcrypto", "-o", checker],
                        check=True, capture_output=True)
         checked = subprocess.run([checker, str(path)], capture_output=True, text=True)
         if checked.returncode:
@@ -57,7 +57,7 @@ def inspect(path):
     return result
 
 
-def build(elf, output, app_id, name, version):
+def build(elf, output, app_id, name, version, target="esp32s3.rep1"):
     valid_id(app_id)
     match = VERSION.fullmatch(version)
     if match is None or any(int(part) > 65535 for part in match.groups()):
@@ -65,20 +65,20 @@ def build(elf, output, app_id, name, version):
     encoded_name = name.encode("utf-8")
     if not 1 <= len(encoded_name) <= 63 or b"\0" in encoded_name:
         raise DeviceError("name must contain 1..63 UTF-8 bytes")
-    info = roundie_elf.inspect(elf)
+    info = roundie_elf.inspect(elf, target)
     payload = Path(elf).read_bytes()
     if len(payload) != info["size"] or hashlib.sha256(payload).hexdigest() != info["sha256"]:
         raise DeviceError("ELF changed while packaging")
     header = struct.pack("<4sHHIIII32s8x", b"RPK1", 1, 64, PREFIX + len(payload), 160,
                          len(payload), 0, hashlib.sha256(payload).digest())
     manifest = struct.pack("<64s64s3HH16sH6x", app_id.encode("ascii"), encoded_name,
-                           *(int(part) for part in match.groups()), info["abi"], b"esp32s3.rep1", 1)
+                           *(int(part) for part in match.groups()), info["abi"], target.encode("ascii"), 1)
     # Validate exact candidate before publishing the requested host artifact.
     output = Path(output)
     with tempfile.TemporaryDirectory(prefix="rep-package-build-", dir=output.parent) as temporary:
         candidate = Path(temporary) / "candidate.rpk"
         candidate.write_bytes(header + manifest + payload)
-        checked = inspect(candidate)
+        checked = inspect(candidate, target)
         candidate.replace(output)
     return checked
 
@@ -185,11 +185,14 @@ def main(argv=None):
     pack.add_argument("--id", required=True)
     pack.add_argument("--name", required=True)
     pack.add_argument("--version", required=True)
+    pack.add_argument("--target", choices=roundie_elf.TARGETS, default="esp32s3.rep1")
     for name in ("inspect", "upload"):
         command = sub.add_parser(name)
         command.add_argument("file", type=Path)
         if name == "upload":
             command.add_argument("--install", action="store_true")
+        else:
+            command.add_argument("--target", choices=roundie_elf.TARGETS, default="esp32s3.rep1")
     for name in ("info", "launch", "remove"):
         sub.add_parser(name).add_argument("id")
     sub.add_parser("status")
@@ -199,9 +202,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
-            result = build(args.elf, args.output, args.id, args.name, args.version)
+            result = build(args.elf, args.output, args.id, args.name, args.version, args.target)
         elif args.command == "inspect":
-            result = inspect(args.file)
+            result = inspect(args.file, args.target)
         else:
             if args.port is None:
                 parser.error("--port required for device operations")

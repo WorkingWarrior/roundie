@@ -59,5 +59,11 @@ _Static_assert(offsetof(rep_api_t, log) == 12, "REP API log offset");
 _Static_assert(offsetof(rep_api_t, release) == 24, "REP API release offset");
 _Static_assert(sizeof(rep_app_descriptor_t) == 12, "REP descriptor layout");
 _Static_assert(offsetof(rep_app_descriptor_t, on_start) == 8, "REP callback offset");
+#elif defined(__x86_64__) && UINTPTR_MAX == UINT64_MAX /* linux-x64.rep1, System V LP64 */
+_Static_assert(sizeof(rep_api_t) == 48, "REP API layout");
+_Static_assert(offsetof(rep_api_t, log) == 16, "REP API log offset");
+_Static_assert(offsetof(rep_api_t, release) == 40, "REP API release offset");
+_Static_assert(sizeof(rep_app_descriptor_t) == 16, "REP descriptor layout");
+_Static_assert(offsetof(rep_app_descriptor_t, on_start) == 8, "REP callback offset");
 #endif
 #endif

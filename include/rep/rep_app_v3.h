@@ -180,5 +180,10 @@ _Static_assert(sizeof(rep_api_v3_t) == 52, "REP3 API");
 _Static_assert(offsetof(rep_api_v3_t, ui_create) == 36, "REP3 UI API");
 _Static_assert(sizeof(rep_descriptor_v3_t) == 40, "REP3 descriptor");
 _Static_assert(offsetof(rep_descriptor_v3_t, required_capabilities) == 36, "REP3 capabilities");
+#elif defined(__x86_64__) && UINTPTR_MAX == UINT64_MAX /* linux-x64.rep1, System V LP64 */
+_Static_assert(sizeof(rep_api_v3_t) == 96, "REP3 API");
+_Static_assert(offsetof(rep_api_v3_t, ui_create) == 64, "REP3 UI API");
+_Static_assert(sizeof(rep_descriptor_v3_t) == 72, "REP3 descriptor");
+_Static_assert(offsetof(rep_descriptor_v3_t, required_capabilities) == 64, "REP3 capabilities");
 #endif
 #endif

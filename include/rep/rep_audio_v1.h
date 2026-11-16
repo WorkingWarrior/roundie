@@ -40,5 +40,8 @@ REP2_EXPORT const rep_audio_v1_t *rep_audio_v1(uint32_t required_version);
 #if UINTPTR_MAX == UINT32_MAX
 _Static_assert(sizeof(rep_audio_v1_t) == 28, "REP audio API");
 _Static_assert(offsetof(rep_audio_v1_t, close) == 24, "REP audio close");
+#elif defined(__x86_64__) && UINTPTR_MAX == UINT64_MAX /* linux-x64.rep1, System V LP64 */
+_Static_assert(sizeof(rep_audio_v1_t) == 48, "REP audio API");
+_Static_assert(offsetof(rep_audio_v1_t, close) == 40, "REP audio close");
 #endif
 #endif

@@ -10,7 +10,12 @@
 #define ROUNDIE_PACKAGE_MAX (ROUNDIE_PACKAGE_PREFIX + ROUNDIE_ELF_MAX_FILE)
 #define ROUNDIE_PACKAGE_ID 64U
 #define ROUNDIE_PACKAGE_NAME 64U
+/* Each build accepts only packages of its own target (docs/native-apps.md, N3). */
+#if ROUNDIE_TARGET_LINUX_X64
+#define ROUNDIE_PACKAGE_TARGET "linux-x64.rep1"
+#else
 #define ROUNDIE_PACKAGE_TARGET "esp32s3.rep1"
+#endif
 #define ROUNDIE_PACKAGE_API 1U
 
 typedef struct {

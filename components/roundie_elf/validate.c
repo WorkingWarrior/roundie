@@ -49,7 +49,7 @@ bool roundie_elf_import_allowed(const char *name)
 }
 
 /* The ABI's own table, plus the storage and audio extensions for ABI 3. */
-static bool import_matches(const char *name, uint32_t abi_version)
+bool roundie_elf_import_matches(const char *name, uint32_t abi_version)
 {
     if (abi_version == 1) {
         return strcmp(name, "rep_abi_v1") == 0;
@@ -63,6 +63,16 @@ static bool import_matches(const char *name, uint32_t abi_version)
 
 bool roundie_elf_validate(const void *input, size_t size, roundie_elf_info_t *out,
                           char error[ROUNDIE_ELF_ERROR_SIZE])
+{
+#if ROUNDIE_TARGET_LINUX_X64
+    return roundie_elf_validate_x86_64(input, size, out, error);
+#else
+    return roundie_elf_validate_xtensa(input, size, out, error);
+#endif
+}
+
+bool roundie_elf_validate_xtensa(const void *input, size_t size, roundie_elf_info_t *out,
+                                 char error[ROUNDIE_ELF_ERROR_SIZE])
 {
 #define CHECK(condition, message) do { \
     if (!(condition)) { \
@@ -188,7 +198,7 @@ bool roundie_elf_validate(const void *input, size_t size, roundie_elf_info_t *ou
             CHECK(name != NULL, "symbol-name-bounds");
             CHECK(ELF32_ST_TYPE(symbol.st_info) != STT_TLS, "TLS-symbol");
             if (symbol.st_shndx == SHN_UNDEF && name[0] != '\0') {
-                if (!roundie_elf_import_allowed(name) || !import_matches(name, out->abi_version)) {
+                if (!roundie_elf_import_allowed(name) || !roundie_elf_import_matches(name, out->abi_version)) {
                     snprintf(error, ROUNDIE_ELF_ERROR_SIZE, "import:%.64s", name);
                     return false;
                 }
