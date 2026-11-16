@@ -1,0 +1,31 @@
+name: Roundie CI image
+description: >
+  Loads the CI image that the ci-image job built or cached (key: the
+  Containerfile) and, optionally, the managed components (key:
+  dependencies.lock). A missing cache entry fails the job rather than
+  testing something else.
+inputs:
+  components:
+    description: Also restore managed_components (LVGL for the desktop).
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Restore the CI image
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/roundie-ci.tar.zst
+        key: roundie-ci-image-${{ hashFiles('tools/ci/Containerfile') }}
+        fail-on-cache-miss: true
+    - name: Load the CI image
+      shell: bash
+      run: |
+        zstd -dc ~/roundie-ci.tar.zst | docker load
+        rm ~/roundie-ci.tar.zst
+    - name: Restore managed components
+      if: inputs.components == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: managed_components
+        key: managed-components-${{ hashFiles('dependencies.lock', 'main/idf_component.yml', 'components/**/idf_component.yml') }}
+        fail-on-cache-miss: true

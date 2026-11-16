@@ -1,0 +1,56 @@
+# Roundie CI image for host tests, the desktop runtime and the Virtual
+# Hardware Lab (docs/ci.md). Firmware builds use the ESP-IDF image directly.
+#
+# Every input is pinned: the ESP-IDF image by digest, Arch Linux by digest and
+# its packages by an Arch Linux Archive snapshot date, so a rebuild gives the
+# same package versions. Change a pin here and the CI cache key changes with it.
+#
+#   podman build -f tools/ci/Containerfile -t roundie-ci tools/ci
+
+# ESP-IDF v6.1 (commit fff9895c82d744c7237be8847347bdd1b07c6643) with the
+# esp-15.2.0_20251204 Xtensa toolchain; the same image builds the firmware.
+FROM docker.io/espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c AS idf
+
+FROM docker.io/library/archlinux:base-20261108.0.623074@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899
+
+ARG ARCH_SNAPSHOT=2026/11/15
+
+# Packages, by test group:
+#   host C harnesses and tools: gcc (ASan/UBSan/TSan runtimes), cmake, python
+#   desktop: meson, ninja, pkgconf, sdl3, vulkan-headers, vulkan-icd-loader,
+#            mbedtls (4.x, tfpsacrypto); vulkan-swrast is Mesa lavapipe,
+#            Vulkan without a GPU
+#   graphics: gamescope, xdotool, xorg-xwayland (headless gamescope);
+#             kwin, dbus, wayland, plasma-wayland-protocols (fake-input.xml,
+#             LGPL, installed, not vendored) for the HiDPI test
+#   gdb test: gdb
+#   roundie-manager: nodejs, npm (npm ci from its package-lock.json)
+RUN echo "Server = https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/\$repo/os/\$arch" \
+        > /etc/pacman.d/mirrorlist \
+ && pacman -Syyuu --noconfirm --needed \
+        gcc make cmake pkgconf python git which diffutils \
+        meson ninja sdl3 vulkan-headers vulkan-icd-loader vulkan-swrast mesa mbedtls \
+        gamescope xdotool xorg-xwayland \
+        kwin dbus wayland plasma-wayland-protocols \
+        gdb nodejs npm \
+ && pacman -Scc --noconfirm \
+ && rm -rf /var/cache/pacman/pkg/*
+
+# The Xtensa toolchain for the Xtensa ELF parts of the host tests, and the
+# ESP-IDF paths the host tests read (esp_err.h, esp_system.h, the S3 SPI
+# clock divider, the partition table generator). This is not a working IDF:
+# firmware builds run in the ESP-IDF image.
+COPY --from=idf /opt/esp/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf /opt/xtensa-esp-elf
+COPY --from=idf /opt/esp/idf/components/esp_common/include /opt/esp-idf/components/esp_common/include
+COPY --from=idf /opt/esp/idf/components/esp_system/include /opt/esp-idf/components/esp_system/include
+COPY --from=idf /opt/esp/idf/components/esp_hal_gpspi/esp32s3/include /opt/esp-idf/components/esp_hal_gpspi/esp32s3/include
+COPY --from=idf /opt/esp/idf/components/partition_table /opt/esp-idf/components/partition_table
+ENV IDF_PATH=/opt/esp-idf \
+    ROUNDIE_XTENSA_TOOLCHAIN=/opt/xtensa-esp-elf/bin
+
+# KWin's file capability (cap_sys_nice, for real-time scheduling) makes its
+# exec fail with EPERM under no-new-privileges; the tests do not need it.
+RUN setcap -r /usr/bin/kwin_wayland
+
+# Tests run unprivileged: native REP applications are untrusted code.
+RUN useradd --create-home --uid 1001 ci

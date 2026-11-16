@@ -1,0 +1,37 @@
+name: Roundie CI report
+description: >
+  Adds a test group's Markdown report (tools/ci/run_tests.py) to the job
+  summary, uploads the reports (JSON, JUnit XML, Markdown, full log) and,
+  after a failure, the tests' work directories: builds, data directories,
+  screenshots and application logs.
+inputs:
+  name:
+    description: The test group.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Job summary
+      shell: bash
+      run: |
+        if ! cat ci-reports/*.md >> "$GITHUB_STEP_SUMMARY" 2> /dev/null; then
+          echo "No report from ${{ inputs.name }}: the group did not run." >> "$GITHUB_STEP_SUMMARY"
+        fi
+    - name: Upload reports
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: reports-${{ inputs.name }}
+        path: |
+          ci-reports
+          !ci-reports/work
+        retention-days: 14
+    - name: Upload work directories
+      if: failure()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: work-${{ inputs.name }}
+        path: |
+          ci-reports/work
+          !ci-reports/work/**/*.o
+          !ci-reports/work/**/*.a
+        retention-days: 7

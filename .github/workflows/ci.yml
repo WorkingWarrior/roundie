@@ -1,0 +1,298 @@
+# Roundie CI (docs/ci.md): the four firmware configurations, the host tests
+# and validators, the desktop runtime under ASan/UBSan and ThreadSanitizer,
+# native REP x86-64 applications, the Virtual Hardware Lab and the graphics
+# tests on Mesa lavapipe. Every job can be reproduced locally with the same
+# scripts; docs/ci.md gives the commands.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only token; no job uses a secret. pull_request (never
+# pull_request_target) runs fork code without repository write access.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # ESP-IDF v6.1, commit fff9895c82d744c7237be8847347bdd1b07c6643, Xtensa
+  # toolchain esp-15.2.0_20251204. tools/ci/Containerfile uses the same digest.
+  IDF_IMAGE: docker.io/espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
+  ROUNDIE_CI_IMAGE: roundie-ci
+  ROUNDIE_CI_ENGINE: docker
+
+jobs:
+  workflow-lint:
+    name: Workflow syntax (actionlint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: docker run --rm --network=none -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+        env:
+          ACTIONLINT_IMAGE: docker.io/rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+  firmware:
+    name: Firmware ${{ matrix.board }} ${{ matrix.profile }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: docker.io/espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [waveshare_s3_touch_lcd_1_85b, waveshare_s3_touch_amoled_1_75c]
+        profile: [legacy, rep]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The component manager checks every component against dependencies.lock.
+      - name: Restore managed components
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: managed_components
+          key: managed-components-${{ hashFiles('dependencies.lock', 'main/idf_component.yml', 'components/**/idf_component.yml') }}
+      - name: Build
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          tools/ci/build_firmware.sh "${{ matrix.board }}" "${{ matrix.profile }}"
+      - name: Report
+        if: always()
+        shell: bash
+        run: cat ci-reports/firmware-*.md >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Collect images and host-test inputs
+        if: always()
+        shell: bash
+        run: |
+          build="build-ci/${{ matrix.board }}-${{ matrix.profile }}"
+          mkdir -p artifact
+          cp -r ci-reports artifact/
+          # The legacy layout has no ota_data_initial.bin: copy what exists.
+          cd "$build" 2> /dev/null || exit 0
+          for file in sdkconfig roundie-profile.txt flasher_args.json config/sdkconfig.json \
+              partition_table/partition-table.bin bootloader/bootloader.bin ./*.bin ./*.elf ./*.map; do
+            if [ -f "$file" ]; then
+              cp --parents "$file" "$GITHUB_WORKSPACE/artifact/"
+            fi
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: firmware-${{ matrix.board }}-${{ matrix.profile }}
+          path: artifact
+          retention-days: 14
+
+  components:
+    name: Managed components (LVGL for the desktop)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: docker.io/espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: managed_components
+          key: managed-components-${{ hashFiles('dependencies.lock', 'main/idf_component.yml', 'components/**/idf_component.yml') }}
+      - name: Fetch (idf.py reconfigure, checked against dependencies.lock)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          cp dependencies.lock /tmp/dependencies.lock
+          idf.py -B build-ci/components -DSDKCONFIG=build-ci/components/sdkconfig reconfigure
+          cmp dependencies.lock /tmp/dependencies.lock
+      - name: Save
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: managed_components
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  ci-image:
+    name: CI image (Arch Linux snapshot, Mesa lavapipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The key is the Containerfile, which pins every input.
+      - name: Restore
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/roundie-ci.tar.zst
+          key: roundie-ci-image-${{ hashFiles('tools/ci/Containerfile') }}
+          lookup-only: true
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker build -f tools/ci/Containerfile -t "$ROUNDIE_CI_IMAGE" tools/ci
+          docker save "$ROUNDIE_CI_IMAGE" | zstd -T0 -3 > ~/roundie-ci.tar.zst
+      - name: Save
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/roundie-ci.tar.zst
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  host:
+    name: Host tests and validators
+    needs: [ci-image, firmware]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-image
+      # The tests read the 1.85B builds where the README's commands put them:
+      # build-rep, build, sdkconfig.rep and sdkconfig.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: firmware-waveshare_s3_touch_lcd_1_85b-rep
+          path: build-rep
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: firmware-waveshare_s3_touch_lcd_1_85b-legacy
+          path: build
+      - name: Place firmware configurations
+        run: |
+          mv build-rep/sdkconfig sdkconfig.rep
+          mv build/sdkconfig sdkconfig
+          rm -rf build-rep/ci-reports build/ci-reports
+      - name: Test group coverage
+        run: tools/ci/container.sh python3 tools/ci/run_tests.py --check-coverage
+      - name: Run
+        run: tools/ci/container.sh python3 tools/ci/run_tests.py --strict host
+      - uses: ./.github/actions/ci-report
+        if: always()
+        with:
+          name: host
+
+  manager:
+    name: roundie-manager (typecheck, unit tests)
+    needs: [ci-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-image
+      # Network only for the locked install; no install scripts run.
+      - name: npm ci
+        run: tools/ci/container.sh --network npm ci --ignore-scripts --prefix tools/roundie-manager
+      - name: Typecheck and test
+        run: tools/ci/container.sh bash -c 'cd tools/roundie-manager && npm run typecheck && npm test'
+
+  desktop-build:
+    name: Desktop build (Meson, SDL3, Vulkan)
+    needs: [ci-image, components]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-image
+        with:
+          components: 'true'
+      - name: Build
+        run: tools/ci/container.sh tools/ci/build_desktop.sh
+      - name: Report
+        if: always()
+        run: cat ci-reports/desktop-build.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: reports-desktop-build
+          path: ci-reports
+          retention-days: 14
+
+  desktop:
+    name: ${{ matrix.title }}
+    needs: [ci-image, components]
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: native
+            title: REP x86-64 native applications (ASan/UBSan)
+            minutes: 30
+          - group: desktop-virtual-time
+            title: Desktop ASan/UBSan, virtual time
+            minutes: 30
+          - group: desktop-real-time
+            title: Desktop ASan/UBSan, real time
+            minutes: 30
+          - group: lab
+            title: Virtual Hardware Lab
+            minutes: 30
+          - group: graphics
+            title: Graphics (gamescope, KWin, lavapipe)
+            minutes: 30
+          - group: tsan
+            title: Desktop ThreadSanitizer
+            minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-image
+        with:
+          components: 'true'
+      # gamescope on lavapipe needs /dev/udmabuf (tools/ci/container.sh).
+      - name: Allow udmabuf
+        if: matrix.group == 'graphics'
+        run: |
+          ls -l /dev/udmabuf
+          sudo chmod 0666 /dev/udmabuf
+      - name: Run
+        run: tools/ci/container.sh python3 tools/ci/run_tests.py --strict "${{ matrix.group }}"
+      - uses: ./.github/actions/ci-report
+        if: always()
+        with:
+          name: ${{ matrix.group }}
+
+  summary:
+    name: Summary
+    if: always()
+    needs: [workflow-lint, firmware, host, manager, desktop-build, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Reports only: failure work directories (work-*) stay in their artifacts.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: reports-*
+          path: all
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: firmware-*
+          path: all
+      - name: Overview
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/summarize.py all "$NEEDS" >> "$GITHUB_STEP_SUMMARY"

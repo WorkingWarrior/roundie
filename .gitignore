@@ -26,3 +26,5 @@ __pycache__/
 /examples/usb_msc_ramdisk_probe/sdkconfig
 /examples/usb_msc_ramdisk_probe/sdkconfig.old
 /build-desktop*/
+/build-ci/
+/ci-reports/
