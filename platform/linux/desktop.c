@@ -465,12 +465,15 @@ static void time_worker_poll(int64_t now, int64_t *polled_us)
 static void *system_worker(void *argument)
 {
     (void)argument;
+    roundie_desktop_time_follow();
     for (uint32_t i = 0; i < install_count; i++) {
         if (!install_package(installs[i])) {
             atomic_store(&install_failed, true);
         }
     }
-    roundie_launcher_set_home(ROUNDIE_LAUNCHER_HOME_PACKAGE, true);
+    /* As the board's trial after Safe Mode: no home start into a package that may have failed. */
+    bool previous_failed = roundie_desktop_apps_startup();
+    roundie_launcher_set_home(ROUNDIE_LAUNCHER_HOME_PACKAGE, !previous_failed);
     int64_t clock_polled_us = roundie_time_us();
     while (!atomic_load(&quit_requested)) {
         int64_t now = roundie_time_us();
@@ -481,6 +484,7 @@ static void *system_worker(void *argument)
         time_worker_poll(now, &clock_polled_us);
         roundie_sleep_ms(10);
     }
+    roundie_desktop_apps_shutdown();
     return NULL;
 }
 
@@ -526,6 +530,28 @@ typedef struct {
 } script_t;
 
 static script_t script;
+
+#define VIRTUAL_STEP_US 5000
+
+/* --virtual-time: while the script waits, time moves in steps of at most
+ * VIRTUAL_STEP_US, each taken only after the executor and the system worker
+ * have handled the previous one (the worker takes turns with this loop), so
+ * applications, the launcher and the clock see the same times on every run. An application that does not return stops
+ * time, and the script with it. */
+static void virtual_time_step(void)
+{
+    int64_t now = roundie_time_us();
+    if (!roundie_elf_executor_settled(now)) {
+        roundie_elf_executor_kick();
+        return;
+    }
+    int64_t step = VIRTUAL_STEP_US;
+    if (script.resume_us > now && script.resume_us - now < step) {
+        step = script.resume_us - now;
+    }
+    roundie_desktop_time_advance(step);
+    roundie_elf_executor_kick();
+}
 
 static bool script_load(const char *path)
 {
@@ -764,6 +790,59 @@ static void script_step(void)
                    status->error);
             fflush(stdout);
             free(status);
+        } else if (strcmp(command, "app-stats") == 0) {
+            roundie_elf_status_t *status = allocate(sizeof(*status));
+            roundie_elf_status(status);
+            printf("app-stats instance=%u state=%s events=%u timers=%u users=%u ui=%u last=%u queue=%u"
+                   " dropped=%u coalesced=%u rejected=%u acquired=%u released=%u reclaimed=%u alloc=%u"
+                   " control=%d\n",
+                   (unsigned)status->instance, app_state_name(status->state), (unsigned)status->events_delivered,
+                   (unsigned)status->timers_delivered, (unsigned)status->users_delivered,
+                   (unsigned)status->ui_delivered, (unsigned)status->last_value, (unsigned)status->queue_depth,
+                   (unsigned)status->events_dropped, (unsigned)status->events_coalesced,
+                   (unsigned)status->events_rejected, (unsigned)status->resources_acquired,
+                   (unsigned)status->resources_released, (unsigned)status->resources_reclaimed,
+                   (unsigned)status->alloc_bytes, (int)status->control_result);
+            fflush(stdout);
+            free(status);
+        } else if (strcmp(command, "app-event") == 0 && sscanf(line, "%*s %d", &a) == 1 && a >= 0) {
+            /* The firmware's RE1 EVENT: a user event to the running instance. */
+            roundie_elf_status_t *status = allocate(sizeof(*status));
+            roundie_elf_status(status);
+            esp_err_t result = roundie_elf_post(status->instance, (uint32_t)a);
+            free(status);
+            printf("app-event result=%s\n", esp_err_to_name(result));
+            fflush(stdout);
+        } else if (strcmp(command, "app-control") == 0 && sscanf(line, "%*s %63s", word) == 1) {
+            /* RE1 SUSPEND, RESUME, STOP and UNLOAD. */
+            static const char *const controls[] = {"suspend", "resume", "stop", "unload"};
+            roundie_elf_control_t control = 0;
+            for (unsigned i = 0; i < sizeof(controls) / sizeof(controls[0]); i++) {
+                if (strcmp(word, controls[i]) == 0) {
+                    control = (roundie_elf_control_t)(i + 1);
+                }
+            }
+            if (control == 0) {
+                script_fail(line, "unknown control");
+                return;
+            }
+            roundie_elf_status_t *status = allocate(sizeof(*status));
+            roundie_elf_status(status);
+            esp_err_t result = roundie_elf_control(status->instance, control);
+            free(status);
+            printf("app-control %s result=%s\n", word, esp_err_to_name(result));
+            fflush(stdout);
+        } else if ((strcmp(command, "ui-press") == 0 && sscanf(line, "%*s %d", &a) == 1 && a > 0) ||
+                   (strcmp(command, "ui-value") == 0 && sscanf(line, "%*s %d %d", &a, &b) == 2 && a > 0)) {
+            /* RE1 UI PRESS and UI VALUE: injected input to a widget of the running instance. */
+            roundie_elf_status_t *status = allocate(sizeof(*status));
+            roundie_elf_status(status);
+            bool accepted = strcmp(command, "ui-press") == 0 ?
+                roundie_ui_input(status->instance, (uint32_t)a, REP3_ORIGIN_INJECTED) :
+                roundie_ui_inject_value(status->instance, (uint32_t)a, b);
+            free(status);
+            printf("%s accepted=%d\n", command, (int)accepted);
+            fflush(stdout);
         } else if (strcmp(command, "audio") == 0) {
             roundie_audio_status_t audio;
             roundie_audio_status(&audio);
@@ -905,6 +984,7 @@ static void usage(void)
     fputs("usage: roundie-desktop [--board 1.85b|1.75c] [--data DIR] [--zoom N]\n"
           "                       [--headless] [--script FILE] [--install FILE.rpk]...\n"
           "                       [--native-apps]  (run linux-x64.rep1 apps: trusted code, no sandbox)\n"
+          "                       [--virtual-time]  (time moves only while a script waits)\n"
           "keys: B = BOOT, P = PWR, Esc = quit; the mouse is the touch panel\n", stderr);
 }
 
@@ -1024,6 +1104,8 @@ int main(int argc, char **argv)
             headless = true;
         } else if (strcmp(argv[i], "--native-apps") == 0) {
             roundie_desktop_apps_enable(true);
+        } else if (strcmp(argv[i], "--virtual-time") == 0) {
+            roundie_desktop_time_freeze();
         } else {
             usage();
             return 2;
@@ -1125,6 +1207,9 @@ int main(int argc, char **argv)
     int exit_code = 0;
     bool present_again = false;
     while (!atomic_load(&quit_requested)) {
+        if (roundie_desktop_time_frozen()) {
+            roundie_desktop_time_wait_follower();
+        }
         if (window != NULL) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
@@ -1137,6 +1222,8 @@ int main(int argc, char **argv)
             script_step();
             if (script.next == script.count && !script.failed) {
                 atomic_store(&quit_requested, true);
+            } else if (roundie_desktop_time_frozen() && !script.failed) {
+                virtual_time_step();
             }
         }
         roundie_desktop_input_poll(&gui.input, roundie_time_us());
@@ -1167,15 +1254,19 @@ int main(int argc, char **argv)
         if (next_ms > GUI_DELAY_MAX_MS) {
             next_ms = GUI_DELAY_MAX_MS;
         }
-        if (next_ms == 0) {
+        if (next_ms == 0 || roundie_desktop_time_frozen()) {
             next_ms = 1;
+        }
+        if (roundie_desktop_time_frozen()) {
+            roundie_desktop_time_gui_done();
         }
         if (window != NULL) {
             SDL_WaitEventTimeout(NULL, (Sint32)next_ms);
         } else {
-            roundie_sleep_ms(next_ms);
+            roundie_desktop_sleep_real_ms(next_ms);
         }
     }
+    roundie_desktop_time_release();
     pthread_join(worker, NULL);
     if (script.failed || atomic_load(&install_failed)) {
         exit_code = 1;

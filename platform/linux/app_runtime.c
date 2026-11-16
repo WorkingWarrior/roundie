@@ -9,12 +9,18 @@
  * (components/roundie_packages/platform.h) and the application storage flow of
  * main/app_runtime.c. */
 
+#define _GNU_SOURCE
 #include "app_runtime.h"
+#include <errno.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/statvfs.h>
+#include <ucontext.h>
+#include <unistd.h>
 #include "esp_log.h"
 #include "platform.h"
 #include "rep/rep_storage_v1.h"
@@ -24,6 +30,13 @@
 
 /* An executor call running this long is reported as an application that does not return. */
 #define STALL_REPORT_US (5 * 1000 * 1000)
+/* In the data directory while an application is loaded: BootGuard's record of
+ * the loaded package (main/app_runtime.c), read after an abnormal exit. */
+#define LOADED_MARKER "app-loaded"
+#define FAULT_REPORT_BYTES 512U
+
+static const int fault_signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+static struct sigaction previous_actions[sizeof(fault_signals) / sizeof(fault_signals[0])];
 
 static atomic_bool native_apps;
 static _Atomic(roundie_elf_clock_source_t) clock_source;
@@ -32,13 +45,161 @@ static _Atomic(roundie_elf_clock_source_t) clock_source;
 static char storage_owner[ROUNDIE_PACKAGE_ID];
 static uint8_t storage_buffer[REP_STORAGE_CAPACITY];
 static int64_t stall_reported;
+/* Worker writes, the fault handler reads: the package the marker names. */
+static char loaded_id[ROUNDIE_PACKAGE_ID];
+static bool marked;
+
+/* Async-signal-safe text building for the fault report. */
+static size_t append_text(char *buffer, size_t used, const char *text)
+{
+    while (*text != '\0' && used + 1 < FAULT_REPORT_BYTES) {
+        buffer[used] = *text;
+        used++;
+        text++;
+    }
+    buffer[used] = '\0';
+    return used;
+}
+
+static size_t append_number(char *buffer, size_t used, uintptr_t value, unsigned radix)
+{
+    char digits[24];
+    size_t count = 0;
+    do {
+        digits[count] = "0123456789abcdef"[value % radix];
+        count++;
+        value /= radix;
+    } while (value != 0 && count < sizeof(digits));
+    if (radix == 16) {
+        used = append_text(buffer, used, "0x");
+    }
+    while (count > 0 && used + 1 < FAULT_REPORT_BYTES) {
+        count--;
+        buffer[used] = digits[count];
+        used++;
+    }
+    buffer[used] = '\0';
+    return used;
+}
+
+static const char *signal_name(int signal_number)
+{
+    switch (signal_number) {
+    case SIGSEGV:
+        return "SIGSEGV";
+    case SIGBUS:
+        return "SIGBUS";
+    case SIGILL:
+        return "SIGILL";
+    case SIGFPE:
+        return "SIGFPE";
+    default:
+        return "signal";
+    }
+}
+
+/* Names the application before the process ends. The previous action (the
+ * default, or a sanitizer's report) runs when the faulting instruction runs
+ * again after this handler returns. */
+static void fault_handler(int signal_number, siginfo_t *info, void *context)
+{
+    const ucontext_t *machine = context;
+    uintptr_t pc = (uintptr_t)machine->uc_mcontext.gregs[REG_RIP];
+    uintptr_t begin;
+    uintptr_t end;
+    bool in_image = roundie_elf_image_range(&begin, &end) && pc >= begin && pc < end;
+    if (in_image || roundie_elf_on_executor()) {
+        char report[FAULT_REPORT_BYTES];
+        size_t used = append_text(report, 0, "E elf: application ");
+        used = append_text(report, used, loaded_id[0] != '\0' ? loaded_id : "(unknown)");
+        used = append_text(report, used, " faulted: ");
+        used = append_text(report, used, signal_name(signal_number));
+        if (in_image) {
+            used = append_text(report, used, " at image+");
+            used = append_number(report, used, pc - begin, 16);
+        } else {
+            used = append_text(report, used, " outside its image (in code it called, or a bad jump), pc ");
+            used = append_number(report, used, pc, 16);
+        }
+        used = append_text(report, used, ", address ");
+        used = append_number(report, used, (uintptr_t)info->si_addr, 16);
+        used = append_text(report, used, "; the desktop ends. After a restart the launcher starts on the list.\n");
+        ssize_t written = write(STDERR_FILENO, report, used);
+        (void)written;
+    }
+    for (size_t i = 0; i < sizeof(fault_signals) / sizeof(fault_signals[0]); i++) {
+        if (fault_signals[i] == signal_number) {
+            sigaction(signal_number, &previous_actions[i], NULL);
+        }
+    }
+    if (info->si_code <= 0) {
+        raise(signal_number); /* sent, not caused by an instruction: no second fault */
+    }
+}
+
+static void install_fault_handler(void)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_sigaction = fault_handler;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    for (size_t i = 0; i < sizeof(fault_signals) / sizeof(fault_signals[0]); i++) {
+        if (sigaction(fault_signals[i], &action, &previous_actions[i]) != 0) {
+            ESP_LOGW("elf", "fault reports unavailable for %s", signal_name(fault_signals[i]));
+        }
+    }
+}
+
+static void mark_loaded(const char *id)
+{
+    memcpy(loaded_id, id, strlen(id) + 1);
+    FILE *marker = fopen(LOADED_MARKER, "w");
+    if (marker == NULL || fputs(id, marker) == EOF || fclose(marker) != 0) {
+        ESP_LOGW("elf", "%s: %s not written: %s", id, LOADED_MARKER, strerror(errno));
+        return;
+    }
+    marked = true;
+}
+
+static void clear_loaded(void)
+{
+    if (marked && unlink(LOADED_MARKER) != 0 && errno != ENOENT) {
+        ESP_LOGW("elf", "%s not removed: %s", LOADED_MARKER, strerror(errno));
+    }
+    marked = false;
+}
 
 void roundie_desktop_apps_enable(bool enabled)
 {
     atomic_store(&native_apps, enabled);
     if (enabled) {
         ESP_LOGW("elf", "native applications enabled: trusted code in this process, validated but not isolated");
+        install_fault_handler();
     }
+}
+
+bool roundie_desktop_apps_startup(void)
+{
+    char id[ROUNDIE_PACKAGE_ID] = {0};
+    FILE *marker = fopen(LOADED_MARKER, "r");
+    if (marker == NULL) {
+        return false;
+    }
+    size_t length = fread(id, 1, sizeof(id) - 1, marker);
+    fclose(marker);
+    id[length] = '\0';
+    /* main/main.c's message; the board then recovers through Safe Mode, the desktop
+     * through this restart, and both start the next session on the list. */
+    ESP_LOGW("elf", "Previous session failed with package %s loaded", id);
+    marked = true;
+    clear_loaded();
+    return true;
+}
+
+void roundie_desktop_apps_shutdown(void)
+{
+    clear_loaded(); /* a planned exit, like the board's planned restart */
 }
 
 bool roundie_desktop_apps_enabled(void)
@@ -68,6 +229,7 @@ void roundie_desktop_apps_poll(int64_t now_us)
 {
     roundie_elf_set_allowed(atomic_load(&native_apps) && !roundie_packages_busy());
     if (!roundie_elf_busy()) {
+        clear_loaded();
         persist_storage();
     }
     int64_t since = roundie_elf_executor_busy_since();
@@ -135,9 +297,11 @@ int roundie_packages_execute(const char *id, uint8_t *bytes, size_t size, uint16
         }
         memcpy(storage_owner, id, strlen(id) + 1);
     }
+    mark_loaded(id);
     esp_err_t error = abi == 1 ? roundie_elf_submit(bytes, size) : roundie_elf_start(bytes, size);
     if (error != ESP_OK) {
         roundie_elf_storage_clear();
+        clear_loaded();
     }
     return error;
 }

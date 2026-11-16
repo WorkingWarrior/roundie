@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <link.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,9 @@ static uintptr_t entry_address;
 static segment_t segments[SEGMENTS_MAX];
 static unsigned segment_count;
 static segment_t relro; /* read-only after relocation, whole pages */
+/* Lowest and highest PT_LOAD address of the loaded image, for fault reports. */
+static _Atomic uintptr_t image_begin;
+static _Atomic uintptr_t image_end;
 
 enum {
     LOADER_MEMFD = 1,
@@ -191,8 +195,10 @@ int roundie_elf_loader_relocate(const uint8_t *bytes, size_t size, roundie_elf_r
         result = LOADER_CONTENT;
         goto done;
     }
-    char path[32];
-    snprintf(path, sizeof(path), "/proc/self/fd/%d", file);
+    /* The process id, not "self": a debugger reads this name from the link map
+     * and opens it in its own process to load the application's symbols. */
+    char path[48];
+    snprintf(path, sizeof(path), "/proc/%ld/fd/%d", (long)getpid(), file);
     handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (handle == NULL) {
         ESP_LOGE("elf", "dlopen: %s", dlerror());
@@ -230,6 +236,18 @@ int roundie_elf_loader_relocate(const uint8_t *bytes, size_t size, roundie_elf_r
         result = LOADER_ENTRY;
         goto done;
     }
+    uintptr_t lowest = UINTPTR_MAX;
+    uintptr_t highest = 0;
+    for (unsigned i = 0; i < segment_count; i++) {
+        if (segments[i].begin < lowest) {
+            lowest = segments[i].begin;
+        }
+        if (segments[i].end > highest) {
+            highest = segments[i].end;
+        }
+    }
+    atomic_store(&image_begin, lowest);
+    atomic_store(&image_end, highest);
 done:
     munmap(image, size);
     return result;
@@ -271,8 +289,17 @@ bool roundie_elf_loader_contains(const void *pointer, uint32_t bytes, roundie_el
     return false;
 }
 
+bool roundie_elf_image_range(uintptr_t *begin, uintptr_t *end)
+{
+    *begin = atomic_load(&image_begin);
+    *end = atomic_load(&image_end);
+    return *begin < *end;
+}
+
 void roundie_elf_loader_unload(void)
 {
+    atomic_store(&image_end, 0);
+    atomic_store(&image_begin, 0);
     if (handle != NULL) {
         if (dlclose(handle) != 0) {
             ESP_LOGE("elf", "dlclose: %s", dlerror());

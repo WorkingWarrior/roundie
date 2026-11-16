@@ -7,9 +7,14 @@
 
 #include "manager_private.h"
 #include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <time.h>
+
+/* Signal stack of the executor thread, so a fault report also runs after the
+ * application overflowed the thread's stack. */
+#define FAULT_STACK_BYTES (64U * 1024U)
 
 typedef struct {
     uint8_t *bytes;
@@ -20,9 +25,12 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t arrived = PTHREAD_COND_INITIALIZER;
 static request_t pending;
 static bool pending_valid;
+static bool kicked;
 static bool started;
 static atomic_bool input_owned;
 static _Atomic int64_t busy_since_us;
+static _Atomic int64_t stepped_at_us; /* the time the last manager step was given */
+static _Thread_local bool executor_thread;
 
 bool roundie_elf_input_busy(void)
 {
@@ -32,6 +40,48 @@ bool roundie_elf_input_busy(void)
 int64_t roundie_elf_executor_busy_since(void)
 {
     return atomic_load(&busy_since_us);
+}
+
+void roundie_elf_executor_kick(void)
+{
+    pthread_mutex_lock(&mutex);
+    kicked = true;
+    pthread_cond_signal(&arrived);
+    pthread_mutex_unlock(&mutex);
+}
+
+bool roundie_elf_on_executor(void)
+{
+    return executor_thread;
+}
+
+/* Keeps a signal stack a sanitizer runtime already installed. */
+static void install_fault_stack(void)
+{
+    stack_t current;
+    if (sigaltstack(NULL, &current) != 0 || (current.ss_flags & SS_DISABLE) == 0) {
+        return;
+    }
+    stack_t fault_stack = {.ss_sp = malloc(FAULT_STACK_BYTES), .ss_size = FAULT_STACK_BYTES, .ss_flags = 0};
+    if (fault_stack.ss_sp == NULL || sigaltstack(&fault_stack, NULL) != 0) {
+        free(fault_stack.ss_sp); /* reports of a stack overflow are then lost */
+    }
+}
+
+bool roundie_elf_executor_settled(int64_t now_us)
+{
+    pthread_mutex_lock(&mutex);
+    bool idle = !pending_valid;
+    pthread_mutex_unlock(&mutex);
+    if (!idle || atomic_load(&busy_since_us) != 0) {
+        return false;
+    }
+    roundie_elf_status_t current;
+    roundie_elf_status(&current);
+    if (current.control_submitted != current.control_completed || current.queue_depth != 0) {
+        return false;
+    }
+    return current.state == ROUNDIE_ELF_UNLOADED || atomic_load(&stepped_at_us) >= now_us;
 }
 
 static bool receive(request_t *request)
@@ -44,15 +94,18 @@ static bool receive(request_t *request)
         deadline.tv_nsec -= 1000 * 1000 * 1000;
     }
     pthread_mutex_lock(&mutex);
-    while (!pending_valid) {
+    while (!pending_valid && !kicked) {
         if (pthread_cond_timedwait(&arrived, &mutex, &deadline) != 0) {
             break;
         }
     }
+    kicked = false;
     bool received = pending_valid;
     if (received) {
         *request = pending;
         pending_valid = false;
+        /* Under the lock, so the request is never seen neither pending nor busy. */
+        atomic_store(&busy_since_us, roundie_time_us());
     }
     pthread_mutex_unlock(&mutex);
     return received;
@@ -61,12 +114,13 @@ static bool receive(request_t *request)
 static void *execute(void *unused)
 {
     (void)unused;
+    executor_thread = true;
+    install_fault_stack(); /* lives as long as this thread, which never ends */
     roundie_elf_bind_executor(roundie_thread_self());
     uint8_t *retained = NULL;
     for (;;) {
         request_t request;
         if (receive(&request)) {
-            atomic_store(&busy_since_us, roundie_time_us());
             roundie_elf_execute(request.bytes, request.size);
             atomic_store(&busy_since_us, 0);
             retained = request.bytes;
@@ -74,9 +128,11 @@ static void *execute(void *unused)
         roundie_elf_status_t current;
         roundie_elf_status(&current);
         if (current.state != ROUNDIE_ELF_UNLOADED || current.control_submitted != current.control_completed) {
-            atomic_store(&busy_since_us, roundie_time_us());
-            roundie_elf_step(roundie_time_us());
+            int64_t now = roundie_time_us();
+            atomic_store(&busy_since_us, now);
+            roundie_elf_step(now);
             atomic_store(&busy_since_us, 0);
+            atomic_store(&stepped_at_us, now);
         }
         roundie_elf_status(&current);
         if (current.state == ROUNDIE_ELF_UNLOADED && retained != NULL) {

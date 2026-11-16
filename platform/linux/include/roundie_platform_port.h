@@ -36,14 +36,10 @@ static inline uint32_t roundie_thread_stack_unused(void)
     return 0;
 }
 
+/* platform.c: under the desktop's --virtual-time, waits for virtual time. */
+void roundie_desktop_sleep_ms(uint32_t ms);
+
 static inline void roundie_sleep_ms(uint32_t ms)
 {
-    if (ms == 0) {
-        ms = 1;
-    }
-    struct timespec delay = {
-        .tv_sec = (time_t)(ms / 1000U),
-        .tv_nsec = (long)(ms % 1000U) * 1000000L,
-    };
-    nanosleep(&delay, NULL);
+    roundie_desktop_sleep_ms(ms);
 }

@@ -59,6 +59,21 @@ void roundie_desktop_clock_sleep_exit(void);
 
 /* platform.c: forward offset of roundie_time_us(). */
 void roundie_desktop_time_advance(int64_t us);
+/* Virtual time: from now on roundie_time_us() moves only by time_advance().
+ * Called before any other thread starts (desktop --virtual-time). */
+void roundie_desktop_time_freeze(void);
+bool roundie_desktop_time_frozen(void);
+/* The calling thread's roundie_sleep_ms() then waits for virtual time (the
+ * system worker). On exit: such sleeps stop waiting, as the clock stops. */
+void roundie_desktop_time_follow(void);
+/* GUI loop: the following thread and the GUI take turns at each virtual time.
+ * The GUI waits until the follower sleeps past now, does its work, then marks
+ * it done; only then does the follower wake for that time. */
+void roundie_desktop_time_wait_follower(void);
+void roundie_desktop_time_gui_done(void);
+void roundie_desktop_time_release(void);
+/* The GUI loop advances virtual time, so its own sleeps are real. */
+void roundie_desktop_sleep_real_ms(uint32_t ms);
 
 /* app_runtime.c: the clock source registered for applications. */
 void roundie_desktop_set_app_clock_source(roundie_elf_clock_source_t source);

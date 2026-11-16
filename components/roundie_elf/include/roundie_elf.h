@@ -115,4 +115,13 @@ void roundie_elf_set_clock_source(roundie_elf_clock_source_t source);
  * callback, lifecycle step) began, 0 while idle. Nothing stops native code
  * that does not return; the desktop reports it instead. Any thread. */
 int64_t roundie_elf_executor_busy_since(void);
+/* Virtual time (desktop): wake the executor now; true when it has no request,
+ * control or event left and its last step saw now_us (or nothing is loaded). */
+void roundie_elf_executor_kick(void);
+bool roundie_elf_executor_settled(int64_t now_us);
+/* Fault reports (desktop): the loaded image's address range, false when none
+ * is loaded, and whether the calling thread is the executor. Both are
+ * async-signal-safe. */
+bool roundie_elf_image_range(uintptr_t *begin, uintptr_t *end);
+bool roundie_elf_on_executor(void);
 #endif

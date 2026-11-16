@@ -19,7 +19,9 @@ platform_inc = include_directories('platform/linux/include', 'platform/linux')
 lvgl_inc = include_directories(lvgl_root)
 lvgl = static_library('lvgl', lvgl_sources,
                       include_directories: [platform_inc, lvgl_inc],
-                      c_args: ['-DLV_CONF_INCLUDE_SIMPLE', '-w'])
+                      # LVGL 9.5.0 lv_roller.c shifts negative values left; GCC defines
+                      # that (as in the firmware build), so UBSan's report is not a fault.
+                      c_args: ['-DLV_CONF_INCLUDE_SIMPLE', '-w', '-fno-sanitize=shift-base'])
 lvgl_dep = declare_dependency(link_with: lvgl, include_directories: lvgl_inc,
                               compile_args: ['-DLV_CONF_INCLUDE_SIMPLE'])
 

@@ -2,6 +2,7 @@
 and package manager under ASan/UBSan, driven by scripts in headless mode."""
 from pathlib import Path
 import array
+import hashlib
 import os
 import re
 import shutil
@@ -44,13 +45,29 @@ key boot
 swipe {swipe}
 """
 
-# linux-x64.rep1 packages: (example, entry, id, name, defines).
+# linux-x64.rep1 packages: (name, example source, entry, id, title, build arguments).
+FAULT_SOURCE = "fault_elf/fault.c"
+# The firmware's fault build flags (examples/fault_elf/CMakeLists.txt).
+FAULT_CC = ("--cc", "cc -Wno-infinite-recursion -fno-optimize-sibling-calls")
 NATIVE_APPS = (
-    ("hello", "rep_app_entry", "org.roundie.hello", "Hello", ()),
-    ("watch", "rep_app_entry_v3", "org.roundie.watch", "Zegarek", ()),
-    ("stopwatch", "rep_app_entry_v3", "org.roundie.stopwatch", "Stoper", ()),
-    ("sound", "rep_app_entry_v3", "org.roundie.sound", "Dźwięk", ()),
-    ("hang", "rep_app_entry_v2", "org.roundie.hang", "Hang", ("FAULT_KIND=1",)),
+    ("hello", "hello_elf/hello.c", "rep_app_entry", "org.roundie.hello", "Hello", ()),
+    ("watch", "watch_elf/watch.c", "rep_app_entry_v3", "org.roundie.watch", "Zegarek", ()),
+    ("stopwatch", "stopwatch_elf/stopwatch.c", "rep_app_entry_v3", "org.roundie.stopwatch", "Stoper", ()),
+    ("sound", "sound_elf/sound.c", "rep_app_entry_v3", "org.roundie.sound", "Dźwięk", ()),
+    ("event", "event_elf/event.c", "rep_app_entry_v2", "org.roundie.events", "Events", ()),
+    ("ui", "ui_elf/ui.c", "rep_app_entry_v3", "org.roundie.ui", "UI", ()),
+    ("round", "round_elf/round.c", "rep_app_entry_v3", "org.roundie.round", "Round", ()),
+    ("hang", FAULT_SOURCE, "rep_app_entry_v2", "org.roundie.hang", "Hang", ("-DFAULT_KIND=1",)),
+    # Faults the desktop attributes (docs/native-apps.md, N7): load, store, call, stack.
+    ("fault-load", FAULT_SOURCE, "rep_app_entry_v2", "org.roundie.fault.load", "Load", ("-DFAULT_KIND=2",)),
+    ("fault-store", FAULT_SOURCE, "rep_app_entry_v2", "org.roundie.fault.store", "Store", ("-DFAULT_KIND=3",)),
+    ("fault-fetch", FAULT_SOURCE, "rep_app_entry_v2", "org.roundie.fault.fetch", "Fetch", ("-DFAULT_KIND=5",)),
+    ("fault-stack", FAULT_SOURCE, "rep_app_entry_v2", "org.roundie.fault.stack", "Stack",
+     ("-DFAULT_KIND=7", *FAULT_CC)),
+    # Developer builds (N8): undefined behaviour traps; DWARF for GDB.
+    ("fault-undefined", FAULT_SOURCE, "rep_app_entry_v2", "org.roundie.fault.undefined", "Undefined",
+     ("-DFAULT_KIND=8", "--sanitize-undefined", "--debug")),
+    ("event-debug", "event_elf/event.c", "rep_app_entry_v2", "org.roundie.events", "Events", ("--debug",)),
 )
 
 # On the 1.85B panel: a swipe up from the home application's bottom strip
@@ -167,12 +184,13 @@ class DesktopRunTests(unittest.TestCase):
         # The desktop's package target is linux-x64.rep1: the same example
         # sources, built for x86-64 (docs/native-apps.md, N1-N3).
         cls.native = {}
-        for stem, entry, app_id, title, defines in NATIVE_APPS:
+        cls.binaries = {}
+        for stem, source, entry, app_id, title, arguments in NATIVE_APPS:
             binary = cls.work / f"{stem}.app.so"
-            subprocess.run(["python3", str(ROOT / "tools/roundie_native_app.py"), str(ROOT / "examples" /
-                            ("fault_elf/fault.c" if stem == "hang" else f"{stem}_elf/{stem}.c")),
-                            "--entry", entry, "-o", str(binary), *(f"-D{define}" for define in defines)],
+            subprocess.run(["python3", str(ROOT / "tools/roundie_native_app.py"), str(ROOT / "examples" / source),
+                            "--entry", entry, "-o", str(binary), *arguments],
                            check=True, capture_output=True)
+            cls.binaries[stem] = binary
             package = cls.work / f"{stem}.rpk"
             subprocess.run(["python3", str(ROOT / "tools/roundie_package.py"), "build", str(binary),
                             "--output", str(package), "--id", app_id, "--name", title, "--version", "1.0.0",
@@ -185,13 +203,17 @@ class DesktopRunTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     def run_desktop(self, board, script, *, install=True, packages=None, native=False, timeout=60,
-                    environment=None):
-        directory = Path(tempfile.mkdtemp(dir=self.work))
+                    environment=None, virtual=False, directory=None):
+        """directory: reuse an earlier run's data directory (a process restart)."""
+        if directory is None:
+            directory = Path(tempfile.mkdtemp(dir=self.work))
         (directory / "script.txt").write_text(script)
         command = [str(self.binary), "--headless", "--board", board, "--data", str(directory / "data"),
                    "--script", "script.txt"]
         if native:
             command.append("--native-apps")
+        if virtual:
+            command.append("--virtual-time")
         if install:
             for package in self.packages if packages is None else packages:
                 command += ["--install", str(package)]
@@ -701,6 +723,235 @@ echo "exit $?" >> app.log
         self.assertEqual(result.stdout.count("launcher state=EXITING painted=EXITING"), 2)
         self.assertIn("app state=RUNNING instance=1 abi=2", result.stdout)
         self.assertEqual(png_size(directory / "hung.png"), (360, 360))
+
+    # ---- Deterministic application tests in virtual time (M5b) -----------------
+    # --virtual-time: the clock moves only while the script waits, in steps the
+    # executor and the system worker finish first, so two runs of a script give
+    # the same output and the same screenshots (docs/native-apps.md, N9).
+
+    def run_deterministic(self, stem, script, screenshots, real_time_fields=(), **options):
+        """Runs a script twice in virtual time; returns the first run. Fields
+        set by a real-time device (the SDL audio clock) are not compared."""
+        runs = [self.run_desktop("1.85b", script, packages=[self.native[stem]], native=True, virtual=True,
+                                 **options) for _ in range(2)]
+        for result, _ in runs:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("runtime error", result.stderr)
+        (first, first_directory), (second, second_directory) = runs
+        compared = []
+        for result, _ in runs:
+            text = result.stdout
+            for field in real_time_fields:
+                text = re.sub(rf"\b{field}=\d+", f"{field}=*", text)
+            compared.append(text)
+        self.assertEqual(compared[0], compared[1])
+        for name in screenshots:
+            self.assertEqual((first_directory / name).read_bytes(), (second_directory / name).read_bytes(), name)
+        return first, first_directory
+
+    def test_events_lifecycle_in_virtual_time(self):
+        """Events (ABI 2): a 250 ms timer, a user event, suspend and resume
+        (RE1 commands), and the instance's resources reclaimed at unload."""
+        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\napp-stats\nwait 1000\napp-stats\n"
+                  "app-event 7\nwait 10\napp-stats\napp-control suspend\nwait-app SUSPENDED 1000\nwait 1000\n"
+                  "app-stats\napp-control resume\nwait-app RUNNING 1000\nwait 500\napp-stats\nscreenshot events.png\n"
+                  + CLOSE_APP + "wait-app UNLOADED 5000\nwait 200\napp\napp-stats\nresources\nquit\n")
+        result, _ = self.run_deterministic("event", script, ["events.png"])
+        stats = re.findall(r"app-stats instance=1 state=(\w+) events=(\d+) timers=(\d+) users=(\d+) ui=0 last=(\d+) "
+                           r"queue=0 dropped=0 coalesced=0 rejected=0 acquired=\d+ released=\d+ reclaimed=(\d+)",
+                           result.stdout)
+        self.assertEqual(stats, [("RUNNING", "0", "0", "0", "0", "0"), ("RUNNING", "4", "4", "0", "0", "0"),
+                                 ("RUNNING", "5", "4", "1", "7", "0"), ("SUSPENDED", "5", "4", "1", "7", "0"),
+                                 ("RUNNING", "7", "6", "1", "7", "0"), ("UNLOADED", "7", "6", "1", "7", "1")])
+        self.assertIn("app-control suspend result=ESP_OK", result.stdout)
+        self.assertIn('app state=UNLOADED instance=1 abi=2 completed=1 loader=0 result=0', result.stdout)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
+
+    def test_ui_bridge_input_in_virtual_time(self):
+        """UI (ABI 3): two touches and one injected press reach the counter;
+        a press of an unknown widget is refused; the UI is destroyed at stop."""
+        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 3000\n"
+                  "tap 180 236\nwait 100\ntap 180 236\nwait 100\nui-press 5\nwait 100\nui-press 99\nwait 100\n"
+                  "app-stats\nscreenshot ui.png\n" + CLOSE_APP +
+                  "wait-app UNLOADED 5000\napp\napp-stats\nresources\nquit\n")
+        result, _ = self.run_deterministic("ui", script, ["ui.png"])
+        self.assertEqual(re.findall(r"ui-press accepted=(\d)", result.stdout), ["1", "0"])
+        self.assertEqual(result.stderr.count("ui counter: physical touch"), 2)
+        self.assertEqual(result.stderr.count("ui counter: injected event"), 1)
+        self.assertIn("ui stop: UI update/destroy admission close", result.stderr)
+        self.assertIn("app-stats instance=1 state=RUNNING events=6 timers=3 users=0 ui=3", result.stdout)
+        self.assertIn('app state=UNLOADED instance=1 abi=3 completed=1 loader=0 result=0', result.stdout)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("reclaimed=1", result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
+
+    def test_round_widgets_in_virtual_time(self):
+        """Round (ABI 3): list choice, slider value, edge button and dialog
+        through the RE1 value injection, one injection at a time."""
+        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\n"
+                  "screenshot r0.png\nui-value 4 2\nwait 100\nui-value 5 75\nwait 1200\nscreenshot r1.png\n"
+                  "ui-press 6\nwait 300\nscreenshot r2.png\nui-value 7 1\nwait 1200\nscreenshot r3.png\n"
+                  "app-stats\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\nresources\nquit\n")
+        shots = ["r0.png", "r1.png", "r2.png", "r3.png"]
+        result, directory = self.run_deterministic("round", script, shots)
+        self.assertEqual(re.findall(r"ui-(?:value|press) accepted=(\d)", result.stdout), ["1"] * 4)
+        images = {(directory / name).read_bytes() for name in shots}
+        self.assertEqual(len(images), 4)
+        self.assertIn("app-stats instance=1 state=RUNNING events=7 timers=3 users=0 ui=4", result.stdout)
+        self.assertIn("round destroy", result.stderr)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
+
+    def test_stopwatch_timing_in_virtual_time(self):
+        """Stopwatch: start, lap after 2.5 s, stop after 1.2 s more; the
+        display and the lap are the same on every run."""
+        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 200\n"
+                  "tap 180 300\nwait 2500\ntap 180 96\nwait 1000\ntap 180 300\nwait 500\nscreenshot stopwatch.png\n"
+                  "app-stats\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\nresources\nquit\n")
+        result, _ = self.run_deterministic("stopwatch", script, ["stopwatch.png"])
+        self.assertIn("app-stats instance=1 state=RUNNING events=40 timers=37 users=0 ui=3", result.stdout)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
+
+    def test_watch_follows_the_emulated_rtc(self):
+        """Watch: the 1.85B RTC set through RT1 and a wall-clock jump move the
+        hands; the system worker's RTC check runs in virtual time too."""
+        script = ("wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nscreenshot unset.png\n"
+                  "rt1 SET 1792314126\nrt1 TZ CET-1CEST,M3.5.0,M10.5.0/3\nwait 1500\nscreenshot set.png\n"
+                  "wall-jump 3600\nwait 1500\nscreenshot jumped.png\nclock\nquit\n")
+        shots = ["unset.png", "set.png", "jumped.png"]
+        result, directory = self.run_deterministic("watch", script, shots)
+        self.assertIn("!RT1 0000d0e5 OK state=0 os=0 rtc=1792314127 wall=1792314127 err=0", result.stdout)
+        self.assertIn("clock valid=1 sync=1 wall=1792317730", result.stdout)
+        self.assertEqual(len({(directory / name).read_bytes() for name in shots}), 3)
+
+    def test_sound_in_virtual_time(self):
+        """Sound: the stream opens, plays and is released at close. SDL takes
+        samples in real time, so only the common prefix of two recordings is
+        compared; it carries the same tune."""
+        script = ("wait-nav LIST 5000\naudio\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\n"
+                  "wait 1000\naudio\nwait 9000\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\naudio\nresources\nquit\n")
+        result, directory = self.run_deterministic("sound", script, [], real_time_fields=("ring", "underruns"),
+                                                   environment={"SDL_AUDIO_DRIVER": "disk"})
+        audio = re.findall(r"audio initialized=1 playing=(\d) plays=(\d+) errors=0 volume=(\d+) stream=(\d)",
+                           result.stdout)
+        self.assertEqual(audio, [("0", "0", "0", "0"), ("1", "0", "35", "1"), ("0", "1", "35", "0")])
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
+        _, again = self.run_desktop("1.85b", script, packages=[self.native["sound"]], native=True, virtual=True,
+                                    environment={"SDL_AUDIO_DRIVER": "disk"})
+        # Where silence falls (before the stream, after the close, in an
+        # underrun) follows the device's real-time clock; the samples do not.
+        recordings = []
+        for folder in (directory, again):
+            samples = array.array("h", (folder / "data/sdlaudio.raw").read_bytes())[0::2]
+            recordings.append([value for value in samples if value != 0])
+        common = min(len(recording) for recording in recordings)
+        self.assertGreater(common, 50000)
+        self.assertEqual(recordings[0][:common], recordings[1][:common])
+        rate = int(re.search(r"format=S16LE channels=2 freq=(\d+)", result.stderr).group(1))
+        left = array.array("h", recordings[0][:common])
+        audible = [index for index, value in enumerate(left) if abs(value) > 200]
+        self.assertGreater(len(audible), 0)
+        window = left[audible[0]:audible[0] + rate // 5]
+        crossings = sum(1 for a, b in zip(window, window[1:]) if (a < 0) != (b < 0))
+        self.assertAlmostEqual(crossings / 2 / 0.2, 784, delta=20)
+
+    def test_storage_survives_close_and_restart(self):
+        """REP Storage: Watch's theme, written when the closed instance
+        unloads, is there after a process restart; a change made before the
+        process ends with the application still running is lost, as after a
+        board reset."""
+        change = "wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nscreenshot {0}0.png\nui-press 2\nwait 500\n" \
+                 "screenshot {0}1.png\n"
+        first, directory = self.run_desktop("1.85b", change.format("a") + HOME_TO_LIST +
+                                            "wait-app UNLOADED 5000\nwait-nav LIST 5000\nwait 200\nquit\n",
+                                            packages=[self.native["watch"]], native=True, virtual=True)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        blob = (directory / "data/storage/packages/org.roundie.watch/data").read_bytes()
+        self.assertEqual(blob[:4], b"RPD1")
+        length = int.from_bytes(blob[4:8], "little")
+        self.assertEqual(blob[8:40], hashlib.sha256(blob[40:40 + length]).digest())
+        self.assertEqual(blob[40:], bytes([1, 1]))
+        # The restarted process ends while the application runs.
+        second, _ = self.run_desktop("1.85b", change.format("b") + "quit\n", install=False, native=True,
+                                     virtual=True, directory=directory)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        third, _ = self.run_desktop("1.85b", "wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\n"
+                                    "screenshot c0.png\nquit\n", install=False, native=True, virtual=True,
+                                    directory=directory)
+        self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+        for result in (first, second, third):
+            self.assertNotIn("app_storage", result.stderr)
+            self.assertNotIn("runtime error", result.stderr)
+        shot = lambda name: (directory / name).read_bytes()
+        self.assertNotEqual(shot("a0.png"), shot("a1.png"))
+        self.assertEqual(shot("a1.png"), shot("b0.png"))  # saved at close, read after restart
+        self.assertEqual(shot("b0.png"), shot("c0.png"))  # unsaved at the end of the process
+        self.assertEqual((directory / "data/storage/packages/org.roundie.watch/data").read_bytes(), blob)
+
+    # ---- Application faults and developer builds (M5b) --------------------------
+
+    def test_application_fault_is_named_and_the_next_session_starts_on_the_list(self):
+        """A fault in application code ends the process (nothing can recover
+        the address space) after a report naming the package; the next
+        session warns as the firmware does and does not start the home
+        application, like the board's trial boot after Safe Mode."""
+        faults = {"fault-load": ("org.roundie.fault.load", "SIGSEGV at image+"),
+                  "fault-store": ("org.roundie.fault.store", "SIGSEGV at image+"),
+                  "fault-fetch": ("org.roundie.fault.fetch", "SIGSEGV outside its image"),
+                  "fault-stack": ("org.roundie.fault.stack", "SIGSEGV at image+"),
+                  "fault-undefined": ("org.roundie.fault.undefined", "SIGILL at image+")}
+        launch = ("wait-app RUNNING 5000\nwait 500\n" + HOME_TO_LIST +
+                  "wait-app UNLOADED 5000\nwait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait 3000\nquit\n")
+        for stem, (app_id, report) in faults.items():
+            with self.subTest(fault=stem):
+                crashed, directory = self.run_desktop("1.85b", launch, packages=[self.native[stem],
+                                                      self.native["watch"]], native=True, virtual=True)
+                self.assertNotEqual(crashed.returncode, 0, crashed.stdout + crashed.stderr)
+                self.assertIn(f"E elf: application {app_id} faulted: {report}", crashed.stderr)
+                self.assertEqual((directory / "data/app-loaded").read_text(), app_id)
+                restarted, _ = self.run_desktop("1.85b", "wait 1500\napp\nexpect-nav LIST\nquit\n", install=False,
+                                                native=True, virtual=True, directory=directory)
+                self.assertEqual(restarted.returncode, 0, restarted.stdout + restarted.stderr)
+                self.assertIn(f"Previous session failed with package {app_id} loaded", restarted.stderr)
+                self.assertIn("app state=UNLOADED instance=0", restarted.stdout)
+                self.assertFalse((directory / "data/app-loaded").exists())
+                # A clean session after that starts the home application again.
+                normal, _ = self.run_desktop("1.85b", "wait-app RUNNING 5000\nquit\n", install=False, native=True,
+                                             virtual=True, directory=directory)
+                self.assertEqual(normal.returncode, 0, normal.stdout + normal.stderr)
+                self.assertNotIn("Previous session", normal.stderr)
+                if stem == "fault-undefined" and shutil.which("addr2line"):
+                    offset = re.search(r"image\+(0x[0-9a-f]+)", crashed.stderr).group(1)
+                    line = subprocess.run(["addr2line", "-e", str(self.binaries[stem]), offset],
+                                          capture_output=True, text=True, check=True).stdout
+                    source = (ROOT / "examples" / FAULT_SOURCE).read_text().splitlines()
+                    number = int(line.strip().rsplit(":", 1)[1])
+                    self.assertIn("largest + 1", source[number - 1])
+
+    def test_gdb_breaks_in_application_source(self):
+        """A --debug application: GDB resolves its symbols from the loaded
+        image, stops at a source line and unwinds into the manager."""
+        if shutil.which("gdb") is None:
+            self.skipTest("gdb not installed")
+        directory = Path(tempfile.mkdtemp(dir=self.work))
+        (directory / "script.txt").write_text("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\n"
+                                              "wait 1000\nquit\n")
+        commands = ["set pagination off", "set debuginfod enabled off", "set breakpoint pending on",
+                    "break event.c:event", "run", "bt", "kill", "quit"]
+        arguments = [argument for command in commands for argument in ("-ex", command)]
+        result = subprocess.run(["gdb", "-q", "-batch", "-nx", *arguments, "--args", str(self.binary), "--headless",
+                                 "--board", "1.85b", "--data", str(directory / "data"), "--script", "script.txt",
+                                 "--native-apps", "--virtual-time", "--install", str(self.native["event-debug"])],
+                                cwd=directory, capture_output=True, text=True, timeout=300,
+                                env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0", SDL_AUDIO_DRIVER="dummy"))
+        output = result.stdout + result.stderr
+        self.assertRegex(output, r"hit Breakpoint 1, event \(context=0x[0-9a-f]+, event=0x[0-9a-f]+\) at "
+                                 r"\S*examples/event_elf/event\.c:\d+")
+        self.assertRegex(output, r"#1 .* roundie_elf_step \(")
+        self.assertNotIn("is not at the expected address", output)
 
     def test_native_apps_are_opt_in(self):
         """Without --native-apps every launch is refused and nothing is loaded."""
