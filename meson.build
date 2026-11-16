@@ -49,6 +49,8 @@ core_sources = files(
   'components/roundie_packages/format.c',
   'components/roundie_packages/manager.c',
   'components/roundie_elf/validate.c',
+  'components/roundie_elf/validate_x86_64.c',
+  'components/roundie_elf/manager.c',
   'main/display_scale.c',
   'main/power_gui.c',
   'components/roundie_power/power.c',
@@ -68,19 +70,29 @@ vulkan = dependency('vulkan', required: get_option('desktop'))
 psa = dependency('tfpsacrypto', required: get_option('desktop'))
 threads = dependency('threads')
 libm = cc.find_library('m')
+libdl = cc.find_library('dl', required: false)
+
+# linux-x64.rep1 applications (docs/native-apps.md): the desktop's package
+# target, and the REP services ld.so binds their imports to.
+native_args = ['-DROUNDIE_TARGET_LINUX_X64=1']
+rep_exports = meson.current_source_dir() / 'platform/linux/rep_exports.list'
 
 if sdl.found() and vulkan.found() and psa.found()
   executable('roundie-desktop',
              core_sources,
              'platform/linux/platform.c',
              'platform/linux/app_runtime.c',
+             'components/roundie_elf/linux/loader.c',
+             'components/roundie_elf/linux/executor.c',
              'platform/linux/board.c',
              'platform/linux/clock.c',
              'platform/linux/power_worker.c',
              'platform/linux/desktop.c',
              'platform/linux/desktop_input.c',
              'platform/linux/vk_present.c',
-             include_directories: [core_inc, platform_inc],
-             c_args: strict + ['-DPACKAGES_DIRECTORY="storage/packages"'],
-             dependencies: [lvgl_dep, sdl, vulkan, psa, threads, libm])
+             include_directories: [core_inc, platform_inc, include_directories('components/roundie_elf')],
+             c_args: strict + native_args + ['-DPACKAGES_DIRECTORY="storage/packages"'],
+             link_args: ['-Wl,--dynamic-list=' + rep_exports],
+             link_depends: rep_exports,
+             dependencies: [lvgl_dep, sdl, vulkan, psa, threads, libm, libdl])
 endif

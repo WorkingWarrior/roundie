@@ -1,0 +1,10 @@
+/* The only symbols the desktop exports to dynamically loaded objects: the REP
+ * services of include/rep. ld.so binds linux-x64.rep1 imports to these, and the
+ * desktop loader checks every binding against the manager's resolver. */
+{
+    rep_abi_v1;
+    rep_abi_v2;
+    rep_abi_v3;
+    rep_storage_v1;
+    rep_audio_v1;
+};

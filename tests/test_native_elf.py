@@ -48,6 +48,10 @@ FORBIDDEN = {
     "execstack": ("", "(void)0", ["-Wl,-z,execstack"], "executable-stack"),
     "wrong-abi": ("const void *rep_abi_v1(unsigned);", "(void)rep_abi_v1(1)", [], "import:rep_abi_v1"),
     "lazy": ("", "(void)0", ["-Wl,-z,lazy"], "OK"),
+    # ld.so would bind it to the desktop's service (the loader also checks bindings).
+    "service-name": ('#include "rep/rep_storage_v1.h"\n'
+                     "REP2_EXPORT const rep_storage_v1_t *rep_storage_v1(uint32_t v) { (void)v; return 0; }",
+                     "(void)rep_storage_v1(1)", [], "service-symbol-defined"),
 }
 
 

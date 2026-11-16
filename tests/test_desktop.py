@@ -43,6 +43,21 @@ key boot
 swipe {swipe}
 """
 
+# linux-x64.rep1 packages: (example, entry, id, name, defines).
+NATIVE_APPS = (
+    ("hello", "rep_app_entry", "org.roundie.hello", "Hello", ()),
+    ("watch", "rep_app_entry_v3", "org.roundie.watch", "Zegarek", ()),
+    ("stopwatch", "rep_app_entry_v3", "org.roundie.stopwatch", "Stoper", ()),
+    ("sound", "rep_app_entry_v3", "org.roundie.sound", "Dźwięk", ()),
+    ("hang", "rep_app_entry_v2", "org.roundie.hang", "Hang", ("FAULT_KIND=1",)),
+)
+
+# On the 1.85B panel: a swipe up from the home application's bottom strip
+# opens the list, and a swipe right from the left-edge strip closes an
+# application (components/roundie_launcher/render.c).
+HOME_TO_LIST = "down 180 320\nwait 50\nmove 180 250\nwait 50\nmove 180 150\nwait 50\nup\n"
+CLOSE_APP = "down 10 180\nwait 50\nmove 60 182\nwait 50\nmove 150 185\nwait 50\nup\n"
+
 # Canvas points of the controls, in panel pixels of each profile.
 BOARDS = {
     "1.85b": {"size": 360, "back": "180 295", "refresh": "180 295", "first": "180 135",
@@ -140,35 +155,39 @@ class DesktopRunTests(unittest.TestCase):
                         "-Dbuildtype=debug", "-Ddesktop=enabled"], check=True, capture_output=True)
         subprocess.run(["ninja", "-C", str(build)], check=True, capture_output=True)
         cls.binary = build / "roundie-desktop"
-        env = dict(os.environ, PATH=str(TOOLCHAIN) + os.pathsep + os.environ["PATH"])
-        cls.packages = []
-        for name, binary, app_id, title in (("hello_elf", "hello", "org.roundie.hello", "Hello"),
-                                            ("watch_elf", "watch", "org.roundie.watch", "Zegarek")):
-            target = cls.work / name
-            subprocess.run(["cmake", "-S", str(ROOT / "examples" / name), "-B", str(target)],
-                           check=True, capture_output=True, env=env)
-            subprocess.run(["cmake", "--build", str(target)], check=True, capture_output=True, env=env)
-            package = cls.work / f"{binary}.rpk"
-            subprocess.run(["python3", str(ROOT / "tools/roundie_package.py"), "build",
-                            str(target / f"{binary}.app.elf"), "--output", str(package), "--id", app_id,
-                            "--name", title, "--version", "1.0.0"], check=True, capture_output=True)
-            cls.packages.append(package)
+        # The desktop's package target is linux-x64.rep1: the same example
+        # sources, built for x86-64 (docs/native-apps.md, N1-N3).
+        cls.native = {}
+        for stem, entry, app_id, title, defines in NATIVE_APPS:
+            binary = cls.work / f"{stem}.app.so"
+            subprocess.run(["python3", str(ROOT / "tools/roundie_native_app.py"), str(ROOT / "examples" /
+                            ("fault_elf/fault.c" if stem == "hang" else f"{stem}_elf/{stem}.c")),
+                            "--entry", entry, "-o", str(binary), *(f"-D{define}" for define in defines)],
+                           check=True, capture_output=True)
+            package = cls.work / f"{stem}.rpk"
+            subprocess.run(["python3", str(ROOT / "tools/roundie_package.py"), "build", str(binary),
+                            "--output", str(package), "--id", app_id, "--name", title, "--version", "1.0.0",
+                            "--target", "linux-x64.rep1"], check=True, capture_output=True)
+            cls.native[stem] = package
+        cls.packages = [cls.native["hello"], cls.native["watch"]]
 
     @classmethod
     def tearDownClass(cls):
         cls.temporary.cleanup()
 
-    def run_desktop(self, board, script, *, install=True):
+    def run_desktop(self, board, script, *, install=True, packages=None, native=False, timeout=60):
         directory = Path(tempfile.mkdtemp(dir=self.work))
         (directory / "script.txt").write_text(script)
         command = [str(self.binary), "--headless", "--board", board, "--data", str(directory / "data"),
                    "--script", "script.txt"]
+        if native:
+            command.append("--native-apps")
         if install:
-            for package in self.packages:
+            for package in self.packages if packages is None else packages:
                 command += ["--install", str(package)]
         env = dict(os.environ, UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
                    ASAN_OPTIONS="detect_leaks=1")
-        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=60, env=env)
+        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=timeout, env=env)
         return result, directory
 
     def test_launcher_flow_on_both_panels(self):
@@ -565,6 +584,122 @@ echo "exit $?" >> app.log
         result, directory = self.run_desktop("1.75c", script, install=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(png_size(directory / "empty.png"), (466, 466))
+
+    # ---- Native linux-x64.rep1 applications (docs/native-apps.md, M5a) ----------
+
+    def test_native_apps_through_the_launcher(self):
+        """The real launcher starts the home Watch (ABI 3, UI bridge), closes it
+        and runs Hello (ABI 1) from the list; both unload completely."""
+        script = ("wait-app RUNNING 5000\nwait 500\nscreenshot watch.png\napp\n" + HOME_TO_LIST +
+                  "wait-app UNLOADED 5000\nwait-nav LIST 5000\napp\ntap 180 135\nwait-nav RESULT 5000\n"
+                  "app\nresources\nquit\n")
+        result, directory = self.run_desktop("1.85b", script, native=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("runtime error", result.stderr)
+        self.assertIn("native applications enabled", result.stderr)
+        self.assertIn('app state=RUNNING instance=1 abi=3', result.stdout)
+        self.assertIn('app state=UNLOADED instance=1 abi=3 completed=1 loader=0 result=0', result.stdout)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("Hello from a native Roundie ELF application!", result.stderr)
+        self.assertIn('app state=UNLOADED instance=2 abi=1 completed=2 loader=0 result=42', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
+        self.assertEqual(png_size(directory / "watch.png"), (360, 360))
+
+    def test_native_cycles_release_everything(self):
+        """Repeated load/start/stop/unload: no image mapping, descriptor or
+        runtime resource outlives an instance (ASan leak check at exit)."""
+        cycles = [("hello", "tap 180 135\nwait-nav RESULT 5000\ntap 180 295\nwait-nav LIST 5000\n", 100),
+                  ("stopwatch", "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 100\n" +
+                   CLOSE_APP + "wait-app UNLOADED 5000\nwait-nav LIST 5000\n", 36)]
+        for stem, cycle, count in cycles:
+            with self.subTest(app=stem):
+                script = "wait-nav LIST 5000\nresources\n" + cycle * count + "app\nresources\nquit\n"
+                result, _ = self.run_desktop("1.85b", script, packages=[self.native[stem]], native=True,
+                                             timeout=300)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("runtime error", result.stderr)
+                self.assertNotIn("still mapped", result.stderr)
+                resources = re.findall(r"resources image_mappings=(\d+) descriptors=(\d+)", result.stdout)
+                self.assertEqual(len(resources), 2)
+                self.assertEqual(resources[0], resources[1])
+                self.assertEqual(resources[1][0], "0")
+                self.assertIn(f"instance={count} ", result.stdout)
+                self.assertIn(f"completed={count} ", result.stdout)
+                self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+
+    def test_hung_application_does_not_block_the_gui(self):
+        """A callback that never returns keeps the executor; the GUI keeps
+        running, the exit request is admitted, and the limitation is reported."""
+        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 300\n" +
+                  CLOSE_APP + "wait 6000\nstatus\napp\nscreenshot hung.png\ntap 180 180\nwait 200\nstatus\n"
+                  "quit\n")
+        result, directory = self.run_desktop("1.85b", script, packages=[self.native["hang"]], native=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("has not returned for", result.stderr)
+        self.assertIn("cannot be stopped safely", result.stderr)
+        self.assertEqual(result.stdout.count("launcher state=EXITING painted=EXITING"), 2)
+        self.assertIn("app state=RUNNING instance=1 abi=2", result.stdout)
+        self.assertEqual(png_size(directory / "hung.png"), (360, 360))
+
+    def test_native_apps_are_opt_in(self):
+        """Without --native-apps every launch is refused and nothing is loaded."""
+        script = "wait-nav LIST 5000\ntap 180 135\nwait-nav RESULT 5000\napp\nresources\nquit\n"
+        result, _ = self.run_desktop("1.85b", script, packages=[self.native["hello"]])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("native applications are disabled", result.stderr)
+        self.assertIn("app state=UNLOADED instance=0", result.stdout)
+        self.assertNotIn("Hello from", result.stderr)
+
+    def test_incompatible_and_interposing_packages_are_rejected(self):
+        # An ESP32-S3 package or a truncated one fails installation.
+        truncated = self.work / "truncated.rpk"
+        truncated.write_bytes(self.native["hello"].read_bytes()[:-100])
+        rejected = [(truncated, None)]
+        if (TOOLCHAIN / "xtensa-esp32s3-elf-gcc").exists():
+            env = dict(os.environ, PATH=str(TOOLCHAIN) + os.pathsep + os.environ["PATH"])
+            target = self.work / "xtensa-hello"
+            subprocess.run(["cmake", "-S", str(ROOT / "examples/hello_elf"), "-B", str(target)],
+                           check=True, capture_output=True, env=env)
+            subprocess.run(["cmake", "--build", str(target)], check=True, capture_output=True, env=env)
+            esp = self.work / "hello-esp.rpk"
+            subprocess.run(["python3", str(ROOT / "tools/roundie_package.py"), "build",
+                            str(target / "hello.app.elf"), "--output", str(esp), "--id", "org.roundie.hello",
+                            "--name", "Hello", "--version", "1.0.0"], check=True, capture_output=True)
+            rejected.append((esp, "package-incompatible"))
+        for package, error in rejected:
+            with self.subTest(package=package.name):
+                result, directory = self.run_desktop("1.85b", "wait-nav LIST 5000\nquit\n", packages=[package],
+                                                     native=True)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f"install {package}", result.stderr)
+                if error is not None:
+                    self.assertIn(error, result.stderr)
+                self.assertFalse(any((directory / "data/storage/packages").glob("*/active")))
+        # A valid ELF exporting a C library name: ld.so binds the call to the
+        # process's puts, the loader's binding check refuses it before the entry.
+        source = self.work / "interpose.c"
+        source.write_text(
+            '#include "rep/rep_app_v3.h"\nREP3_APP_METADATA;\n'
+            "static int32_t pass(const rep_context_v2_t *c) { (void)c; return 0; }\n"
+            "static int32_t event(const rep_context_v2_t *c, const rep_event_v2_t *e) { (void)c; (void)e; return 0; }\n"
+            "REP2_EXPORT int puts(const char *text) { (void)text; return 7; }\n"
+            "REP2_EXPORT const rep_descriptor_v3_t *rep_app_entry_v3(const rep_api_v3_t *api)\n{\n"
+            "    static const rep_descriptor_v3_t d = {REP_ABI_V3, sizeof(d), pass, pass, event, pass, pass, pass,"
+            " pass, REP3_CAP_UI};\n"
+            '    return rep_abi_v3(REP_ABI_V3) == api && puts("x") == 7 ? &d : 0;\n}\n')
+        binary = self.work / "interpose.app.so"
+        package = self.work / "interpose.rpk"
+        subprocess.run(["python3", str(ROOT / "tools/roundie_native_app.py"), str(source), "--entry",
+                        "rep_app_entry_v3", "-o", str(binary)], check=True, capture_output=True)
+        subprocess.run(["python3", str(ROOT / "tools/roundie_package.py"), "build", str(binary), "--output",
+                        str(package), "--id", "org.roundie.interpose", "--name", "Interpose", "--version", "1.0.0",
+                        "--target", "linux-x64.rep1"], check=True, capture_output=True)
+        script = "wait-nav LIST 5000\ntap 180 135\nwait-nav RESULT 5000\napp\nresources\nquit\n"
+        result, _ = self.run_desktop("1.85b", script, packages=[package], native=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("binding at", result.stderr)
+        self.assertIn('callbacks=0 outstanding=0 busy=0 error="loader-relocation"', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
 
 
 if __name__ == "__main__":

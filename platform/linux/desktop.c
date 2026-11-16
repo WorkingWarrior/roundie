@@ -5,6 +5,7 @@
  * Vulkan, as the GUI task does on the board; one system worker thread polls
  * the launcher and the package manager, as the firmware's system worker. */
 
+#include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -19,6 +20,7 @@
 #include "lvgl.h"
 #include "display_scale.h"
 #include "roundie_app_ui.h"
+#include "roundie_elf.h"
 #include "roundie_launcher.h"
 #include "roundie_packages.h"
 #include "roundie_platform.h"
@@ -28,6 +30,7 @@
 #include "power_shared.h"
 #include "roundie_power.h"
 #include "vk_present.h"
+#include "app_runtime.h"
 #include "clock.h"
 #include "local_time.h"
 #include "roundie_clock_port.h"
@@ -331,15 +334,14 @@ static bool install_package(const char *path)
         if (result == ESP_OK) {
             result = roundie_packages_install(digest);
         }
-        if (result != ESP_OK) {
-            roundie_packages_abort(session);
-        }
     }
     free(bytes);
     if (result != ESP_OK) {
+        /* The reason, before abort records its own state. */
         roundie_packages_status_t status;
         roundie_packages_status(&status);
         fprintf(stderr, "roundie-desktop: install %s: %s (%s)\n", path, esp_err_to_name(result), status.error);
+        roundie_packages_abort(1);
         return false;
     }
     return true;
@@ -471,6 +473,7 @@ static void *system_worker(void *argument)
     int64_t clock_polled_us = roundie_time_us();
     while (!atomic_load(&quit_requested)) {
         int64_t now = roundie_time_us();
+        roundie_desktop_apps_poll(now);
         roundie_packages_poll(now);
         roundie_launcher_poll(true, roundie_packages_busy());
         roundie_power_worker_poll(now);
@@ -485,6 +488,19 @@ static void *system_worker(void *argument)
 static const char *const navigation_names[] = {
     "WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT",
 };
+
+static const char *const app_state_names[] = {
+    "UNLOADED", "LOADING", "READY", "RUNNING", "STOPPING", "UNLOADING", "INITIALIZED", "STARTING", "SUSPENDING",
+    "SUSPENDED", "RESUMING", "STOPPED",
+};
+
+static const char *app_state_name(roundie_elf_state_t state)
+{
+    if ((size_t)state >= sizeof(app_state_names) / sizeof(app_state_names[0])) {
+        return "?";
+    }
+    return app_state_names[state];
+}
 
 static const char *navigation_name(roundie_navigation_t state)
 {
@@ -736,6 +752,57 @@ static void script_step(void)
                    (unsigned)status->count);
             fflush(stdout);
             free(status);
+        } else if (strcmp(command, "app") == 0) {
+            roundie_elf_status_t *status = allocate(sizeof(*status));
+            roundie_elf_status(status);
+            printf("app state=%s instance=%u abi=%u completed=%u loader=%d result=%d callbacks=%u"
+                   " outstanding=%u busy=%d error=\"%s\"\n",
+                   app_state_name(status->state), (unsigned)status->instance, (unsigned)status->abi_version,
+                   (unsigned)status->completed, status->loader_result, (int)status->app_result,
+                   (unsigned)status->callbacks, (unsigned)status->resources_outstanding, (int)roundie_elf_busy(),
+                   status->error);
+            fflush(stdout);
+            free(status);
+        } else if (strcmp(command, "resources") == 0) {
+            /* Leak checks of repeated application cycles: image mappings and descriptors. */
+            unsigned mappings = 0;
+            unsigned descriptors = 0;
+            FILE *maps = fopen("/proc/self/maps", "r");
+            char text[512];
+            while (maps != NULL && fgets(text, sizeof(text), maps) != NULL) {
+                if (strstr(text, "memfd:rep-app") != NULL) {
+                    mappings++;
+                }
+            }
+            if (maps != NULL) {
+                fclose(maps);
+            }
+            DIR *fds = opendir("/proc/self/fd");
+            while (fds != NULL && readdir(fds) != NULL) {
+                descriptors++;
+            }
+            if (fds != NULL) {
+                closedir(fds);
+            }
+            printf("resources image_mappings=%u descriptors=%u\n", mappings, descriptors);
+            fflush(stdout);
+        } else if (strcmp(command, "wait-app") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2) {
+            roundie_elf_status_t *status = allocate(sizeof(*status));
+            roundie_elf_status(status);
+            bool match = strcmp(app_state_name(status->state), word) == 0;
+            roundie_elf_state_t state = status->state;
+            free(status);
+            if (!match) {
+                if (script.deadline_us == 0) {
+                    script.deadline_us = now + (int64_t)a * 1000;
+                }
+                if (now >= script.deadline_us) {
+                    fprintf(stderr, "roundie-desktop: application state is %s\n", app_state_name(state));
+                    script_fail(line, "timed out");
+                }
+                return;
+            }
+            script.deadline_us = 0;
         } else if (strcmp(command, "power") == 0) {
             roundie_lock(&roundie_power_shared.lock);
             roundie_power_state_t state = roundie_power_shared.state;
@@ -826,6 +893,7 @@ static void usage(void)
 {
     fputs("usage: roundie-desktop [--board 1.85b|1.75c] [--data DIR] [--zoom N]\n"
           "                       [--headless] [--script FILE] [--install FILE.rpk]...\n"
+          "                       [--native-apps]  (run linux-x64.rep1 apps: trusted code, no sandbox)\n"
           "keys: B = BOOT, P = PWR, Esc = quit; the mouse is the touch panel\n", stderr);
 }
 
@@ -943,6 +1011,8 @@ int main(int argc, char **argv)
             install_count++;
         } else if (strcmp(argv[i], "--headless") == 0) {
             headless = true;
+        } else if (strcmp(argv[i], "--native-apps") == 0) {
+            roundie_desktop_apps_enable(true);
         } else {
             usage();
             return 2;
@@ -1029,7 +1099,7 @@ int main(int argc, char **argv)
     roundie_local_time_init(true, roundie_wall_clock_valid);
     roundie_wall_clock_init(roundie_desktop_clock_has_rtc());
     time_start();
-    roundie_elf_set_clock_source(roundie_local_time_now);
+    roundie_desktop_set_app_clock_source(roundie_local_time_now);
 
     pthread_t worker;
     if (pthread_create(&worker, NULL, system_worker, NULL) != 0) {

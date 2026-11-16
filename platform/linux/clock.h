@@ -61,4 +61,5 @@ void roundie_desktop_clock_sleep_exit(void);
 void roundie_desktop_time_advance(int64_t us);
 
 /* app_runtime.c: the clock source registered for applications. */
+void roundie_desktop_set_app_clock_source(roundie_elf_clock_source_t source);
 roundie_elf_clock_source_t roundie_desktop_app_clock_source(void);

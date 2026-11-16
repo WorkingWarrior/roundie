@@ -109,3 +109,10 @@ typedef struct {
 typedef bool (*roundie_elf_clock_source_t)(roundie_elf_clock_t *out);
 /* Before the executor starts; NULL disables clock events. */
 void roundie_elf_set_clock_source(roundie_elf_clock_source_t source);
+
+#if ROUNDIE_TARGET_LINUX_X64
+/* Desktop executor: monotonic time at which its current manager call (load,
+ * callback, lifecycle step) began, 0 while idle. Nothing stops native code
+ * that does not return; the desktop reports it instead. Any thread. */
+int64_t roundie_elf_executor_busy_since(void);
+#endif

@@ -360,6 +360,8 @@ bool roundie_elf_validate_x86_64(const void *input, size_t size, roundie_elf_inf
         }
         CHECK(symbol.st_shndx < SHN_LORESERVE && symbol.st_shndx < header.e_shnum &&
               mapped(&image, symbol.st_value, symbol.st_size, 0), "symbol-address");
+        /* ld.so would bind references to it to the desktop's service instead. */
+        CHECK(!roundie_elf_import_allowed(name), "service-symbol-defined");
         if (strcmp(name, entry_name) == 0) {
             CHECK(symbol.st_value == header.e_entry && type == STT_FUNC && bind == STB_GLOBAL &&
                   ELF64_ST_VISIBILITY(symbol.st_other) == STV_DEFAULT, "entry-symbol");
