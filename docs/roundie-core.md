@@ -343,7 +343,14 @@ unchanged. Builds have no warnings; host tests pass.
   `wayland-scanner`; it needs `fake-input.xml` from plasma-wayland-protocols
   (`ROUNDIE_FAKE_INPUT_XML` or `/usr/share/plasma-wayland-protocols`) and
   skips otherwise. A click on Back and a left-edge swipe land on the right
-  controls at scale 2. The desktop logs the window's size, pixel size,
+  controls at scale 2. A forced window rule in the test's own `kwinrulesrc`
+  maps the window borderless at a fixed place. The earlier KWin script that
+  moved it after mapping did not hold on KWin 6.8.2: the move was undone at
+  the client's next commit, and `noBorder` applied after the new frame
+  geometry, so the clicks landed 36 px too low. This came to light in the CI
+  image (2026-11-16), the first environment that had `fake-input.xml`: on the
+  development machine the test had always skipped, so its input path had
+  never run before (docs/ci.md). The desktop logs the window's size, pixel size,
   density and display scale, and every swapchain's size and panel placement.
 
 **M2 (verified on the host and by firmware builds; not on a device):**

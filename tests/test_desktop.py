@@ -541,7 +541,7 @@ echo "exit $?" >> app.log
         """HiDPI: a virtual KWin output at scale 2 in its own D-Bus session and
         configuration directories (never the user's session). The window gets
         device pixels; pointer events come from KWin's fake-input protocol."""
-        tools = [tool for tool in ("kwin_wayland", "dbus-run-session", "gdbus", "wayland-scanner", "cc")
+        tools = [tool for tool in ("kwin_wayland", "dbus-run-session", "wayland-scanner", "cc")
                  if shutil.which(tool) is None]
         if tools:
             self.skipTest("missing " + ", ".join(tools))
@@ -565,13 +565,6 @@ echo "exit $?" >> app.log
         (directory / "data/applications/roundie-fake-input.desktop").write_text(
             f"[Desktop Entry]\nType=Application\nName=Roundie input test\nExec={injector}\nNoDisplay=true\n"
             "X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input\n")
-        # Place the borderless 466x466 (logical) window at (100,50).
-        (directory / "place.js").write_text(
-            "for (const w of workspace.windowList()) {\n"
-            "    if (w.caption.indexOf(\"Roundie\") === 0) {\n"
-            "        w.noBorder = true;\n"
-            "        w.frameGeometry = {x: 100, y: 50, width: 466, height: 466};\n"
-            "    }\n}\n")
         events = []
         def point(x, y):
             events.append(f"move {100 + x} {50 + y}")
@@ -592,10 +585,7 @@ echo "exit $?" >> app.log
 cd {directory}
 SDL_VIDEO_DRIVER=wayland {self.binary} --board 1.75c --zoom 1 --data {directory}/appdata {installs} --script script.txt > app.log 2>&1 &
 app=$!
-sleep 3
-id=$(gdbus call --session --dest org.kde.KWin --object-path /Scripting --method org.kde.kwin.Scripting.loadScript {directory}/place.js place | grep -o '[0-9]\\+')
-gdbus call --session --dest org.kde.KWin --object-path /Scripting/Script$id --method org.kde.kwin.Script.run > /dev/null
-sleep 0.5
+sleep 3.5
 {injector} < input.txt > inject.log 2>&1
 wait $app
 echo "exit $?" >> app.log
@@ -616,6 +606,14 @@ echo "exit $?" >> app.log
         outputs = directory / "config/kwinoutputconfig.json"
         self.assertIn('"scale": 1,', outputs.read_text())
         outputs.write_text(outputs.read_text().replace('"scale": 1,', '"scale": 2,'))
+        # A forced window rule maps the window borderless with its 466x466
+        # (logical) client area at (100,50). A KWin script that moved the window
+        # after mapping did not hold on KWin 6.8.2: the move was undone when the
+        # client next committed (measured), and setting noBorder took effect
+        # only after the frame geometry, leaving the client area 36 px lower.
+        (directory / "config/kwinrulesrc").write_text(
+            "[General]\ncount=1\nrules=roundie\n\n[roundie]\nDescription=Roundie desktop test window\n"
+            "title=Roundie\ntitlematch=2\nnoborder=true\nnoborderrule=2\nposition=100,50\npositionrule=2\n")
         kwin(str(directory / "inner.sh"))
         log = (directory / "app.log").read_text()
         self.assertIn("exit 0", log, log + (directory / "inject.log").read_text())
