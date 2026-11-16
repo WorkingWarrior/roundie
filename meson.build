@@ -82,6 +82,8 @@ if sdl.found() and vulkan.found() and psa.found()
              core_sources,
              'platform/linux/platform.c',
              'platform/linux/app_runtime.c',
+             'platform/linux/audio.c',
+             'components/roundie_audio/stream.c',
              'components/roundie_elf/linux/loader.c',
              'components/roundie_elf/linux/executor.c',
              'platform/linux/board.c',

@@ -20,6 +20,7 @@
 #include "lvgl.h"
 #include "display_scale.h"
 #include "roundie_app_ui.h"
+#include "roundie_audio.h"
 #include "roundie_elf.h"
 #include "roundie_launcher.h"
 #include "roundie_packages.h"
@@ -763,6 +764,16 @@ static void script_step(void)
                    status->error);
             fflush(stdout);
             free(status);
+        } else if (strcmp(command, "audio") == 0) {
+            roundie_audio_status_t audio;
+            roundie_audio_status(&audio);
+            printf("audio initialized=%d playing=%d plays=%u errors=%u volume=%u stream=%d phase=%u ring=%u"
+                   " underruns=%u pauses=%u busy=%d\n",
+                   (int)audio.initialized, (int)audio.playing, (unsigned)audio.plays, (unsigned)audio.errors,
+                   (unsigned)audio.last_volume, (int)audio.stream_open, (unsigned)audio.stream_phase,
+                   (unsigned)audio.ring_used, (unsigned)audio.underruns, (unsigned)audio.pauses,
+                   (int)roundie_audio_busy());
+            fflush(stdout);
         } else if (strcmp(command, "resources") == 0) {
             /* Leak checks of repeated application cycles: image mappings and descriptors. */
             unsigned mappings = 0;
@@ -1074,6 +1085,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "roundie-desktop: %s panel %ux%u on %s\n", gui.profile->name,
                 (unsigned)gui.profile->width, (unsigned)gui.profile->height, vk_present_device(present));
         log_window(window);
+    }
+
+    /* The speaker; applications get no stream without it, as on a board whose codec failed. */
+    if (roundie_audio_init(NULL) != ESP_OK) {
+        fprintf(stderr, "roundie-desktop: no audio output\n");
     }
 
     roundie_desktop_input_init(&gui.input, gui.profile->width, gui.profile->height);

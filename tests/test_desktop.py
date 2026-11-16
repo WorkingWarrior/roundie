@@ -1,6 +1,7 @@
 """Linux desktop target (docs/roundie-core.md, M1): production launcher, UI bridge
 and package manager under ASan/UBSan, driven by scripts in headless mode."""
 from pathlib import Path
+import array
 import os
 import re
 import shutil
@@ -140,6 +141,14 @@ class DesktopContractTests(unittest.TestCase):
             self.assertEqual(desktop[name], firmware[name], name)
 
 
+    def test_audio_configuration_matches_rep_profile(self):
+        config = ROOT / "sdkconfig.rep"
+        if not config.exists():
+            self.skipTest("no sdkconfig.rep; build the rep firmware first")
+        self.assertIn("CONFIG_ROUNDIE_AUDIO=y", config.read_text().splitlines())
+        self.assertEqual(defines(ROOT / "platform/linux/include/sdkconfig.h")["CONFIG_ROUNDIE_AUDIO"], "1")
+
+
 class DesktopRunTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -175,7 +184,8 @@ class DesktopRunTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temporary.cleanup()
 
-    def run_desktop(self, board, script, *, install=True, packages=None, native=False, timeout=60):
+    def run_desktop(self, board, script, *, install=True, packages=None, native=False, timeout=60,
+                    environment=None):
         directory = Path(tempfile.mkdtemp(dir=self.work))
         (directory / "script.txt").write_text(script)
         command = [str(self.binary), "--headless", "--board", board, "--data", str(directory / "data"),
@@ -185,8 +195,10 @@ class DesktopRunTests(unittest.TestCase):
         if install:
             for package in self.packages if packages is None else packages:
                 command += ["--install", str(package)]
+        # No sound from the tests on the session's output unless a test captures it.
         env = dict(os.environ, UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
-                   ASAN_OPTIONS="detect_leaks=1")
+                   ASAN_OPTIONS="detect_leaks=1", SDL_AUDIO_DRIVER="dummy")
+        env.update(environment or {})
         result = subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=timeout, env=env)
         return result, directory
 
@@ -444,7 +456,8 @@ echo "exit $?" >> app.log
 """)
         (directory / "drive.sh").chmod(0o755)
         env = dict(os.environ, UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
-                   ASAN_OPTIONS="detect_leaks=0")  # the graphics stack leaks on unload
+                   ASAN_OPTIONS="detect_leaks=0",  # the graphics stack leaks on unload
+                   SDL_AUDIO_DRIVER="dummy")
         subprocess.run(["gamescope", "--backend", "headless", "-W", "932", "-H", "932", "--",
                         str(directory / "drive.sh")], capture_output=True, timeout=120, env=env)
         log = (directory / "app.log").read_text()
@@ -560,7 +573,7 @@ echo "exit $?" >> app.log
                if name not in ("WAYLAND_DISPLAY", "DISPLAY", "XDG_SESSION_ID", "DBUS_SESSION_BUS_ADDRESS")}
         env.update(XDG_CONFIG_HOME=str(directory / "config"), XDG_CACHE_HOME=str(directory / "cache"),
                    XDG_DATA_HOME=str(directory / "data"), ASAN_OPTIONS="detect_leaks=0",
-                   UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1")
+                   UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1", SDL_AUDIO_DRIVER="dummy")
         def kwin(session):
             subprocess.run(["dbus-run-session", "--", "kwin_wayland", "--virtual", "--width", "932", "--height",
                             "932", "--scale", "2", "--no-lockscreen", "--socket", f"roundie-test-{os.getpid()}",
@@ -604,6 +617,54 @@ echo "exit $?" >> app.log
         self.assertIn('app state=UNLOADED instance=2 abi=1 completed=2 loader=0 result=42', result.stdout)
         self.assertIn("resources image_mappings=0", result.stdout)
         self.assertEqual(png_size(directory / "watch.png"), (360, 360))
+
+    def test_sound_plays_through_sdl_audio(self):
+        """Sound (ABI 3) streams its 16 kHz mono tune through the desktop's SDL3
+        backend of the REP Audio contract; SDL's disk driver records the output."""
+        script = ("wait-nav LIST 5000\naudio\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\n"
+                  "wait 1000\naudio\nwait 9000\naudio\n" + CLOSE_APP +
+                  "wait-app UNLOADED 5000\napp\naudio\nresources\nquit\n")
+        result, directory = self.run_desktop("1.85b", script, packages=[self.native["sound"]], native=True,
+                                             environment={"SDL_AUDIO_DRIVER": "disk"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("runtime error", result.stderr)
+        self.assertIn("Speaker ready on SDL driver disk", result.stderr)
+        audio = re.findall(r"audio initialized=1 playing=(\d) plays=(\d+) errors=0 volume=(\d+) stream=(\d)",
+                           result.stdout)
+        self.assertEqual(audio, [("0", "0", "0", "0"), ("1", "0", "35", "1"), ("0", "1", "35", "0"),
+                                 ("0", "1", "35", "0")])
+        self.assertIn('app state=UNLOADED instance=1 abi=3 completed=1 loader=0 result=0', result.stdout)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        rate = int(re.search(r"format=S16LE channels=2 freq=(\d+)", result.stderr).group(1))
+        samples = array.array("h", (directory / "data/sdlaudio.raw").read_bytes())
+        left = samples[0::2]
+        self.assertEqual(left, samples[1::2])  # mono source on both channels
+        audible = [index for index, value in enumerate(left) if abs(value) > 200]
+        self.assertGreater(len(audible), 0)
+        duration = (audible[-1] - audible[0]) / rate
+        self.assertGreater(duration, 5.0)
+        self.assertLess(duration, 8.0)
+        # The first note, from zero crossings over 0.2 s: G5 (784 Hz).
+        window = left[audible[0]:audible[0] + rate // 5]
+        crossings = sum(1 for a, b in zip(window, window[1:]) if (a < 0) != (b < 0))
+        self.assertAlmostEqual(crossings / 2 / 0.2, 784, delta=20)
+
+    def test_sound_closed_while_playing_releases_the_stream(self):
+        """Closing Sound mid-tune: the manager releases the instance's stream
+        before unload and the next instance can open one."""
+        cycle = ("tap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\nwait 700\naudio\n" + CLOSE_APP +
+                 "wait-app UNLOADED 5000\nwait-nav LIST 5000\naudio\n")
+        script = "wait-nav LIST 5000\n" + cycle * 3 + "app\nresources\nquit\n"
+        result, _ = self.run_desktop("1.85b", script, packages=[self.native["sound"]], native=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("runtime error", result.stderr)
+        audio = re.findall(r"audio initialized=1 playing=(\d) plays=(\d+) errors=0 volume=\d+ stream=(\d) .* busy=(\d)",
+                           result.stdout)
+        self.assertEqual(audio, [("1", "0", "1", "1"), ("0", "1", "0", "0"), ("1", "1", "1", "1"),
+                                 ("0", "2", "0", "0"), ("1", "2", "1", "1"), ("0", "3", "0", "0")])
+        self.assertIn('app state=UNLOADED instance=3 abi=3 completed=3 loader=0 result=0', result.stdout)
+        self.assertIn('outstanding=0 busy=0 error=""', result.stdout)
+        self.assertIn("resources image_mappings=0", result.stdout)
 
     def test_native_cycles_release_everything(self):
         """Repeated load/start/stop/unload: no image mapping, descriptor or
