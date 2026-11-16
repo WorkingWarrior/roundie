@@ -15,9 +15,11 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "tests"))
 import roundie_package as package
 import roundie_ota as ota
 import roundie_safe as safe
+from xtensa_toolchain import TOOLCHAIN
 
 OUTPUT = Path(__file__).parent / "generated"
 OUTPUT.mkdir(exist_ok=True)
@@ -91,8 +93,7 @@ int main(void) {
         subprocess.run([str(executable)], input="".join(f"!RP1 {REQUEST_ID} {op}\n" for op in transfer_ops), text=True, check=True)
 
         env = dict(os.environ)
-        toolchain = "/home/solve/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin"
-        env["PATH"] = toolchain + os.pathsep + env["PATH"]
+        env["PATH"] = str(TOOLCHAIN) + os.pathsep + env["PATH"]
         build = tmp / "hello"
         subprocess.run(["cmake", "-S", str(ROOT / "examples/hello_elf"), "-B", str(build)], env=env, check=True, capture_output=True)
         subprocess.run(["cmake", "--build", str(build)], env=env, check=True, capture_output=True)

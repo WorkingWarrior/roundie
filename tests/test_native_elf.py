@@ -14,7 +14,7 @@ import roundie_native_app
 import roundie_package
 from roundie_time import DeviceError
 
-TOOLCHAIN = Path("/home/solve/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin")
+from xtensa_toolchain import TOOLCHAIN
 
 EXAMPLES = (("hello", "rep_app_entry", 1), ("event", "rep_app_entry_v2", 2), ("ui", "rep_app_entry_v3", 3),
             ("round", "rep_app_entry_v3", 3), ("sound", "rep_app_entry_v3", 3),

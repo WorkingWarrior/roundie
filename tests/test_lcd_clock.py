@@ -1,5 +1,6 @@
 """Production LCD IO startup block with mocked IDF; no electrical claims."""
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 import unittest
@@ -11,7 +12,8 @@ BOARD = ROOT / 'components/roundie_board/boards/waveshare_s3_touch_lcd_1_85b'
 class LcdClockTests(unittest.TestCase):
     def test_pinned_idf_divider(self):
         # Compile the actual selected S3 algorithm, not a reimplementation.
-        path = Path('/home/solve/.espressif/v6.1/esp-idf/components/esp_hal_gpspi/esp32s3/include/hal/spi_ll.h')
+        idf = Path(os.environ.get('IDF_PATH', Path.home() / '.espressif/v6.1/esp-idf'))
+        path = idf / 'components/esp_hal_gpspi/esp32s3/include/hal/spi_ll.h'
         source = path.read_text()
         start = source.index('static inline int spi_ll_freq_for_pre_n(')
         end = source.index('static inline int spi_ll_master_set_clock(', start)

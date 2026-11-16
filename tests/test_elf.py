@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import roundie_elf
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOLCHAIN = Path("/home/solve/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin")
+from xtensa_toolchain import TOOLCHAIN
 
 
 class ElfTests(unittest.TestCase):

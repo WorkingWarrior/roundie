@@ -49,6 +49,8 @@ class RepDeploymentTest(unittest.TestCase):
             flash_rep.check_device(self.prefix[:-1], self.table, self.boot)
 
     def test_legacy_guard_rejects_physical_rep_table(self):
+        if not flash_bringup.BACKUP.exists():
+            self.skipTest("needs the local pre-flash backup of the device (flash_bringup.BACKUP)")
         backup = flash_bringup.BACKUP.read_bytes()
         boot = (ROOT / "build/bootloader/bootloader.bin").read_bytes()
         live = bytearray(boot)

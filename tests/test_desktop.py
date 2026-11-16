@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOLCHAIN = Path("/home/solve/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin")
+from xtensa_toolchain import TOOLCHAIN
 LVGL = ROOT / "managed_components/lvgl__lvgl/lvgl.h"
 
 # lv_conf.h name -> (firmware Kconfig name, value as lv_conf.h spells it)
@@ -175,12 +175,20 @@ class DesktopRunTests(unittest.TestCase):
             raise unittest.SkipTest("missing " + ", ".join(missing))
         if not LVGL.exists():
             raise unittest.SkipTest("managed_components/lvgl__lvgl missing; build the firmware first")
-        cls.temporary = tempfile.TemporaryDirectory(prefix="roundie-desktop-test-")
+        # ROUNDIE_KEEP_TEST_WORK keeps builds, data directories and logs for
+        # diagnosis (tools/ci/run_tests.py sets it in CI).
+        cls.temporary = tempfile.TemporaryDirectory(prefix="roundie-desktop-test-",
+                                                    delete="ROUNDIE_KEEP_TEST_WORK" not in os.environ)
         cls.work = Path(cls.temporary.name)
         build = cls.work / "build"
-        subprocess.run(["meson", "setup", str(build), str(ROOT), "-Db_sanitize=address,undefined",
-                        "-Dbuildtype=debug", "-Ddesktop=enabled"], check=True, capture_output=True)
-        subprocess.run(["ninja", "-C", str(build)], check=True, capture_output=True)
+        # ROUNDIE_DESKTOP_SANITIZE=thread runs the same tests under ThreadSanitizer.
+        sanitize = os.environ.get("ROUNDIE_DESKTOP_SANITIZE", "address,undefined")
+        for command in (["meson", "setup", str(build), str(ROOT), "-Db_sanitize=" + sanitize,
+                         "-Dbuildtype=debug", "-Ddesktop=enabled"], ["ninja", "-C", str(build)]):
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"{command[0]} failed ({result.returncode}):\n"
+                                   + result.stdout[-6000:] + result.stderr[-6000:])
         cls.binary = build / "roundie-desktop"
         # The desktop's package target is linux-x64.rep1: the same example
         # sources, built for x86-64 (docs/native-apps.md, N1-N3).
@@ -201,7 +209,8 @@ class DesktopRunTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.temporary.cleanup()
+        if "ROUNDIE_KEEP_TEST_WORK" not in os.environ:
+            cls.temporary.cleanup()
 
     def run_desktop(self, board, script, *, install=True, packages=None, native=False, timeout=60,
                     environment=None, virtual=False, directory=None):
@@ -220,7 +229,7 @@ class DesktopRunTests(unittest.TestCase):
                 command += ["--install", str(package)]
         # No sound from the tests on the session's output unless a test captures it.
         env = dict(os.environ, UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
-                   ASAN_OPTIONS="detect_leaks=1", SDL_AUDIO_DRIVER="dummy")
+                   ASAN_OPTIONS="detect_leaks=1", TSAN_OPTIONS="halt_on_error=1", SDL_AUDIO_DRIVER="dummy")
         env.update(environment or {})
         result = subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=timeout, env=env)
         return result, directory
