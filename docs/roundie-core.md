@@ -154,6 +154,18 @@ flowchart TB
   package target and loaded natively; the ESP32 package format, target string
   `esp32s3.rep1` and ABI stay unchanged. A design note comes before any code.
   Until then the desktop reports native execution as not supported.
+- **D7 Time (M3).** The wall-clock policy (when time is trusted, sync from
+  RT1 and the RTC, retention across resets, RTC polling) and local time
+  (zone storage, conversion, revision) are one Core component,
+  `components/roundie_time`, used unchanged by the firmware and the desktop.
+  Hardware reaches it only through `roundie_clock_port.h`: system wall time
+  read and set, the retained record, the RTC timer and its alignment, the
+  reset reason and the zone file. ESP-IDF implements it in
+  `components/roundie_time/idf/clock_port.c` with the calls `main.c` made
+  before; the desktop in `platform/linux/clock.c`. D1 is not extended and no
+  ESP-IDF shim headers were added for time. Timeouts, intervals and the power
+  policy use only the monotonic `roundie_time_us()`; the wall clock and the
+  zone never feed them (checked by a host test that scans those sources).
 
 ## Migration plan
 
@@ -165,7 +177,7 @@ host test suite, and the step's own check.
 | M1a | `roundie_platform` seam; launcher and UI bridge use it | Builds, host tests, identical disassembly of the changed objects on all four configurations |
 | M1b | Meson desktop target: LVGL, Core launcher and UI bridge, package manager on files, SDL3 window, Vulkan presentation, mouse touch, 360 and 466 profiles, screenshots, headless scripted runs | Desktop run shows the launcher; scripted test with screenshots; ASan/UBSan build |
 | M2 | Power manager split: GUI half (menu, screen policy, BOOT) to Core; sleep and restart per platform; desktop BOOT/PWR keys | BOOT key opens the real power menu on the desktop; firmware unchanged in behaviour |
-| M3 | Time: local time zone storage seam; emulated RTC with loss of time; battery emulation | Clock tests; desktop fault injection |
+| M3 | Time: shared wall-clock policy and local time behind a clock port (D7); emulated RTC, resets and loss of time | Clock tests on the production code; desktop fault injection; differential test against the old code |
 | M4 | Storage: file-backed application data and package install on the desktop | Package tests on the desktop store |
 | M5 | REP applications on x86-64 (D6) | Design note, then example applications running natively |
 | M6 | Audio: mixer to Core, SDL3 audio output | Tone and stream tests |
@@ -200,13 +212,27 @@ pixels as the touch controller reports them, times are milliseconds:
 `wait-nav STATE T`, `expect-nav STATE`, `mark`, `wait-refreshed T` (package
 list re-read since `mark`), `status`, `power` (power state, whether the panel
 is lit, sleep and screen-off counts, last power menu message),
-`wait-power active|screen_off|light_sleep T` and `quit`. The run ends after the last
+`wait-power active|screen_off|light_sleep T`, the time commands below and
+`quit`. The run ends after the last
 line; the exit code is 1 when a line fails, 2 on a usage or start-up error.
 `wait-nav` and `wait-refreshed` complete only after the GUI has applied the
 launcher's latest change, the display has been refreshed and LVGL has read the
 touch panel once: a new launcher screen ignores a press until LVGL reads a
 release (`lv_indev_wait_release`), and a press within one input period of the
 change would otherwise be lost, which a finger cannot do on the board.
+
+Time commands (M3): `rt1 ARGS` sends an `!RT1` line through the firmware's
+framer and parser (`rt1 SET 1792314126`, `rt1 GET`, `rt1 TZ CET-1CEST,M3.5.0,M10.5.0/3`;
+DIAG and RESTART are refused); `reset power|sw|panic|wdt|brownout|pin`
+emulates that reset and restarts the time subsystem; `clock` prints validity,
+sync count, wall, local time, day number, revision, monotonic time and zone;
+`wait-clock valid|invalid T`; `time-advance T` advances the monotonic clock
+(and with it the wall clock and RTC); `wall-jump S` moves only system wall
+time, as an outside `settimeofday` would; `time-drift rtc|chip PPM` sets the
+rate error of the ESP RTC timer or the PCF85063; `rtc-fault none|stop|bus`
+stops the PCF85063 oscillator or fails its bus. Light sleep from the power
+menu applies the RTC timer's drift to wall time. The zone is stored in
+`clock-tz` in the data directory.
 
 ### Desktop platform files (`platform/linux`)
 
@@ -222,6 +248,7 @@ change would otherwise be lost, which a finger cannot do on the board.
 | `power_worker.c` | M2 worker half of the power manager: emulated light sleep, restart and USB storage refused |
 | `include/esp_log.h`, `include/sdkconfig.h`, `include/esp_codec_dev.h`, `include/roundie_board_config.h` | Minimal headers for `main/power_gui.c`; `sdkconfig.h` holds the rep profile's power options (tested against `sdkconfig.rep`) |
 | `vk_present.c` | D4 Vulkan presentation and window-to-panel coordinate mapping |
+| `clock.c`, `clock.h` | D7 clock port: emulated ESP-IDF wall clock and RTC timer, retained memory, reset reasons, light sleep drift, PCF85063 (1.85b) through the firmware's register codec |
 
 ## Results
 
@@ -342,6 +369,52 @@ unchanged. Builds have no warnings; host tests pass.
 - PWR: the firmware has no PWR handler (none in `main` or the board code), so
   the desktop P key is still only logged.
 
+**M3 (verified on the host and by firmware builds; not on a device):**
+
+- Moved from `main/` with history: `local_time.c`, `clock_retention.c`,
+  `time_protocol.c`. New in the component: `wall_clock.c` (the logic that was
+  inline in `main.c`: start, RT1 GET/SET, RTC poll, retention check) and the
+  port header. `main.c` now calls `roundie_wall_clock_*`; `local_time.c` reads
+  its zone through the port and validity through a callback. ELF ABI, RT1
+  protocol, the retained record and the zone file format are unchanged.
+- Differential test against the code before M3: the old `main.c` fragments,
+  cut out by a script, and the new component ran the same 20 000 random
+  operations (advance, poll, GET with OTA_BUSY, SET, every reset kind, RTC
+  faults, drift, wall jumps) on the same emulated hardware, without and with
+  the RTC. The traces (result, RTC state and flags, error, validity, sync
+  count and time, wall time after every step) are identical; the logs differ
+  only in the reset reason number (desktop enum instead of ESP-IDF's).
+- Behaviour changes, all internal: time is reported valid only after start-up
+  publishes it (before, after `board_ready`); a SET that arrives before that
+  is applied and its reply shows no wall time; the sync count is read under
+  the lock (before, without it); the wall clock and local time have separate
+  locks, never nested with the power lock.
+- Firmware: the four configurations build without warnings. `text` grows by
+  1.1–1.4 KB, `data` by 192–224 B, `bss` by 0–64 B.
+- Host tests: `tests/test_wall_clock.c` runs the component and the desktop
+  clock model on a virtual monotonic clock (gnu11 and gnu23, ASan/UBSan):
+  reset chains, power, brownout and pin resets, OTA_BUSY, RTC-timer drift,
+  wall jumps, light sleep, the PCF85063 (oscillator-stop flag, bus fault,
+  stopped oscillator, rate error), leap days, midnight, year end, 2100, DST
+  in both directions with the monotonic clock exact and the revision
+  unchanged, zone change, damaged zone file, monotonic time from 2^52 µs and
+  a 2^32 ms step, wall time before 1970 and in year ~102000. A TSan build of
+  the desktop ran the time scripts without reports.
+- Desktop (ASan/UBSan, headless): `test_time_without_rtc_across_resets`
+  (1.75c), `test_time_with_rtc` (1.85b) and
+  `test_wall_clock_jumps_leave_power_timeouts_alone` (a ±1 day wall jump does
+  not move the screen timeout; 31 s of monotonic time does).
+- One time source: the desktop passes `roundie_local_time_now` to
+  `roundie_elf_set_clock_source()` as the firmware does, and the `clock`
+  command samples through that stored source, so the watch face and
+  applications read the same function. The desktop still runs no
+  applications (D6).
+- Finding: RTC-timer drift since the last trusted sync is invisible to the
+  retention check until an alignment has happened, because restored wall time
+  is then derived from the RTC timer itself. With the 5 s alignment a rate
+  error above 2 % is rejected; below it the error since the last alignment is
+  kept.
+
 ## Pending
 
 - Firmware after M1a is checked by builds and code comparison, not on a
@@ -363,5 +436,15 @@ unchanged. Builds have no warnings; host tests pass.
 - Desktop power emulation limits: no screen dimming hardware (the backlight
   level is kept but not shown), no timer wake source other than the sleep
   safety timer, restart and USB storage mode refused.
+- PENDING, needs the board (no flashing authorized for M3): wall time across
+  software, panic and watchdog resets and power loss on the 1.85B and 1.75C;
+  light sleep drift; the PCF85063 oscillator-stop flag and readback on the
+  1.85B. The desktop model of ESP-IDF time keeping (RTC timer kept through
+  digital resets, brownout keeping it, boot time from the last alignment) is
+  an assumption from the ESP-IDF sources, not a measurement.
+- Desktop time emulation limits: an emulated reset restarts only the time
+  subsystem (not the launcher or LVGL), keeps the monotonic clock and the
+  loaded zone; light sleep keeps the monotonic clock exact; the PCF85063
+  state does not survive the process; RT1 DIAG and RESTART are refused.
 - Desktop applications (D6) need the design note of M5; until then every
   launch is refused.

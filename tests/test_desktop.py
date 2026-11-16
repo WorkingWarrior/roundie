@@ -256,6 +256,147 @@ expect-nav RESULT
         self.assertIn("power state=active lit=1 sleeps=1 screen_offs=1", output)
         self.assertEqual((directory / "woke.png").read_bytes(), before)
 
+    def run_time_script(self, board, script):
+        result, directory = self.run_desktop(board, script, install=False)
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn("runtime error", output)
+        clocks = [dict(field.split("=", 1) for field in line.split()[1:])
+                  for line in result.stdout.splitlines() if line.startswith("clock ")]
+        replies = [line for line in result.stdout.splitlines() if line.startswith("!RT1 ")]
+        return output, clocks, replies, directory
+
+    def test_time_without_rtc_across_resets(self):
+        """M3 on the 1.75C model: only a trusted SET makes time valid; resets
+        that keep the RTC domain keep it, power loss and brownout do not."""
+        script = """\
+clock
+rt1 SET 1792314126
+clock
+rt1 TZ CET-1CEST,M3.5.0,M10.5.0/3
+clock
+reset sw
+clock
+reset panic
+clock
+reset wdt
+clock
+reset power
+clock
+rt1 SET 1792314126
+reset brownout
+clock
+rt1 SET 1792314126
+reset pin
+clock
+"""
+        output, clocks, replies, directory = self.run_time_script("1.75c", script)
+        self.assertEqual(clocks[0]["valid"], "0")
+        self.assertEqual(clocks[0]["local"], "0")
+        self.assertEqual(replies[0], "!RT1 0000d0e5 OK state=1 os=-1 rtc=-1 wall=1792314126 err=0")
+        # 2026-10-18 09:02:06 UTC; days since 1970 and ms of day in UTC, then CEST.
+        self.assertEqual((clocks[1]["valid"], clocks[1]["days"]), ("1", "20744"))
+        self.assertEqual(int(clocks[1]["ms"]) // 1000, 9 * 3600 + 2 * 60 + 6)
+        self.assertEqual(int(clocks[2]["ms"]) // 1000, 11 * 3600 + 2 * 60 + 6)
+        self.assertEqual(int(clocks[2]["revision"]), int(clocks[1]["revision"]) + 1)
+        self.assertEqual((directory / "data/clock-tz").read_text(), "CET-1CEST,M3.5.0,M10.5.0/3\n")
+        for kept in clocks[3:6]:
+            self.assertEqual((kept["valid"], kept["sync"]), ("1", "1"))
+            self.assertLessEqual(abs(int(kept["wall"]) - 1792314126), 2)
+            self.assertEqual(kept["zone"], "CET-1CEST,M3.5.0,M10.5.0/3")
+        for lost in clocks[6:9]:
+            self.assertEqual((lost["valid"], lost["wall"], lost["local"]), ("0", "-1", "0"))
+        self.assertEqual(len(clocks), 9)
+        self.assertIn("kept across reset reason 1", output)
+
+    def test_time_with_rtc(self):
+        """M3 on the 1.85B model: the PCF85063 starts with its oscillator-stop
+        flag, keeps time through power loss, and its faults invalidate time."""
+        script = """\
+clock
+rt1 GET
+rt1 SET 1792314126
+clock
+reset power
+clock
+rtc-fault stop
+wait-clock invalid 7000
+rt1 GET
+rt1 SET 1792314126
+rtc-fault none
+rt1 GET
+rt1 SET 1792314126
+rtc-fault bus
+wait-clock invalid 7000
+rt1 GET
+rtc-fault none
+wait-clock valid 7000
+clock
+time-drift chip 100000
+time-advance 10000
+reset sw
+clock
+"""
+        output, clocks, replies, _ = self.run_time_script("1.85b", script)
+        self.assertEqual(clocks[0]["valid"], "0")
+        self.assertTrue(replies[0].startswith("!RT1 0000d0e5 RTC_INVALID state=3 os=1 rtc=-1 wall=-1"), replies[0])
+        self.assertRegex(replies[1], r"OK state=0 os=0 rtc=179231412[67] wall=179231412[67] err=0")
+        self.assertEqual(clocks[1]["valid"], "1")
+        # Power loss: the battery-backed RTC restores time.
+        self.assertEqual((clocks[2]["valid"], clocks[2]["sync"]), ("1", "1"))
+        self.assertIn("RTC_INVALID state=3 os=1", replies[2])
+        # Writing a stopped oscillator passes readback but fails the progress check.
+        self.assertIn("RTC_VERIFY", replies[3])
+        # After a failed SET only another SET makes time valid again.
+        self.assertRegex(replies[4], r"OK state=0 os=0 rtc=\d+ wall=-1 ")
+        self.assertRegex(replies[5], r"OK state=0 os=0 rtc=\d+ wall=\d+ ")
+        self.assertIn("RTC_READ state=2", replies[6])
+        self.assertEqual(clocks[3]["valid"], "1")
+        # The chip's 10% error over 10 s enters the time synced after the reset.
+        self.assertEqual(int(clocks[4]["wall"]) - int(clocks[3]["wall"]), 11)
+
+    def test_wall_clock_jumps_leave_power_timeouts_alone(self):
+        """Screen timeout and sleep run on monotonic time; a wall-clock jump of a
+        day either way changes neither, a monotonic advance does. In light
+        sleep the RTC timer's rate error enters the wall clock."""
+        script = """\
+rt1 SET 1792314126
+wall-jump 86400
+wait 500
+power
+clock
+wall-jump -172800
+wait 500
+power
+clock
+time-advance 31000
+wait-power screen_off 2000
+power
+tap 180 295
+wait-power active 2000
+time-drift rtc 100000
+clock
+key boot
+wait 300
+tap 180 75
+wait-power light_sleep 3000
+time-advance 10000
+key boot
+wait-power active 3000
+clock
+"""
+        output, clocks, _, _ = self.run_time_script("1.85b", script)
+        self.assertIn("power state=active lit=1 sleeps=0 screen_offs=0", output)
+        self.assertNotIn("power state=active lit=1 sleeps=0 screen_offs=1", output)
+        self.assertIn("power state=screen_off lit=0 sleeps=0 screen_offs=1", output)
+        self.assertEqual(int(clocks[0]["days"]) - int(clocks[1]["days"]), 2)
+        self.assertEqual({clock["valid"] for clock in clocks}, {"1"})
+        self.assertEqual({clock["sync"] for clock in clocks}, {"1"})
+        before, after = clocks[2], clocks[3]
+        elapsed_us = int(after["mono"]) - int(before["mono"])
+        wall_ms = (int(after["days"]) - int(before["days"])) * 86400000 + int(after["ms"]) - int(before["ms"])
+        self.assertAlmostEqual(wall_ms - elapsed_us / 1000, 1000, delta=150)
+
     def run_in_gamescope(self, app_script, drive):
         """Runs the 1.75C launcher at zoom 2 in gamescope's headless backend (a
         virtual 932x932 monitor), resizes the window to 700x500 so that the

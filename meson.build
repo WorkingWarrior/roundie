@@ -34,7 +34,9 @@ core_inc = include_directories(
   'components/roundie_audio/include',
   'components/roundie_board/include',
   'components/roundie_power/include',
-  'components/roundie_boot_guard/include')
+  'components/roundie_boot_guard/include',
+  'components/roundie_time/include',
+  'components/roundie_board/boards/waveshare_s3_touch_lcd_1_85b')
 
 strict = ['-Wall', '-Wextra', '-Werror']
 
@@ -50,6 +52,12 @@ core_sources = files(
   'main/display_scale.c',
   'main/power_gui.c',
   'components/roundie_power/power.c',
+  'components/roundie_time/wall_clock.c',
+  'components/roundie_time/local_time.c',
+  'components/roundie_time/clock_retention.c',
+  'components/roundie_time/time_protocol.c',
+  'components/roundie_board/rtc_time.c',
+  'components/roundie_board/boards/waveshare_s3_touch_lcd_1_85b/sensor_codec.c',
   'components/roundie_fonts/roundie_font_14.c',
   'components/roundie_fonts/roundie_font_20.c',
   'components/roundie_fonts/roundie_font_28.c',
@@ -67,6 +75,7 @@ if sdl.found() and vulkan.found() and psa.found()
              'platform/linux/platform.c',
              'platform/linux/app_runtime.c',
              'platform/linux/board.c',
+             'platform/linux/clock.c',
              'platform/linux/power_worker.c',
              'platform/linux/desktop.c',
              'platform/linux/desktop_input.c',

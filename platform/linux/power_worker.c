@@ -7,6 +7,7 @@
  * desktop and are refused with a message in the power menu. */
 
 #include <stdio.h>
+#include "clock.h"
 #include "power_manager.h"
 #include "power_shared.h"
 #include "recovery_diagnostics.h"
@@ -94,6 +95,7 @@ void roundie_power_worker_poll(int64_t now_us)
         }
         sleeping = true;
         sleep_started_us = now_us;
+        roundie_desktop_clock_sleep_enter();
         fprintf(stderr, "roundie-desktop: light sleep (emulated), safety timer %u s\n", (unsigned)limit_s);
         return;
     }
@@ -103,6 +105,7 @@ void roundie_power_worker_poll(int64_t now_us)
     }
     sleeping = false;
     int64_t slept_us = now_us - sleep_started_us;
+    roundie_desktop_clock_sleep_exit();
     fprintf(stderr, "roundie-desktop: woke after %lld ms by %s\n", (long long)(slept_us / 1000),
             wake_source ? "BOOT or touch" : "the safety timer");
     finish_sleep(wake_source, ROUNDIE_POWER_ALLOWED, ESP_OK, slept_us);

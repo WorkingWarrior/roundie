@@ -28,6 +28,11 @@
 #include "power_shared.h"
 #include "roundie_power.h"
 #include "vk_present.h"
+#include "clock.h"
+#include "local_time.h"
+#include "roundie_clock_port.h"
+#include "roundie_wall_clock.h"
+#include "time_protocol.h"
 
 #define PACKAGES_PARENT "storage"
 #define GUI_DELAY_MAX_MS 33U
@@ -35,7 +40,7 @@
 #define SCRIPT_LINE 256U
 #define INSTALLS_MAX 8U
 
-/* Panel profiles of the supported boards; the values mirror each board's
+/* Profiles of the supported boards; the values mirror each board's
  * include/roundie_board_config.h and the 1.85B's default
  * CONFIG_ROUNDIE_LCD_STRIP_LINES. */
 typedef struct {
@@ -45,11 +50,12 @@ typedef struct {
     uint32_t align;
     uint32_t strip_lines;
     bool round;
+    bool rtc; /* ROUNDIE_BOARD_CAP_RTC: PCF85063 */
 } profile_t;
 
 static const profile_t profiles[] = {
-    {"1.85b", 360, 360, 1, 20, true},
-    {"1.75c", 466, 466, 2, 24, true},
+    {"1.85b", 360, 360, 1, 20, true, true},
+    {"1.75c", 466, 466, 2, 24, true, false},
 };
 
 typedef struct {
@@ -339,6 +345,120 @@ static bool install_package(const char *path)
     return true;
 }
 
+/* ---- Time: the firmware's wall clock on emulated hardware (M3) -------------- */
+
+/* The firmware's sensor period: RTC sample and wall-clock poll. */
+#define CLOCK_POLL_US 5000000
+
+typedef enum {
+    TIME_NONE,
+    TIME_RT1,
+    TIME_RESET,
+} time_kind_t;
+
+/* One request from the script to the system worker, which owns the wall
+ * clock as on the board. A SET with an RTC takes 1.2 s there. */
+typedef struct {
+    roundie_lock_t lock;
+    time_kind_t kind; /* pending request; TIME_NONE when free */
+    uint32_t done;    /* completed requests */
+    char text[SCRIPT_LINE];
+    roundie_desktop_reset_t reset;
+} time_mailbox_t;
+
+static time_mailbox_t time_mailbox = {.lock = ROUNDIE_LOCK_INITIALIZER};
+
+/* The firmware's startup: trust the RTC, or what the reset kept. The zone
+ * rule is not reloaded on an emulated reset; it equals the stored rule, since
+ * roundie_local_time_set_zone() stores before it applies. */
+static void time_start(void)
+{
+    roundie_rtc_sample_t rtc;
+    roundie_board_rtc_read(gui.board, &rtc);
+    roundie_wall_clock_start(roundie_desktop_clock_has_rtc(), &rtc);
+    roundie_wall_clock_publish();
+}
+
+/* RT1 as main.c's time_command(), printing the reply instead of sending it.
+ * DIAG and RESTART need the board's serial transport and are refused. */
+static void time_rt1(const char *arguments)
+{
+    roundie_time_frame_t *frame = calloc(1, sizeof(*frame));
+    if (frame == NULL) {
+        fail("out of memory");
+    }
+    char text[SCRIPT_LINE + 16];
+    snprintf(text, sizeof(text), "!RT1 0000d0e5 %s\n", arguments);
+    for (const char *byte = text; *byte != '\0'; byte++) {
+        if (roundie_time_feed(frame, *byte)) {
+            break;
+        }
+    }
+    roundie_time_command_t command;
+    const char *result = roundie_time_parse(frame, &command);
+    free(frame);
+    if (strcmp(result, "OK") == 0 && (command.diagnostic || command.restart)) {
+        printf("!RT1 %s UNSUPPORTED\n", command.id);
+        fflush(stdout);
+        return;
+    }
+    if (strcmp(result, "OK") == 0 && command.zone) {
+        if (command.zone_rule[0] != '\0' && roundie_local_time_set_zone(command.zone_rule) != ESP_OK) {
+            result = "ZONE";
+        }
+        char active[ROUNDIE_TIME_ZONE_CAPACITY];
+        roundie_local_time_zone(active);
+        printf("!RT1 %s %s zone=%s\n", command.id, result, active);
+        fflush(stdout);
+        return;
+    }
+    roundie_rtc_sample_t rtc;
+    esp_err_t error = ESP_OK;
+    result = roundie_wall_clock_request(gui.board, result, command.set, command.seconds, &rtc, &error);
+    uint32_t sync_count = 0;
+    bool wall_valid = roundie_wall_clock_valid(&sync_count);
+    int64_t rtc_seconds = -1;
+    if (rtc.state == ROUNDIE_SENSOR_VALID) {
+        roundie_rtc_unix_seconds(&rtc.time, &rtc_seconds);
+    }
+    int os = (rtc.state == ROUNDIE_SENSOR_VALID || rtc.state == ROUNDIE_SENSOR_INVALID) ? rtc.oscillator_stopped : -1;
+    int64_t wall = wall_valid ? roundie_clock_port_wall_us() / 1000000 : -1;
+    printf("!RT1 %s %s state=%d os=%d rtc=%lld wall=%lld err=%d\n", command.id, result, (int)rtc.state, os,
+           (long long)rtc_seconds, (long long)wall, (int)error);
+    fflush(stdout);
+}
+
+static void time_worker_poll(int64_t now, int64_t *polled_us)
+{
+    roundie_lock(&time_mailbox.lock);
+    time_kind_t kind = time_mailbox.kind;
+    char text[SCRIPT_LINE];
+    memcpy(text, time_mailbox.text, sizeof(text));
+    roundie_desktop_reset_t reset = time_mailbox.reset;
+    roundie_unlock(&time_mailbox.lock);
+    if (kind == TIME_RT1) {
+        time_rt1(text);
+    } else if (kind == TIME_RESET) {
+        roundie_desktop_clock_reset(reset);
+        fprintf(stderr, "roundie-desktop: emulated %s reset of the time subsystem\n",
+                roundie_desktop_reset_name(reset));
+        time_start();
+        *polled_us = now;
+    }
+    if (kind != TIME_NONE) {
+        roundie_lock(&time_mailbox.lock);
+        time_mailbox.kind = TIME_NONE;
+        time_mailbox.done++;
+        roundie_unlock(&time_mailbox.lock);
+    }
+    if (now - *polled_us >= CLOCK_POLL_US) {
+        *polled_us = now;
+        roundie_rtc_sample_t rtc;
+        roundie_board_rtc_read(gui.board, &rtc);
+        roundie_wall_clock_poll(&rtc);
+    }
+}
+
 static void *system_worker(void *argument)
 {
     (void)argument;
@@ -348,11 +468,13 @@ static void *system_worker(void *argument)
         }
     }
     roundie_launcher_set_home(ROUNDIE_LAUNCHER_HOME_PACKAGE, true);
+    int64_t clock_polled_us = roundie_time_us();
     while (!atomic_load(&quit_requested)) {
         int64_t now = roundie_time_us();
         roundie_packages_poll(now);
         roundie_launcher_poll(true, roundie_packages_busy());
         roundie_power_worker_poll(now);
+        time_worker_poll(now, &clock_polled_us);
         roundie_sleep_ms(10);
     }
     return NULL;
@@ -382,6 +504,8 @@ typedef struct {
     bool matched;           /* wait-nav matched; waiting for a touch read */
     uint32_t matched_reads;
     bool failed;
+    bool time_waiting; /* rt1 or reset sent to the system worker */
+    uint32_t time_done;
 } script_t;
 
 static script_t script;
@@ -458,6 +582,66 @@ static bool script_settled(bool match, int timeout_ms, int64_t now, const char *
     script.matched = false;
     script.deadline_us = 0;
     return true;
+}
+
+/* rt1 ARGS or reset KIND on the system worker; true once it has completed. */
+static bool script_time_request(const char *command, const char *line, int64_t now)
+{
+    if (!script.time_waiting) {
+        roundie_desktop_reset_t reset = ROUNDIE_DESKTOP_RESET_SW;
+        bool is_reset = strcmp(command, "reset") == 0;
+        char kind[32] = "";
+        if (is_reset && (sscanf(line, "%*s %31s", kind) != 1 || !roundie_desktop_reset_parse(kind, &reset))) {
+            script_fail(line, "unknown reset");
+            return false;
+        }
+        roundie_lock(&time_mailbox.lock);
+        bool free_slot = time_mailbox.kind == TIME_NONE;
+        if (free_slot) {
+            time_mailbox.kind = is_reset ? TIME_RESET : TIME_RT1;
+            const char *arguments = line + strlen(command);
+            arguments += strspn(arguments, " \t");
+            snprintf(time_mailbox.text, sizeof(time_mailbox.text), "%s", arguments);
+            time_mailbox.reset = reset;
+            script.time_done = time_mailbox.done;
+        }
+        roundie_unlock(&time_mailbox.lock);
+        if (free_slot) {
+            script.time_waiting = true;
+            script.deadline_us = now + 10000000;
+        }
+        return false;
+    }
+    roundie_lock(&time_mailbox.lock);
+    bool done = time_mailbox.done != script.time_done;
+    roundie_unlock(&time_mailbox.lock);
+    if (!done) {
+        if (now >= script.deadline_us) {
+            script_fail(line, "timed out");
+        }
+        return false;
+    }
+    script.time_waiting = false;
+    script.deadline_us = 0;
+    return true;
+}
+
+/* Wall-clock status and local time from the applications' clock source. */
+static void script_clock(void)
+{
+    roundie_wall_clock_status_t status;
+    roundie_wall_clock_status(&status);
+    roundie_elf_clock_t local = {0};
+    roundie_elf_clock_source_t source = roundie_desktop_app_clock_source();
+    bool local_valid = source != NULL && source(&local);
+    char zone[ROUNDIE_TIME_ZONE_CAPACITY];
+    roundie_local_time_zone(zone);
+    printf("clock valid=%d sync=%u wall=%lld local=%d days=%u ms=%u revision=%u mono=%lld zone=%s\n",
+           (int)status.valid, (unsigned)status.sync_count,
+           status.valid ? (long long)(roundie_clock_port_wall_us() / 1000000) : -1LL, (int)local_valid,
+           (unsigned)local.days, (unsigned)local.ms_of_day, (unsigned)local.revision, (long long)roundie_time_us(),
+           zone);
+    fflush(stdout);
 }
 
 /* Runs script lines whose time has come. */
@@ -593,6 +777,39 @@ static void script_step(void)
             if (!script_settled(match, a, now, line, state)) {
                 return;
             }
+        } else if ((strcmp(command, "rt1") == 0 && sscanf(line, "%*s %63s", word) == 1) ||
+                   (strcmp(command, "reset") == 0 && sscanf(line, "%*s %63s", word) == 1)) {
+            if (!script_time_request(command, line, now)) {
+                return;
+            }
+        } else if (strcmp(command, "clock") == 0) {
+            script_clock();
+        } else if (strcmp(command, "wait-clock") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2 &&
+                   (strcmp(word, "valid") == 0 || strcmp(word, "invalid") == 0)) {
+            roundie_wall_clock_status_t clock;
+            roundie_wall_clock_status(&clock);
+            if (clock.valid != (strcmp(word, "valid") == 0)) {
+                if (script.deadline_us == 0) {
+                    script.deadline_us = now + (int64_t)a * 1000;
+                }
+                if (now >= script.deadline_us) {
+                    script_fail(line, "timed out");
+                }
+                return;
+            }
+            script.deadline_us = 0;
+        } else if (strcmp(command, "time-advance") == 0 && sscanf(line, "%*s %d", &a) == 1 && a >= 0) {
+            roundie_desktop_clock_advance((int64_t)a * 1000);
+        } else if (strcmp(command, "wall-jump") == 0 && sscanf(line, "%*s %d", &a) == 1) {
+            roundie_desktop_clock_jump_wall((int64_t)a * 1000000);
+        } else if (strcmp(command, "time-drift") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2 &&
+                   (strcmp(word, "rtc") == 0 || strcmp(word, "chip") == 0)) {
+            roundie_desktop_clock_drift(strcmp(word, "chip") == 0, a);
+        } else if (strcmp(command, "rtc-fault") == 0 && sscanf(line, "%*s %63s", word) == 1 &&
+                   (strcmp(word, "none") == 0 || strcmp(word, "stop") == 0 || strcmp(word, "bus") == 0)) {
+            roundie_desktop_clock_rtc_fault(strcmp(word, "stop") == 0  ? ROUNDIE_DESKTOP_RTC_STOPPED
+                                            : strcmp(word, "bus") == 0 ? ROUNDIE_DESKTOP_RTC_BUS
+                                                                       : ROUNDIE_DESKTOP_RTC_RUNNING);
         } else if (strcmp(command, "quit") == 0) {
             atomic_store(&quit_requested, true);
         } else {
@@ -806,6 +1023,12 @@ int main(int argc, char **argv)
     gui.board = roundie_desktop_board();
     gui.lit = true;
     roundie_power_gui_bind(gui.board, &brightness_percent, roundie_time_us());
+    /* The firmware's time startup (main.c): zone, then wall clock, then the
+     * applications' clock source. */
+    roundie_desktop_clock_init(gui.profile->rtc, "clock-tz");
+    roundie_local_time_init(true, roundie_wall_clock_valid);
+    time_start();
+    roundie_elf_set_clock_source(roundie_local_time_now);
 
     pthread_t worker;
     if (pthread_create(&worker, NULL, system_worker, NULL) != 0) {

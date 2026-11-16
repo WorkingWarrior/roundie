@@ -7,6 +7,7 @@
  * (components/roundie_packages/platform.h) and the runtime status the
  * launcher observes (roundie_elf.h). */
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/statvfs.h>
@@ -134,9 +135,17 @@ void roundie_elf_set_allowed(bool allowed)
     (void)allowed;
 }
 
+/* Kept for the script's clock command: the source applications would get. */
+static _Atomic(roundie_elf_clock_source_t) clock_source;
+
 void roundie_elf_set_clock_source(roundie_elf_clock_source_t source)
 {
-    (void)source;
+    atomic_store(&clock_source, source);
+}
+
+roundie_elf_clock_source_t roundie_desktop_app_clock_source(void)
+{
+    return atomic_load(&clock_source);
 }
 
 const char *esp_err_to_name(esp_err_t code)
