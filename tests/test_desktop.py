@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import shutil
+import statistics
 import struct
 import subprocess
 import tempfile
@@ -666,10 +667,17 @@ echo "exit $?" >> app.log
         duration = (audible[-1] - audible[0]) / rate
         self.assertGreater(duration, 5.0)
         self.assertLess(duration, 8.0)
-        # The first note, from zero crossings over 0.2 s: G5 (784 Hz).
+        # The first note, from the spacing of zero crossings over 0.2 s: G5
+        # (784 Hz). This run is in real time, so a loaded host may let the ring
+        # run dry and silence be fed for a few ms (docs/virtual-hardware.md); a
+        # gap in the crossings is not part of the note's period.
         window = left[audible[0]:audible[0] + rate // 5]
-        crossings = sum(1 for a, b in zip(window, window[1:]) if (a < 0) != (b < 0))
-        self.assertAlmostEqual(crossings / 2 / 0.2, 784, delta=20)
+        crossings = [index for index in range(1, len(window)) if (window[index - 1] < 0) != (window[index] < 0)]
+        spacings = [b - a for a, b in zip(crossings, crossings[1:])]
+        median = statistics.median(spacings)
+        periods = [spacing for spacing in spacings if spacing < 2 * median]
+        self.assertGreater(len(periods), len(spacings) * 0.9)
+        self.assertAlmostEqual(rate / (2 * statistics.mean(periods)), 784, delta=20)
 
     def test_sound_closed_while_playing_releases_the_stream(self):
         """Closing Sound mid-tune: the manager releases the instance's stream
@@ -1125,6 +1133,67 @@ echo "exit $?" >> app.log
         self.assertEqual(launches, ["-1", "259"])  # ESP_FAIL from the I/O error, ESP_ERR_INVALID_STATE
         self.assertIn("app state=RUNNING instance=2 abi=3", result.stdout)
 
+    def test_lab_storage_call_faults_keep_data(self):
+        """REP Storage through the production package manager: Watch saves its
+        theme when it closes; an open, write, fsync or rename that fails during
+        that save is reported, the application unloads normally, no temporary
+        file is left and the theme saved before stays; once the fault clears,
+        the next save replaces it. Each attempt starts after a software reset,
+        with Watch as the home application."""
+        change = "wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nui-press 2\nwait 500\n"
+        close = HOME_TO_LIST + "wait-app UNLOADED 5000\nwait-nav LIST 5000\nwait 200\napp\n"
+        calls = ("write", "fsync", "rename", "open")
+        script = change + close + "reboot sw\n"
+        for call in calls:
+            # The theme saved before is read at start (1), pressed to 2 and not saved.
+            script += change + f"storage-fault io {call}\nhw\n" + close + "storage-fault none\nreboot sw\n"
+        script += change + close + "quit\n"
+        result, directory, states = self.run_lab(script, packages=[self.native["watch"]], native=True)
+        self.assertEqual([state["storage"] for state in states], [f"io:{call}" for call in calls])
+        self.assertEqual(result.stdout.count("ui-press accepted=1"), 6)
+        not_saved = re.findall(r"org\.roundie\.watch: 2 bytes not saved: error (-?\d+) \(([\w-]+)\)", result.stderr)
+        self.assertEqual(not_saved, [("-1", "data-commit")] * 3 + [("-1", "data-open")])
+        self.assertNotIn("data-corrupt", result.stderr)
+        unloads = re.findall(r'app state=UNLOADED instance=1 .* error="([^"]*)"', result.stdout)
+        self.assertEqual(unloads, [""] * 6)
+        # Every start read theme 1, so the last save, without a fault, wrote 2.
+        package = directory / "data/storage/packages/org.roundie.watch"
+        blob = (package / "data").read_bytes()
+        self.assertEqual(blob[:4], b"RPD1")
+        self.assertEqual(blob[8:40], hashlib.sha256(blob[40:]).digest())
+        self.assertEqual(blob[40:], bytes([1, 2]))
+        self.assertFalse((package / "data.tmp").exists())
+
+    def test_lab_state_is_not_inherited(self):
+        """lab-state is read only by the process a virtual reset starts. One
+        left by an earlier process, and a partial lab-state.new, are discarded
+        at a fresh start, which begins with the default machine; --resume
+        refuses a state file without its last line and applies none of it."""
+        stale = "lab.reset 1\nlab.script_next 1\nvhw.powered 0\nvhw.off 3\nvhw.usb 1\nvhw.storage 2\nvhw.charge 1000\n"
+        directory = Path(tempfile.mkdtemp(dir=self.work))
+        data = directory / "data"
+        data.mkdir()
+        (data / "lab-state").write_text(stale + "lab.end 1\n")
+        (data / "lab-state.new").write_text(stale)
+        result, _ = self.run_desktop("1.85b", "hw\nquit\n", install=False, virtual=True, directory=directory)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("discarded lab-state left by an earlier process", result.stderr)
+        self.assertIn("discarded lab-state.new left by an earlier process", result.stderr)
+        self.assertIn("hw powered=1 off=none usb=0 battery=1 soc=80 ", result.stdout)
+        self.assertIn(" storage=none ", result.stdout)
+        self.assertFalse((data / "lab-state").exists())
+        self.assertFalse((data / "lab-state.new").exists())
+        # A partial state file named by --resume.
+        partial = directory / "partial-state"
+        partial.write_text(stale)
+        command = [str(self.binary), "--headless", "--board", "1.85b", "--data", str(data), "--script", "script.txt",
+                   "--virtual-time", "--resume", str(partial)]
+        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=60,
+                                env=dict(os.environ, SDL_AUDIO_DRIVER="dummy"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("incomplete state, not applied", result.stderr)
+        self.assertNotIn("hw ", result.stdout)
+
     def test_lab_audio_faults_and_close_during_playback(self):
         """Sound: an underrun is counted; an output device that fails mid-tune
         releases the stream with an error; the closed application leaves
@@ -1135,11 +1204,20 @@ echo "exit $?" >> app.log
                   "wait 300\ntap 180 224\nwait 500\naudio\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\naudio\n"
                   "resources\nquit\n")
         result, _, _ = self.run_lab(script, packages=[self.native["sound"]], native=True, real_time_fields=("ring", "phase"))
-        audio = re.findall(r"audio initialized=1 playing=(\d) plays=(\d+) errors=(\d+) volume=\d+ stream=(\d) "
-                           r"phase=\d ring=\d+ underruns=(\d+)", result.stdout)
-        # The counters are the device's since start.
-        self.assertEqual(audio, [("1", "0", "0", "1", "1"), ("0", "1", "1", "0", "1"), ("1", "1", "1", "1", "1"),
-                                 ("0", "2", "1", "0", "1")])
+        audio = re.findall(r"audio initialized=1 playing=(\d) plays=(\d+) errors=(\d+) volume=(\d+) stream=(\d) "
+                           r"phase=(\d) ring=\d+ underruns=(\d+) pauses=(\d+) busy=(\d)", result.stdout)
+        # Deterministic: the counters (the device's since start), the stream and
+        # its owner. The phase of an open stream depends on how far the real-time
+        # SDL device has read (docs/virtual-hardware.md), but it is always
+        # playing (1) or feeding silence after the underrun (2), never waiting
+        # or paused; a released stream keeps its last phase, which means nothing.
+        self.assertEqual([(playing, plays, errors, volume, stream, underruns, pauses, busy)
+                          for playing, plays, errors, volume, stream, _, underruns, pauses, busy in audio],
+                         [("1", "0", "0", "35", "1", "1", "0", "1"), ("0", "1", "1", "35", "0", "1", "0", "0"),
+                          ("1", "1", "1", "35", "1", "1", "0", "1"), ("0", "2", "1", "35", "0", "1", "0", "0")])
+        for line in audio:
+            if line[4] == "1":
+                self.assertIn(line[5], ("1", "2"))
         self.assertIn("lab: buffered audio dropped", result.stderr)
         self.assertIn("write: output device unavailable (lab)", result.stderr)
         self.assertIn('app state=UNLOADED instance=2 abi=3 completed=2 loader=0 result=0', result.stdout)
