@@ -69,7 +69,7 @@ together with `wait`, `release`, `screenshot` and `quit`.
 | `touch-fault none\|timeout\|noise\|absent` | Touch reads time out, return spurious points, or the controller is missing. |
 | `audio-fault none\|unavailable` | The output device fails. |
 | `audio-underrun` | Drop what the stream ring holds, once. |
-| `storage-fault none\|absent\|io` | No storage medium, or I/O errors. |
+| `storage-fault none\|absent\|io [CALL]` | No storage medium, or I/O errors: of every wrapped call, or with CALL (`open`, `read`, `write`, `fsync`, `mkdir`, `rmdir`, `unlink`, `rename`, `stat`, `opendir`) of that one only; `hw` shows `storage=io:CALL`. |
 | `storage-limit KB` | Capacity limit for packages and application data; 0 removes it. |
 | `panel-click X Y` | The panel control at frame pixel (X, Y): prints `panel-click COMMAND` and applies it; fails off a control. |
 | `panel-screenshot FILE.png` | The panel's frame (360 × 392). |
@@ -118,6 +118,13 @@ subsystem inside the running process; `reboot` restarts the whole process.
   deleted on read) carries the model, the emulated clocks and the script
   position; `--install` and older `--resume` arguments are dropped. While the
   board is off the window stays dark and only the lab acts.
+- The state file is written as `lab-state.new` and renamed, and it ends with
+  `lab.end 1`. Only the process started with `--resume` reads it, and it
+  refuses a file without that last line before applying any of it. A start
+  without `--resume` deletes a `lab-state` an earlier process left (one that
+  ended between the rename and the restart) and any partial `lab-state.new`,
+  and logs it, so a scenario never inherits the machine of an earlier one.
+  Each test also runs in its own data directory.
 - On power-on the clocks get a power-on reset; without `rtc-backup` the
   PCF85063 also loses its time and sets its oscillator-stop flag.
 - Not modelled: brown-out thresholds, voltage-dependent shutdown before 0 %,
@@ -177,6 +184,19 @@ effect on time.
   underrun and plays silence until the application refills it.
 - The SDL device consumes samples in real time (see Virtual time).
 
+### What is deterministic
+
+Under `--virtual-time` every lab command, the model's state and what Core
+reads from it (`hw`, gauge samples, faults, resets, power loss), application
+callbacks, the launcher and the script take effect at the same virtual
+instants on every run, and the tests compare whole outputs of two runs. The
+exception is the pace of SDL audio: the device reads the stream ring at the
+host's real rate, so the ring level and the playback phase of an open stream
+(playing, or feeding silence after an underrun) vary between runs. The stream's
+existence, its owner, plays, errors, underruns, pauses and the volume do not.
+The audio test masks only `ring` and `phase` in the comparison and checks that
+an open stream is always playing or feeding silence, never waiting or paused.
+
 ### Storage
 
 - `storage-limit KB`: the package manager's capacity seam
@@ -191,7 +211,13 @@ effect on time.
   (ESP_ERR_INVALID_STATE).
 - `storage-fault io`: `open`, `read`, `write`, `fsync`, `mkdir`, `rmdir`,
   `unlink`, `rename`, `stat` and `opendir` on paths under `storage/`, or on
-  descriptors opened there, fail with EIO. The wrappers (`vhw_storage.c`) are
+  descriptors opened there, fail with EIO; `storage-fault io CALL` fails only
+  that call, so that a later step of an operation can fail after the earlier
+  ones succeeded. The paths are the package manager's own
+  (`components/roundie_packages/manager.c`, the code the firmware runs on
+  LittleFS): a data write that fails in `open`, `write`, `fsync` or `rename`
+  reports `data-open` or `data-commit`, removes its `data.tmp` and leaves the
+  application's previous data as it was (`test_lab_storage_call_faults_keep_data`). The wrappers (`vhw_storage.c`) are
   linked into the whole executable with `-Wl,--wrap`; calls on other paths pass
   through unchanged, and the wrappers use only atomics so that `write` stays
   async-signal-safe for the fault handler. Calls made inside the C library or
@@ -219,7 +245,8 @@ Outside `--virtual-time` nothing changes: time is the host's monotonic clock.
 
 `tests/test_vhw.py` (model alone, ASan/UBSan and TSan with a second reading
 thread): discharge and charge, depletion, sleep current, PWR latch, power
-cut, samples of both chips and faults, persistence.
+cut, samples of both chips and faults, the storage call selection,
+persistence.
 
 `tests/test_desktop.py`, each scenario run twice in virtual time with the
 whole stdout compared:
@@ -231,6 +258,8 @@ whole stdout compared:
 | `test_lab_rtc_failure_and_restore` | PCF85063 absent and back; power cut with and without backup |
 | `test_lab_unresponsive_peripherals` | touch timeout and retry; gauge timeout and recovery |
 | `test_lab_storage_faults` | capacity limit, I/O error, missing medium, recovery |
+| `test_lab_storage_call_faults_keep_data` | open, write, fsync or rename failing while Watch saves: reported, unloaded, previous data kept, no `data.tmp`; saved once the fault clears |
+| `test_lab_state_is_not_inherited` | a left-over and a partial state file are discarded at a fresh start; `--resume` refuses an incomplete one (one run, not compared) |
 | `test_lab_audio_faults_and_close_during_playback` | underrun, device failure mid-tune, close, next instance |
 | `test_lab_restart_light_sleep_and_power_loss` | menu restart, light sleep current, PWR latch off and on, USB, watchdog reset |
 | `test_hung_application_in_virtual_time` | stall reported at 5000 ms of virtual time |
@@ -252,9 +281,10 @@ whole stdout compared:
 
 | Check | Result |
 |---|---|
-| Four firmware builds (1.85B and 1.75C, rep and legacy) | exit 0, no warnings; no firmware, SDK header or ABI file changed |
-| Host suite with the IDF environment | 143 tests, 1 skipped; one failure in the first run (`phase` after an underrun depends on the real-time audio device), fixed by masking `phase` as `ring`; that test then passed three runs in a row |
-| Desktop suite (ASan/UBSan desktop build) | all lab scenarios above, each run twice in virtual time with identical stdout |
+| Four firmware builds (1.85B and 1.75C, rep and legacy) | exit 0, no warnings; no firmware, SDK header or ABI file changed (later M6 changes touch only `platform/linux`, tests and documentation) |
+| Host suite with the IDF environment, final run | 145 tests: 144 pass, 0 fail, 1 skipped (HiDPI KWin test: `fake-input.xml` not installed) |
+| Earlier runs | `phase` of an open stream differed between two virtual-time runs (real-time SDL pace): masked in the comparison and checked against the states it may take. `test_sound_plays_through_sdl_audio` (real time, M5a) measured 752.5 Hz once under the load of the full suite: counting crossings over 0.2 s also counted a few ms of underrun silence (a synthetic 784 Hz tone with an 8 ms gap gives exactly 752.5 Hz); it now measures the period between crossings without the gap and passed nine runs alone and the full suite (the cause on that run is a hypothesis) |
+| Desktop suite (ASan/UBSan desktop build) | all lab scenarios above, each run twice in virtual time with identical stdout (`test_lab_state_is_not_inherited` once) |
 | ThreadSanitizer: the model with a concurrent reader (`tests/test_vhw.py`) | no report |
 | Lab panel window in a headless gamescope (Vulkan swapchain 360 × 392) | a mouse click applies `usb 1` |
 | Board behaviour behind the models (battery curve, PWR latch, wake, power loss) | PENDING: needs the device; the models are assumptions |
