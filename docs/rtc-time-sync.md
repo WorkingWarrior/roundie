@@ -37,7 +37,7 @@ battery-backed RTC (1.85B: PCF85063); its path is unchanged. Without the bit
   registers. With the RTC timer, which keeps counting through a digital reset,
   that preserves system time (`esp_libc/src/port/esp_time_impl.c`). The firmware
   does not restore anything itself. A record in `RTC_NOINIT` memory
-  (`main/clock_retention.c`) holds the wall time and the RTC timer at the last
+  (`components/roundie_time/clock_retention.c`) holds the wall time and the RTC timer at the last
   trusted sync. At boot the firmware accepts ESP-IDF's time only if all hold:
   - the reset reason keeps the RTC domain (software, panic, watchdog, deep
     sleep, USB, JTAG, CPU lockup);
@@ -50,14 +50,22 @@ battery-backed RTC (1.85B: PCF85063); its path is unchanged. Without the bit
   the time before it.
 - **Power loss.** Power-on, brownout, power-glitch, external-pin and unknown
   resets invalidate time until the next trusted sync. NVS never supplies time.
-- **Verified (host).** `tests/test_roundie_clock.py` compiles
-  `accept_retained_wall_clock()` from `main.c` with `clock_retention.c`, and
-  takes every `esp_reset_reason_t` from the pinned ESP-IDF header. It checks:
-  - power-on with arbitrary RTC memory;
-  - a sync followed by a chain of software, panic and watchdog resets;
-  - every reset reason, against the list above;
-  - a power loss that restarts the RTC timer while the record survives;
-  - lost system time, and drift beyond the allowance.
+- **Verified (host).** Since M3 this policy lives in
+  `components/roundie_time/wall_clock.c` and reaches the hardware only through
+  `roundie_clock_port.h` (`idf/clock_port.c` on the ESP32-S3). Two host tests
+  in `tests/test_roundie_clock.py` cover it:
+  - `test_reset_reasons_that_keep_time` takes every `esp_reset_reason_t` from
+    the pinned ESP-IDF header and checks `roundie_clock_port_reset_kept_domain()`
+    against the list above;
+  - `test_shared_time_code_on_emulated_hardware` runs `tests/test_wall_clock.c`
+    (the production `wall_clock.c` on the desktop clock model with a virtual
+    monotonic clock). It checks power-on with arbitrary RTC memory, a chain of
+    software, panic and watchdog resets, power, brownout and pin resets, lost
+    system time, RTC-timer drift with and without an alignment since the sync,
+    and the PCF85063 faults.
+
+  The emulated reset behaviour is a model of ESP-IDF, not a measurement; see
+  `docs/roundie-core.md` (M3).
 
   A rejected record stays rejected on the next software reset. Real RTC
   memory retention and the reset reasons the chip reports are device tests.
@@ -283,9 +291,9 @@ for STANDARD in c11 c23; do
       tests/test_sensor_codec.c \
       -o /tmp/roundie-sensor-tests
     /tmp/roundie-sensor-tests
-    cc -std="$STANDARD" -Wall -Wextra -Werror -Imain \
+    cc -std="$STANDARD" -Wall -Wextra -Werror -Icomponents/roundie_time/include \
       -Icomponents/roundie_board/include \
-      components/roundie_board/rtc_time.c main/time_protocol.c \
+      components/roundie_board/rtc_time.c components/roundie_time/time_protocol.c \
       tests/test_time_protocol.c -o /tmp/roundie-time-protocol-tests
     /tmp/roundie-time-protocol-tests
 done
