@@ -111,8 +111,8 @@ lavapipe there is no GPU to export them from, so Mesa uses the kernel's
 `udmabuf` device (memory-backed, no GPU). Without it gamescope aborts and the
 gamescope tests fail. `container.sh` passes the device in when the caller can
 read and write it, and the graphics job makes it accessible on the runner.
-That the device exists on GitHub's `ubuntu-24.04` runners is an assumption
-until the first run on GitHub.
+On GitHub's `ubuntu-24.04` runners the device exists and the graphics group
+passed, including the KWin HiDPI test (run 43879239058, 2026-11-16).
 
 ## Reproducing a job locally
 
