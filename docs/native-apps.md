@@ -56,8 +56,9 @@ the exported symbols does not restrict imports.
 `components/roundie_elf/linux/loader.c` writes the ELF to a `memfd`, seals it
 (`F_SEAL_SHRINK | GROW | WRITE | SEAL`), maps the sealed copy, compares it with
 the bytes the package manager validated and validates the mapping again, then
-loads it with `dlopen("/proc/self/fd/N", RTLD_NOW | RTLD_LOCAL)` on the
-executor thread. The bytes validated are the bytes loaded. The entry is
+loads it with `dlopen("/proc/<pid>/fd/N", RTLD_NOW | RTLD_LOCAL)` on the
+executor thread (the process id rather than `self`, so that a debugger, which
+resolves the path in its own process, opens the same file; see N9). The bytes validated are the bytes loaded. The entry is
 `base + e_entry` and must equal `dlsym` of the ABI's entry name. No relocation
 code of our own: `ld.so` relocates. After `dlclose` the loader checks with
 `dladdr` that the image is no longer mapped and closes the descriptor.
@@ -125,7 +126,89 @@ make system calls directly. Native execution is off by default and enabled per
 run with `--native-apps`; without it every launch is refused
 (`native applications are disabled`). Only `linux-x64.rep1` packages installed
 into the desktop's data directory are run; nothing is fetched or started
-automatically. Separate processes and sandboxing are outside M5a.
+automatically. Separate processes and sandboxing are outside M5a and M5b.
+
+**N8 Application faults (M5b).** A fault in native code cannot be survived in
+one process, so the desktop names it and ends, and the next session behaves
+like the firmware's boot after a fault. `app_runtime.c` installs a handler for
+`SIGSEGV`, `SIGBUS`, `SIGILL` and `SIGFPE` (`SA_SIGINFO | SA_ONSTACK`; the
+executor thread gets a 64 KiB alternate stack unless a sanitizer installed
+one). For a fault on the executor it writes, async-signal-safely, the package
+id, the signal and the program counter as `image+0xOFFSET` (or "outside its
+image" with the absolute pc), e.g.
+`E elf: application dev.roundie.fault faulted: SIGSEGV at image+0x1044, address 0x0; ...`.
+It then restores the previous action (a sanitizer's or the default) and
+returns, so the fault recurs and the sanitizer or the kernel reports and ends
+the process as before; a sent signal is re-raised. `addr2line -e app.so 0xOFFSET`
+maps the offset to source when the object has debug information (N9).
+
+Before each launch the desktop writes `app-loaded` (the package id) to its data
+directory and removes it when the executor is idle again or the desktop exits
+normally; it is the analogue of BootGuard's `fault_app` record. If the next
+session finds it, it logs `Previous session failed with package <id> loaded`
+and the launcher starts on the list instead of the home application, as the
+firmware's trial boot after Safe Mode does. The desktop cannot tell a fault
+from a killed process; both leave the marker.
+
+**N9 Developer builds and debugging (M5b).** `tools/roundie_native_app.py
+--debug` builds with `-g -Og -fno-omit-frame-pointer` instead of `-Os`;
+`--sanitize-undefined` adds `-fsanitize=undefined -fsanitize-trap=undefined`,
+which turns undefined behaviour into a trap instruction (reported by N8 as
+`SIGILL`) and needs no runtime, so the object has no new imports, initializers
+or sections and passes the unchanged production validator. Debug sections are
+not loaded and are not checked by the validator. AddressSanitizer is not
+supported for applications: an instrumented object needs `__asan_*` imports and
+an `.init_array` constructor, both rejected by policy (N2); accepting them
+would need a separate developer validation profile, which is not built. The
+desktop itself is instrumented with ASan/UBSan in the test builds.
+
+GDB: the image is a normal `dlopen` object, so GDB's shared-library support
+finds it as `/proc/<pid>/fd/N` with its symbols:
+
+```
+ASAN_OPTIONS=detect_leaks=0 gdb --args build/roundie-desktop --headless \
+    --native-apps --install event.rpk --script s.txt
+(gdb) set breakpoint pending on
+(gdb) break event.c:event
+(gdb) run
+(gdb) bt        # app frames, then roundie_elf_step / executor frames
+```
+
+LeakSanitizer does not run under ptrace, hence `detect_leaks=0` with an ASan
+desktop. Breakpoints in an application persist only while it is loaded; a
+symbol from a stopped application disappears with the image.
+
+**N10 Virtual time (M5b).** `--virtual-time` freezes the desktop's monotonic
+clock (starting at 1 s) and moves it only while the script waits, in steps of
+at most 5 ms. A step is taken only when the executor has no request, control
+or event left and has seen the current time, and when the system worker has
+parked in `roundie_sleep_ms` beyond it; the GUI loop and the worker take turns.
+Application timers, clock events, the launcher, storage and the emulated RTC
+therefore see the same times on every run, and the tests compare whole stdout
+and screenshots between two runs. Limits: the executor's own short waits and
+the audio thread run in real time (audio content is deterministic, its
+consumption timing and the ring level are not); an application that does not
+return stops time and the script with it; the wall-clock fields of `load_us`
+and similar measurements are real time.
+
+## Platform differences (checked in M5b)
+
+Same source (`manager.c`) on both platforms: lifecycle order, event queue
+capacity and coalescing, timers, UI ownership and stale-handle rejection,
+storage blob format and its write-at-unload, audio stream ownership, clock
+events. Differences that remain, by design or as known limits:
+
+| Area | ESP32-S3 firmware | Linux desktop |
+|---|---|---|
+| Fault in an app | panic, reset; BootGuard records `fault_app`; Safe Mode, then a trial boot on the list | N8 report, process ends; `app-loaded` marker; next session starts on the list (no Safe Mode) |
+| App that does not return | task watchdog reset (same recovery path) | stall reported after 5 s; GUI continues; new launches refused until restart; under `--virtual-time` time stops |
+| Kill vs fault | distinguished by reset reason | indistinguishable (both leave the marker) |
+| Closing while an app runs | reset: storage changes since the last unload are lost | the same: quitting the desktop does not unload, the blob is not written |
+| Callback budget | measured on the board | measured on the host CPU; not comparable |
+| Memory report (`before/during/after`) | heap_caps figures | zeros |
+| Tones and melody diagnostics | ES8311 | absent |
+| Storage/audio bookkeeping glue | `idf/` | written a second time in `platform/linux` (shared core in `manager.c`/`stream.c`) |
+| UI example label | "Native Xtensa app" | same string (source unchanged), although x86-64 |
 
 ## Limitations
 
@@ -134,8 +217,10 @@ automatically. Separate processes and sandboxing are outside M5a.
   current call runs; after 5 s the desktop reports the instance once, keeps the
   GUI running, and refuses new launches until it is restarted. Nothing cancels
   or kills the thread. The firmware's watchdog reset has no desktop equivalent.
-- Application code is not instrumented by the sanitizers (it links no
-  runtime); they cover the runtime, bridge, loader and audio.
+- Application code can be built with trapping UBSan (N9) but not with ASan;
+  the sanitizers otherwise cover the runtime, bridge, loader and audio.
+- A fault ends the desktop (N8); recovery is a restart, not an in-process
+  unload.
 - Firmware behaviour of the shared runtime is checked by builds and host tests
   only; a device run of Hello, UI, Sound, Watch and repeated start/stop is
   PENDING until flashing is authorized.
