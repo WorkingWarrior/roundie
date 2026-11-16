@@ -187,9 +187,12 @@ Application timers, clock events, the launcher, storage and the emulated RTC
 therefore see the same times on every run, and the tests compare whole stdout
 and screenshots between two runs. Limits: the executor's own short waits and
 the audio thread run in real time (audio content is deterministic, its
-consumption timing and the ring level are not); an application that does not
-return stops time and the script with it; the wall-clock fields of `load_us`
-and similar measurements are real time.
+consumption timing and the ring level are not); the wall-clock fields of
+`load_us` and similar measurements are real time. A callback still running
+after one second of real time is taken as hung (M6): time then moves on
+without the executor, so the stall report comes at 5000 ms and the script
+continues, the same on every run; until M6 such an application stopped time
+and the script with it. The audit is in `docs/virtual-hardware.md`.
 
 ## Platform differences (checked in M5b)
 
@@ -201,7 +204,7 @@ events. Differences that remain, by design or as known limits:
 | Area | ESP32-S3 firmware | Linux desktop |
 |---|---|---|
 | Fault in an app | panic, reset; BootGuard records `fault_app`; Safe Mode, then a trial boot on the list | N8 report, process ends; `app-loaded` marker; next session starts on the list (no Safe Mode) |
-| App that does not return | task watchdog reset (same recovery path) | stall reported after 5 s; GUI continues; new launches refused until restart; under `--virtual-time` time stops |
+| App that does not return | task watchdog reset (same recovery path) | stall reported after 5 s; GUI continues; new launches refused until restart; under `--virtual-time` reported at 5000 ms of virtual time |
 | Kill vs fault | distinguished by reset reason | indistinguishable (both leave the marker) |
 | Closing while an app runs | reset: storage changes since the last unload are lost | the same: quitting the desktop does not unload, the blob is not written |
 | Callback budget | measured on the board | measured on the host CPU; not comparable |

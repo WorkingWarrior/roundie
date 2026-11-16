@@ -210,7 +210,7 @@ in screenshots.
 Script commands, one per line, `#` starts a comment; coordinates are panel
 pixels as the touch controller reports them, times are milliseconds:
 `wait T`, `down X Y`, `move X Y`, `up`, `tap X Y` (100 ms press),
-`swipe X1 Y1 X2 Y2 T`, `key boot|pwr` (100 ms press), `screenshot FILE.png`,
+`swipe X1 Y1 X2 Y2 T`, `key boot|pwr [T]` (pressed for T, 100 ms by default; the next line runs after the release), `screenshot FILE.png`,
 `wait-nav STATE T`, `expect-nav STATE`, `mark`, `wait-refreshed T` (package
 list re-read since `mark`), `status`, `power` (power state, whether the panel
 is lit, sleep and screen-off counts, last power menu message),
@@ -231,10 +231,16 @@ sync count, wall, local time, day number, revision, monotonic time and zone;
 `wait-clock valid|invalid T`; `time-advance T` advances the monotonic clock
 (and with it the wall clock and RTC); `wall-jump S` moves only system wall
 time, as an outside `settimeofday` would; `time-drift rtc|chip PPM` sets the
-rate error of the ESP RTC timer or the PCF85063; `rtc-fault none|stop|bus`
-stops the PCF85063 oscillator or fails its bus. Light sleep from the power
+rate error of the ESP RTC timer or the PCF85063; `rtc-fault none|stop|bus|absent`
+stops the PCF85063 oscillator, fails its bus or removes it. Light sleep from the power
 menu applies the RTC timer's drift to wall time. The zone is stored in
-`clock-tz` in the data directory.
+`clock-tz` in the data directory. `reset` restarts only the time subsystem in
+the running process; the virtual hardware lab's `reboot` restarts the process
+as a reset of the whole board would.
+
+Virtual hardware lab (M6): battery, supply, PWR latch, resets, RTC, display,
+touch, audio and storage faults, with a control panel (`--lab-panel`); its
+commands and models are in `docs/virtual-hardware.md`.
 
 ### Desktop platform files (`platform/linux`)
 
@@ -362,8 +368,10 @@ unchanged. Builds have no warnings; host tests pass.
 - Desktop: the same `main/power_gui.c` and the `roundie_power` policy run
   against the emulated board (`platform/linux/board.c`) and a desktop worker
   (`platform/linux/power_worker.c`). `test_power_menu` (ASan/UBSan, 1.85b):
-  the B key opens the firmware's power menu; Restart is refused with
-  "Niedostępne na komputerze"; Anuluj restores the previous screen exactly;
+  the B key opens the firmware's power menu; USB storage is refused with
+  "Niedostępne na komputerze" (Restart was refused too until M6, where it
+  became a software reset of the process, `docs/virtual-hardware.md`); Anuluj
+  restores the previous screen exactly;
   "Wygaś ekran" turns the panel off (state `screen_off`, black frame), and
   the next touch, placed on Back, only wakes the screen; "Uśpij" parks the GUI
   and enters emulated light sleep, the B key wakes it, the display is
