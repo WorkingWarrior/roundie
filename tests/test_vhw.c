@@ -159,6 +159,9 @@ static void persistence(void)
     vhw_set_usb(true, now);
     vhw_set_touch(VHW_TOUCH_NOISE);
     vhw_set_storage_limit(65536);
+    vhw_set_storage_call(VHW_STORAGE_CALL_RENAME);
+    vhw_set_storage(VHW_STORAGE_IO);
+    assert(vhw_storage_call_fails(VHW_STORAGE_CALL_RENAME) && !vhw_storage_call_fails(VHW_STORAGE_CALL_WRITE));
     char buffer[2048];
     FILE *file = fmemopen(buffer, sizeof(buffer), "w");
     vhw_save(file, now);
@@ -173,6 +176,12 @@ static void persistence(void)
     fclose(file);
     vhw_state_t s = get(S(1));
     assert(s.soc_percent == 37 && s.usb && s.touch == VHW_TOUCH_NOISE && s.storage_limit_bytes == 65536);
+    assert(s.storage == VHW_STORAGE_IO && s.storage_call == VHW_STORAGE_CALL_RENAME);
+    assert(vhw_storage_call_fails(VHW_STORAGE_CALL_RENAME) && !vhw_storage_call_fails(VHW_STORAGE_CALL_OPEN));
+    vhw_set_storage_call(VHW_STORAGE_CALL_ALL);
+    assert(vhw_storage_call_fails(VHW_STORAGE_CALL_OPEN));
+    vhw_set_storage(VHW_STORAGE_OK);
+    assert(!vhw_storage_call_fails(VHW_STORAGE_CALL_OPEN));
     int kind;
     assert(vhw_poll(S(1), &kind) == VHW_ACTION_NONE);
     assert(!vhw_load_line("other", "1", 0));

@@ -53,8 +53,23 @@ typedef enum {
 typedef enum {
     VHW_STORAGE_OK,
     VHW_STORAGE_ABSENT, /* not mounted: ENOENT */
-    VHW_STORAGE_IO,     /* every operation fails with EIO */
+    VHW_STORAGE_IO,     /* operations fail with EIO */
 } vhw_storage_t;
+
+/* With VHW_STORAGE_IO: the wrapped call that fails (vhw_storage.c), or all. */
+typedef enum {
+    VHW_STORAGE_CALL_ALL,
+    VHW_STORAGE_CALL_OPEN,
+    VHW_STORAGE_CALL_READ,
+    VHW_STORAGE_CALL_WRITE,
+    VHW_STORAGE_CALL_FSYNC,
+    VHW_STORAGE_CALL_MKDIR,
+    VHW_STORAGE_CALL_RMDIR,
+    VHW_STORAGE_CALL_UNLINK,
+    VHW_STORAGE_CALL_RENAME,
+    VHW_STORAGE_CALL_STAT,
+    VHW_STORAGE_CALL_OPENDIR,
+} vhw_storage_call_t;
 
 /* What the machine does next, for the desktop to carry out. */
 typedef enum {
@@ -93,6 +108,7 @@ typedef struct {
     vhw_display_t display;
     vhw_audio_t audio;
     vhw_storage_t storage;
+    vhw_storage_call_t storage_call;
     uint64_t storage_limit_bytes; /* 0: the host file system's free space */
     uint32_t audio_underruns;     /* requested, not yet delivered */
     uint32_t power_cycles;
@@ -117,9 +133,13 @@ void vhw_set_touch(vhw_touch_t fault);
 void vhw_set_display(vhw_display_t fault);
 void vhw_set_audio(vhw_audio_t fault);
 void vhw_set_storage(vhw_storage_t fault);
+/* Which call VHW_STORAGE_IO fails. */
+void vhw_set_storage_call(vhw_storage_call_t call);
 void vhw_set_storage_limit(uint64_t bytes);
 /* The storage fault without the lock: async-signal-safe. */
 vhw_storage_t vhw_storage_fault(void);
+/* Whether the wrapped call fails now, without the lock: async-signal-safe. */
+bool vhw_storage_call_fails(vhw_storage_call_t call);
 void vhw_request_underrun(void);
 /* The supply goes away (power-cut) or comes back (power-restore: USB and a
  * charged battery as they were). */

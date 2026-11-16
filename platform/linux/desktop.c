@@ -50,6 +50,7 @@
 #define SCRIPT_LINE 256U
 #define INSTALLS_MAX 8U
 #define LAB_STATE_FILE "lab-state"
+#define LAB_STATE_END "lab.end 1"
 /* main/main.c's touch retry after a failed read. */
 #define TOUCH_RETRY_US 5000000
 
@@ -1382,6 +1383,7 @@ static _Noreturn void restart_process(bool powered, roundie_desktop_reset_t rese
             (unsigned)script.next, (long long)wait_us, (long long)real.tv_sec * 1000000000LL + real.tv_nsec);
     vhw_save(file, now);
     roundie_desktop_clock_save(file);
+    fprintf(file, "%s\n", LAB_STATE_END);
     if (fclose(file) != 0 || rename(LAB_STATE_FILE ".new", LAB_STATE_FILE) != 0) {
         fail("%s: %s", LAB_STATE_FILE, strerror(errno));
     }
@@ -1415,16 +1417,25 @@ static _Noreturn void restart_process(bool powered, roundie_desktop_reset_t rese
 }
 
 /* Reads LAB_STATE_FILE of the previous process, after vhw_init() and
- * roundie_desktop_clock_init(), then removes it. */
+ * roundie_desktop_clock_init(), then removes it. A file without its last
+ * line is refused before any of it is applied. */
 static void resume_load(const char *path)
 {
     FILE *file = fopen(path, "r");
     if (file == NULL) {
         fail("resume %s: %s", path, strerror(errno));
     }
+    char line[4096];
+    bool complete = false;
+    while (fgets(line, sizeof(line), file) != NULL) {
+        complete = strcmp(line, LAB_STATE_END "\n") == 0;
+    }
+    if (!complete) {
+        fail("resume %s: incomplete state, not applied", path);
+    }
+    rewind(file);
     int64_t now = roundie_time_us();
     int64_t gap_us = 0;
-    char line[4096];
     while (fgets(line, sizeof(line), file) != NULL) {
         line[strcspn(line, "\n")] = '\0';
         char *value = strchr(line, ' ');
@@ -1434,7 +1445,9 @@ static void resume_load(const char *path)
         *value = '\0';
         value++;
         long long number = strtoll(value, NULL, 10);
-        if (strcmp(line, "lab.reset") == 0 && number >= 0 && number <= ROUNDIE_DESKTOP_RESET_PIN) {
+        if (strcmp(line, "lab.end") == 0) {
+            continue;
+        } else if (strcmp(line, "lab.reset") == 0 && number >= 0 && number <= ROUNDIE_DESKTOP_RESET_PIN) {
             resume.reset = (roundie_desktop_reset_t)number;
         } else if (strcmp(line, "lab.script_next") == 0 && number >= 0 && number <= SCRIPT_LINES) {
             resume.script_next = (uint32_t)number;
@@ -1457,6 +1470,15 @@ static void resume_load(const char *path)
         fprintf(stderr, "roundie-desktop: resume %s: %s\n", path, strerror(errno));
     }
     resume.present = true;
+}
+
+static void discard_lab_state(const char *name)
+{
+    if (unlink(name) == 0) {
+        fprintf(stderr, "roundie-desktop: discarded %s left by an earlier process\n", name);
+    } else if (errno != ENOENT) {
+        fail("%s: %s", name, strerror(errno));
+    }
 }
 
 /* Carries out what the virtual board does next. Returns true when power came
@@ -1742,7 +1764,12 @@ int main(int argc, char **argv)
     int64_t now = roundie_time_us();
     vhw_init(gui.profile->gauge ? VHW_CHIP_GAUGE : VHW_CHIP_PMIC, now);
     roundie_desktop_clock_init(gui.profile->rtc, "clock-tz");
-    if (resume_path != NULL) {
+    /* State files are read only with --resume. One left by a process that
+     * ended before its restart, or a partial one, never reaches a later start. */
+    discard_lab_state(LAB_STATE_FILE ".new");
+    if (resume_path == NULL) {
+        discard_lab_state(LAB_STATE_FILE);
+    } else {
         resume_load(resume_path);
         if (resume.script_next <= script.count) {
             script.next = resume.script_next;

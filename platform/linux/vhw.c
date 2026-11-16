@@ -41,6 +41,7 @@ static machine_t machine;
 /* A copy of machine.state.storage that the storage wrappers read without the
  * lock: they may run in a signal handler (vhw_storage.c). */
 static atomic_int storage_fault;
+static atomic_int storage_call;
 
 static uint32_t full_uah(void)
 {
@@ -169,6 +170,7 @@ void vhw_init(vhw_chip_t chip, int64_t now_us)
     machine.latch_on = true;
     machine.updated_us = now_us;
     atomic_store(&storage_fault, (int)VHW_STORAGE_OK);
+    atomic_store(&storage_call, (int)VHW_STORAGE_CALL_ALL);
     update(now_us);
     pthread_mutex_unlock(&lock);
 }
@@ -291,9 +293,26 @@ void vhw_set_storage(vhw_storage_t fault)
     pthread_mutex_unlock(&lock);
 }
 
+void vhw_set_storage_call(vhw_storage_call_t call)
+{
+    pthread_mutex_lock(&lock);
+    machine.state.storage_call = call;
+    atomic_store(&storage_call, (int)call);
+    pthread_mutex_unlock(&lock);
+}
+
 vhw_storage_t vhw_storage_fault(void)
 {
     return (vhw_storage_t)atomic_load(&storage_fault);
+}
+
+bool vhw_storage_call_fails(vhw_storage_call_t call)
+{
+    if (atomic_load(&storage_fault) != (int)VHW_STORAGE_IO) {
+        return false;
+    }
+    int selected = atomic_load(&storage_call);
+    return selected == (int)VHW_STORAGE_CALL_ALL || selected == (int)call;
 }
 
 void vhw_set_storage_limit(uint64_t bytes)
@@ -487,9 +506,9 @@ void vhw_save(FILE *file, int64_t now_us)
     fprintf(file, "vhw.load %u\nvhw.sleep_load %u\nvhw.charge_ma %u\nvhw.rtc_backup %d\nvhw.gauge %d\n",
             (unsigned)s->load_ma, (unsigned)s->sleep_load_ma, (unsigned)s->charge_ma, (int)s->rtc_backup,
             (int)s->gauge);
-    fprintf(file, "vhw.touch %d\nvhw.display %d\nvhw.audio %d\nvhw.storage %d\nvhw.storage_limit %llu\n",
-            (int)s->touch, (int)s->display, (int)s->audio, (int)s->storage,
-            (unsigned long long)s->storage_limit_bytes);
+    fprintf(file, "vhw.touch %d\nvhw.display %d\nvhw.audio %d\nvhw.storage %d\nvhw.storage_call %d\n"
+            "vhw.storage_limit %llu\n", (int)s->touch, (int)s->display, (int)s->audio, (int)s->storage,
+            (int)s->storage_call, (unsigned long long)s->storage_limit_bytes);
     fprintf(file, "vhw.cut %d\nvhw.latch %d\nvhw.cycles %u\n", (int)machine.cut, (int)machine.latch_on,
             (unsigned)s->power_cycles);
     pthread_mutex_unlock(&lock);
@@ -540,6 +559,9 @@ bool vhw_load_line(const char *key, const char *value, int64_t now_us)
     } else if (strcmp(key, "storage") == 0 && number <= VHW_STORAGE_IO) {
         s->storage = (vhw_storage_t)number;
         atomic_store(&storage_fault, (int)number);
+    } else if (strcmp(key, "storage_call") == 0 && number <= VHW_STORAGE_CALL_OPENDIR) {
+        s->storage_call = (vhw_storage_call_t)number;
+        atomic_store(&storage_call, (int)number);
     } else if (strcmp(key, "storage_limit") == 0) {
         s->storage_limit_bytes = number;
     } else if (strcmp(key, "cut") == 0) {

@@ -42,6 +42,9 @@ static const char *const touch_names[] = {"none", "timeout", "noise", "absent"};
 static const char *const display_names[] = {"none", "restore", "init"};
 static const char *const audio_names[] = {"none", "unavailable"};
 static const char *const storage_names[] = {"none", "absent", "io"};
+/* vhw_storage_call_t: "all", then the wrapped calls. */
+static const char *const storage_call_names[] = {"all", "open", "read", "write", "fsync", "mkdir",
+                                                 "rmdir", "unlink", "rename", "stat", "opendir"};
 static const char *const rtc_names[] = {"none", "stop", "bus", "absent"};
 
 #define COUNT(array) ((int)(sizeof(array) / sizeof((array)[0])))
@@ -159,9 +162,13 @@ lab_result_t lab_command(const char *line, roundie_desktop_input_t *input, int64
         vhw_request_underrun();
     } else if (word_is(command, "storage-fault")) {
         index = find_name(word, storage_names, COUNT(storage_names));
-        if (index < 0) {
+        char call_word[16] = "all";
+        int fields = sscanf(line, "%*s %*s %15s", call_word);
+        int call = find_name(call_word, storage_call_names, COUNT(storage_call_names));
+        if (index < 0 || call < 0 || (fields == 1 && index != VHW_STORAGE_IO)) {
             return LAB_MALFORMED;
         }
+        vhw_set_storage_call((vhw_storage_call_t)call);
         vhw_set_storage((vhw_storage_t)index);
     } else if (word_is(command, "storage-limit")) {
         if (sscanf(line, "%*s %ld", &value) != 1 || value < 0) {
@@ -191,11 +198,13 @@ void lab_print_status(int64_t now)
     roundie_battery_sample_t sample;
     vhw_battery_sample(&sample, now);
     printf("hw powered=%d off=%s usb=%d battery=%d soc=%u charge_uah=%u ocv=%u current=%d sample=%d mv=%u"
-           " gauge=%s rtc_backup=%d touch=%s display=%s audio=%s storage=%s limit=%llu cycles=%u sleeping=%d\n",
+           " gauge=%s rtc_backup=%d touch=%s display=%s audio=%s storage=%s%s%s limit=%llu cycles=%u sleeping=%d\n",
            (int)s.powered, vhw_off_name(s.off_reason), (int)s.usb, (int)s.battery_present,
            (unsigned)s.soc_percent, (unsigned)s.charge_mah_x1000, (unsigned)s.open_circuit_mv, (int)s.current_ma,
            (int)sample.state, (unsigned)sample.voltage_mv, vhw_bus_name(s.gauge), (int)s.rtc_backup,
            touch_names[s.touch], display_names[s.display], audio_names[s.audio], storage_names[s.storage],
+           s.storage_call != VHW_STORAGE_CALL_ALL ? ":" : "",
+           s.storage_call != VHW_STORAGE_CALL_ALL ? storage_call_names[s.storage_call] : "",
            (unsigned long long)s.storage_limit_bytes, (unsigned)s.power_cycles, (int)s.sleeping);
     fflush(stdout);
 }
