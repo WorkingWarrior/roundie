@@ -149,11 +149,12 @@ flowchart TB
 - **D5 Threads.** As on the board, one GUI thread owns LVGL (the SDL main
   thread) and one system worker thread runs the launcher and package work.
   The owner checks in `render.c` and `bridge.c` use `roundie_thread_self()`.
-- **D6 Applications on the desktop.** Not decided. Proposal for stage 5: the
-  same application sources and REP v3 API table, built as a separate x86-64
-  package target and loaded natively; the ESP32 package format, target string
-  `esp32s3.rep1` and ABI stay unchanged. A design note comes before any code.
-  Until then the desktop reports native execution as not supported.
+- **D6 Applications on the desktop.** Not decided. The design note
+  [native-apps.md](native-apps.md) proposes the same application sources and
+  REP API, a `linux-x64.rep1` package target loaded with `dlopen` after
+  validation, and a shared runtime split from `manager.c`; the ESP32 package
+  format, target string `esp32s3.rep1` and ABI stay unchanged. Until a
+  decision the desktop reports native execution as not supported.
 - **D7 Time (M3).** The wall-clock policy (when time is trusted, sync from
   RT1 and the RTC, retention across resets, RTC polling) and local time
   (zone storage, conversion, revision) are one Core component,
