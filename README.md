@@ -70,6 +70,7 @@ The historical bring-up updater rejects the physical REP table.
 - [Round UI widgets and shadow state](docs/round-ui.md)
 - [Watch face: local time, time zone, clock hands](docs/watch-face.md)
 - [Stopwatch example](docs/stopwatch.md)
+- [Continuous integration: matrix, local reproduction, limits](docs/ci.md)
 
 ## License
 
