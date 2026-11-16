@@ -238,3 +238,16 @@ events. Differences that remain, by design or as known limits:
 | Hung application | GUI responsive, stall reported, desktop exits cleanly |
 | Sound through SDL3 (`disk` driver) | 6.3 s tune captured, first note 784 Hz, mono on both channels; closing mid-tune releases the stream |
 | ThreadSanitizer: launcher and Sound scenarios (manual run) | no report |
+
+## Verification (M5b)
+
+| Check | Result |
+|---|---|
+| Four firmware builds (1.85B and 1.75C, rep and legacy) | exit 0, no warnings |
+| Host suite with the IDF environment | 131 OK, 1 skipped |
+| Desktop suite (ASan/UBSan desktop) | 32 OK; GDB test passes where `gdb` is installed |
+| Every example through the launcher in `--virtual-time`, two runs compared | identical stdout and screenshots (Sound: identical PCM content, ring level masked) |
+| Storage: write, close, reopen, restart the process | blob `RPD1` + SHA-256 kept; quitting while running loses changes since the last unload |
+| Faults: load, store, fetch, stack overflow, trapping UBSan | named with image offset; next session logs the package and starts on the list; `addr2line` maps the UBSan offset to its source line |
+| ThreadSanitizer: events, UI, round, stopwatch, watch, sound in virtual time | no report |
+| Device run of the firmware changes since M5a | PENDING (no flashing authorized) |
