@@ -81,58 +81,50 @@ static esp_err_t read_register(i2c_master_dev_handle_t device, uint8_t address,
                                        I2C_TIMEOUT_MS);
 }
 
-static esp_err_t set_register_bits(i2c_master_dev_handle_t device, uint8_t address,
-                                   uint8_t mask)
+static int pmic_bus_read(void *context, uint8_t reg, uint8_t *value)
 {
-    uint8_t value = 0;
-    esp_err_t error = read_register(device, address, &value, 1);
-    if (error != ESP_OK) {
-        return error;
-    }
-    if ((value & mask) == mask) {
-        return ESP_OK;
-    }
-    uint8_t request[2] = {address, (uint8_t)(value | mask)};
-    return i2c_master_transmit(device, request, sizeof(request), I2C_TIMEOUT_MS);
+    return read_register(context, reg, value, 1);
 }
 
-/* Enables only what the readings and the codecs need; no voltage, charger or
- * power-key setting is changed. The battery voltage ADC and battery detection
- * feed roundie_board_battery_read(). ALDO1 (A3V3) feeds the ES8311 and ES7210
- * analog side; it is switched on only when already set to 3.3 V, otherwise it
- * is left alone and reported. Device test 2026-11-14: battery 4064..4196 mV
- * and the charge direction followed USB plug and unplug; playback was heard. */
+static int pmic_bus_write(void *context, uint8_t reg, uint8_t value)
+{
+    uint8_t request[2] = {reg, value};
+    return i2c_master_transmit(context, request, sizeof(request), I2C_TIMEOUT_MS);
+}
+
+/* Enables only what the readings and the codecs need (board_pmic_start() in
+ * board_logic.c, host-tested): the battery voltage ADC and battery detection
+ * feed roundie_board_battery_read(); ALDO1 (A3V3) feeds the ES8311 and ES7210
+ * analog side and is switched on only when already set to 3.3 V. Device test
+ * 2026-11-14: battery 4064..4196 mV and the charge direction followed USB plug
+ * and unplug; playback was heard. */
 static void start_pmic(roundie_board_t *board)
 {
-    esp_err_t error = set_register_bits(board->pmic, BOARD_PMIC_REG_ADC_CHANNEL_CTRL,
-                                        BOARD_PMIC_ADC_VBAT_BIT);
-    if (error != ESP_OK) {
-        ESP_LOGW(TAG, "AXP2101 battery voltage ADC enable: %s", esp_err_to_name(error));
+    const board_pmic_bus_t bus = {
+        .context = board->pmic,
+        .read = pmic_bus_read,
+        .write = pmic_bus_write,
+    };
+    board_pmic_start_t result;
+    board_pmic_start(&bus, &result);
+    if (result.adc_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 battery voltage ADC enable: %s", esp_err_to_name(result.adc_error));
     }
-    error = set_register_bits(board->pmic, BOARD_PMIC_REG_BAT_DET_CTRL,
-                              BOARD_PMIC_BAT_DET_BIT);
-    if (error != ESP_OK) {
-        ESP_LOGW(TAG, "AXP2101 battery detection enable: %s", esp_err_to_name(error));
+    if (result.detection_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 battery detection enable: %s",
+                 esp_err_to_name(result.detection_error));
     }
-
-    uint8_t aldo1_voltage = 0;
-    error = read_register(board->pmic, BOARD_PMIC_REG_ALDO1_VOLTAGE, &aldo1_voltage, 1);
-    if (error != ESP_OK) {
-        ESP_LOGW(TAG, "AXP2101 ALDO1 voltage read: %s", esp_err_to_name(error));
+    if (result.aldo1_read_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 ALDO1 voltage read: %s", esp_err_to_name(result.aldo1_read_error));
         return;
     }
-    uint16_t aldo1_mv = board_pmic_aldo1_mv(aldo1_voltage);
-    ESP_LOGI(TAG, "AXP2101 ALDO1 setting: %u mV (register 0x%02x)", (unsigned)aldo1_mv,
-             aldo1_voltage);
-    if (aldo1_mv != BOARD_PMIC_ALDO1_EXPECTED_MV) {
+    ESP_LOGI(TAG, "AXP2101 ALDO1 setting: %u mV (register 0x%02x)", (unsigned)result.aldo1_mv,
+             result.aldo1_register);
+    if (!result.aldo1_enable_tried) {
         ESP_LOGW(TAG, "ALDO1 is not %u mV; left unchanged, codec analog supply unverified",
                  (unsigned)BOARD_PMIC_ALDO1_EXPECTED_MV);
-        return;
-    }
-    error = set_register_bits(board->pmic, BOARD_PMIC_REG_LDO_ONOFF_CTRL0,
-                              BOARD_PMIC_LDO_ALDO1_BIT);
-    if (error != ESP_OK) {
-        ESP_LOGW(TAG, "AXP2101 ALDO1 enable: %s", esp_err_to_name(error));
+    } else if (result.aldo1_enable_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 ALDO1 enable: %s", esp_err_to_name(result.aldo1_enable_error));
     }
 }
 

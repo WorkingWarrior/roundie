@@ -52,6 +52,11 @@ bool board_pmic_battery_present(const uint8_t status[2])
     return (status[0] & 0x08U) != 0;
 }
 
+bool board_pmic_charging(const uint8_t status[2])
+{
+    return ((status[1] >> 5) & 0x03U) == 0x01U;
+}
+
 bool board_pmic_discharging(const uint8_t status[2])
 {
     return ((status[1] >> 5) & 0x03U) == 0x02U;
@@ -82,4 +87,38 @@ uint16_t board_pmic_aldo1_mv(uint8_t voltage_register)
         return 0;
     }
     return (uint16_t)(500U + 100U * code);
+}
+
+int board_pmic_set_bits(const board_pmic_bus_t *bus, uint8_t reg, uint8_t mask)
+{
+    uint8_t value = 0;
+    int error = bus->read(bus->context, reg, &value);
+    if (error != 0) {
+        return error;
+    }
+    if ((value & mask) == mask) {
+        return 0;
+    }
+    return bus->write(bus->context, reg, (uint8_t)(value | mask));
+}
+
+void board_pmic_start(const board_pmic_bus_t *bus, board_pmic_start_t *result)
+{
+    *result = (board_pmic_start_t){0};
+    result->adc_error = board_pmic_set_bits(bus, BOARD_PMIC_REG_ADC_CHANNEL_CTRL,
+                                            BOARD_PMIC_ADC_VBAT_BIT);
+    result->detection_error = board_pmic_set_bits(bus, BOARD_PMIC_REG_BAT_DET_CTRL,
+                                                  BOARD_PMIC_BAT_DET_BIT);
+    result->aldo1_read_error = bus->read(bus->context, BOARD_PMIC_REG_ALDO1_VOLTAGE,
+                                         &result->aldo1_register);
+    if (result->aldo1_read_error != 0) {
+        return;
+    }
+    result->aldo1_mv = board_pmic_aldo1_mv(result->aldo1_register);
+    if (result->aldo1_mv != BOARD_PMIC_ALDO1_EXPECTED_MV) {
+        return;
+    }
+    result->aldo1_enable_tried = true;
+    result->aldo1_enable_error = board_pmic_set_bits(bus, BOARD_PMIC_REG_LDO_ONOFF_CTRL0,
+                                                     BOARD_PMIC_LDO_ALDO1_BIT);
 }

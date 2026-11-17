@@ -61,9 +61,40 @@ void board_touch_filter_reset(board_touch_filter_t *filter);
 #define BOARD_PMIC_ALDO1_EXPECTED_MV 3300U
 
 bool board_pmic_battery_present(const uint8_t status[2]);
+/* 0x01 bits 6..5 = 01. Standby (00), which includes charge complete, is
+ * neither charging nor discharging. */
+bool board_pmic_charging(const uint8_t status[2]);
 bool board_pmic_discharging(const uint8_t status[2]);
 uint16_t board_pmic_battery_mv(const uint8_t voltage[2]);
 bool board_pmic_voltage_plausible(uint16_t millivolts);
 bool board_pmic_percent_valid(uint8_t percent);
 /* ALDO1 setting in mV, 0 for a reserved code. */
 uint16_t board_pmic_aldo1_mv(uint8_t voltage_register);
+
+/* One-register access to the PMIC. The functions return 0 or the bus error
+ * (esp_err_t on the target), which is passed through unchanged. */
+typedef struct {
+    void *context;
+    int (*read)(void *context, uint8_t reg, uint8_t *value);
+    int (*write)(void *context, uint8_t reg, uint8_t value);
+} board_pmic_bus_t;
+
+/* Sets mask in reg by read-modify-write: other bits are written back as read,
+ * and nothing is written when the bits are already set or the read fails. */
+int board_pmic_set_bits(const board_pmic_bus_t *bus, uint8_t reg, uint8_t mask);
+
+typedef struct {
+    int adc_error;          /* battery voltage ADC enable */
+    int detection_error;    /* battery detection enable */
+    int aldo1_read_error;   /* ALDO1 voltage read; the rest of ALDO1 is skipped on error */
+    uint8_t aldo1_register; /* ALDO1 voltage register as read */
+    uint16_t aldo1_mv;      /* its setting, 0 for a reserved code */
+    bool aldo1_enable_tried; /* only when the setting is BOARD_PMIC_ALDO1_EXPECTED_MV */
+    int aldo1_enable_error;
+} board_pmic_start_t;
+
+/* The start sequence: battery voltage ADC, battery detection, then ALDO1 only
+ * when it is already set to 3.3 V. Each step runs even when an earlier one
+ * failed, except that ALDO1 needs its voltage read. Writes enable bits only;
+ * no voltage, charger or power-key setting. */
+void board_pmic_start(const board_pmic_bus_t *bus, board_pmic_start_t *result);
