@@ -433,6 +433,7 @@ static void gauge_sample(const vhw_state_t *s, roundie_battery_sample_t *sample)
     }
     sample->operation_flags = 0x0020;
     sample->initialized = true;
+    sample->charging = s->current_ma > 0;
     sample->discharging = s->current_ma < 0;
     sample->state = ROUNDIE_SENSOR_VALID;
     sample->error = ESP_OK;
@@ -451,21 +452,37 @@ static void gauge_sample(const vhw_state_t *s, roundie_battery_sample_t *sample)
     sample->temperature_valid = true;
 }
 
-/* The 1.75C's AXP2101 as its driver reports it: presence, direction, voltage. */
+/* The 1.75C's AXP2101 as its driver reports it: battery_flags are status
+ * registers 0x00 (high byte: 0x20 VBUS good, 0x08 battery present) and 0x01
+ * (low byte, bits 6..5: 0x20 charging, 0x40 discharging, 0 standby, which
+ * includes charge complete); voltage; the gauge percent as an uncalibrated
+ * estimate, so the state is UNCALIBRATED and initialized stays false. The
+ * model's estimate is the true state of charge. */
 static void pmic_sample(const vhw_state_t *s, roundie_battery_sample_t *sample)
 {
+    uint16_t status1 = (s->usb ? 0x20U : 0U) | (s->battery_present ? 0x08U : 0U);
+    uint16_t status2 = 0;
+    if (s->battery_present && s->current_ma > 0) {
+        status2 = 0x20;
+    } else if (s->battery_present && s->current_ma < 0) {
+        status2 = 0x40;
+    }
+    sample->battery_flags = (uint16_t)((status1 << 8) | status2);
     sample->battery_present = s->battery_present;
     if (!s->battery_present) {
         sample->state = ROUNDIE_SENSOR_BATTERY_ABSENT;
         sample->error = ESP_OK;
         return;
     }
-    sample->discharging = s->current_ma < 0;
+    sample->charging = status2 == 0x20;
+    sample->discharging = status2 == 0x40;
     sample->state = ROUNDIE_SENSOR_UNCALIBRATED;
     sample->error = ESP_OK;
     int32_t loaded = (int32_t)s->open_circuit_mv + s->current_ma * CELL_RESISTANCE_MOHM / 1000;
     sample->voltage_mv = (uint16_t)loaded;
     sample->voltage_valid = true;
+    sample->soc_percent = (uint16_t)s->soc_percent;
+    sample->soc_valid = true;
 }
 
 void vhw_battery_sample(roundie_battery_sample_t *sample, int64_t now_us)

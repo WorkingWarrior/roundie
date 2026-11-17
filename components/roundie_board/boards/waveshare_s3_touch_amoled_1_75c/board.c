@@ -750,8 +750,12 @@ static roundie_sensor_state_t pmic_error(roundie_board_t *board, esp_err_t error
 /* AXP2101 status, battery voltage and fuel-gauge percent (board_logic.h); the
  * ADC is enabled by start_pmic(). The gauge runs on its defaults: the battery
  * model register 0xA1 that the datasheet recommends is not programmed, so the
- * percent is the PMIC's estimate, unchecked against a discharge curve. The
- * PMIC reports no current, temperature or capacity here. */
+ * percent is the PMIC's uncalibrated estimate, unchecked against a discharge
+ * curve. The state therefore stays ROUNDIE_SENSOR_UNCALIBRATED with
+ * soc_valid set for an in-range percent, and initialized stays false: the
+ * AXP2101 reports nothing comparable to a gauge's initialization flag. The
+ * PMIC reports no current, temperature or capacity here; charging comes from
+ * its charge direction. */
 void roundie_board_battery_read(roundie_board_t *board,
                                  roundie_battery_sample_t *sample)
 {
@@ -766,7 +770,7 @@ void roundie_board_battery_read(roundie_board_t *board,
         return;
     }
     uint8_t status[2];
-    esp_err_t error = read_register(board->pmic, 0x00, status, sizeof(status));
+    esp_err_t error = read_register(board->pmic, BOARD_PMIC_REG_STATUS1, status, sizeof(status));
     if (error != ESP_OK) {
         sample->error = error;
         sample->state = pmic_error(board, error);
@@ -779,6 +783,7 @@ void roundie_board_battery_read(roundie_board_t *board,
         sample->error = ESP_OK;
         return;
     }
+    sample->charging = board_pmic_charging(status);
     sample->discharging = board_pmic_discharging(status);
     sample->state = ROUNDIE_SENSOR_UNCALIBRATED;
     sample->error = ESP_OK;
@@ -803,9 +808,5 @@ void roundie_board_battery_read(roundie_board_t *board,
     }
     sample->soc_percent = percent;
     sample->soc_valid = board_pmic_percent_valid(percent);
-    sample->initialized = sample->soc_valid;
-    if (sample->voltage_valid && sample->soc_valid) {
-        sample->state = ROUNDIE_SENSOR_VALID;
-    }
     sample->observed_us = esp_timer_get_time();
 }

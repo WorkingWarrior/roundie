@@ -1072,6 +1072,22 @@ echo "exit $?" >> app.log
         self.assertIn("roundie-desktop: the board is off (depleted)", result.stderr)
         self.assertIn("flags=0x0008", result.stderr)  # charging: not discharging
 
+    def test_lab_pmic_battery_on_the_1_75c(self):
+        """The 1.75C's AXP2101 profile: the gauge percent is an uncalibrated
+        estimate (UNCALIBRATED, not initialized); the status flags carry VBUS,
+        presence and the charge direction, and standby on a full cell is not
+        charging."""
+        script = ("wait-nav LIST 5000\nhw\nusb 1\nwait 6000\nhw\nbattery soc 100\nwait 6000\nhw\n"
+                  "usb 0\nwait 6000\nhw\nquit\n")
+        result, _, states = self.run_lab(script, board="1.75c", install=False)
+        self.assertEqual([state["usb"] for state in states], ["0", "1", "1", "0"])
+        self.assertIn("Gauge gauge unverified, present=1, initialized=0, error=ESP_OK", result.stderr)
+        # On the battery: present, discharging (STATUS1 0x08, STATUS2 0x40).
+        self.assertIn("gauge SoC 80% (accuracy unverified), flags=0x0840", result.stderr)
+        # USB on a full cell: VBUS good, present, standby (charge complete).
+        self.assertIn("gauge SoC 100% (accuracy unverified), flags=0x2800", result.stderr)
+        self.assertNotIn("gauge SoC unavailable", result.stderr)
+
     def test_lab_screen_off_and_wake(self):
         """The power menu's screen off and BOOT wake; a failed display
         re-initialisation is reported and the GUI's repaint restores the panel."""

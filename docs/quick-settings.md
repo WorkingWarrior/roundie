@@ -16,8 +16,12 @@ face ([system navigation](system-navigation.md)). This is the spec's
   screen; the strip exists only on home.
 - **Panel.** An opaque, full-screen object on LVGL's top layer, owned by the
   launcher on the GUI task:
-  - the battery charge from the BQ27220 sample of the system worker, with
-    "ładuje" when the current is positive, or "brak odczytu";
+  - the battery charge from the system worker's battery sample, with
+    "ładuje" when the board reports charging (`charging` in
+    `roundie_battery_sample_t`: a positive BQ27220 current on the 1.85B, the
+    AXP2101 charge direction on the 1.75C), or "brak odczytu". On the 1.75C
+    the percent is the AXP2101's uncalibrated estimate (state UNCALIBRATED);
+    an uninitialized 1.85B gauge still shows "brak odczytu";
   - **Jasność**: the backlight in steps of 30, 60 and 100 %, the same steps as
     the diagnostic screen's button;
   - **Wygaś ekran**: the screen off, as in the power menu;

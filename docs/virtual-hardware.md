@@ -97,7 +97,13 @@ subsystem inside the running process; `reboot` restarts the whole process.
     25.0 °C, flags 0x0008 (present) plus 0x0001 while discharging, operation
     status 0x0020 (initialised); state VALID. The firmware's sensor worker
     logs these every 5 s, as on the board.
-  - 1.75C, AXP2101 profile: voltage only; state UNCALIBRATED.
+  - Both profiles set `charging` while the cell takes current (1.85B: positive
+    current; 1.75C: charge direction 01), not when full on USB.
+  - 1.75C, AXP2101 profile: voltage and the gauge percent as an uncalibrated
+    estimate (here the true state of charge); state UNCALIBRATED, not
+    initialised, no current or temperature. Flags are the status registers:
+    high byte 0x20 VBUS good, 0x08 present; low byte 0x20 charging, 0x40
+    discharging, 0 standby (also charge complete).
   - Gauge timeout: COMM_ERROR with ESP_ERR_TIMEOUT; absent: NOT_FOUND; cell
     out: BATTERY_ABSENT.
 - Light sleep from the power menu switches the model to the sleep current.

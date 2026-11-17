@@ -950,6 +950,8 @@ void roundie_board_battery_read(roundie_board_t *board,
     if (error == ESP_OK) {
         sample->current_ma = roundie_gauge_current(value);
         sample->current_valid = true;
+        /* The BQ27220 reports charging as a positive average current. */
+        sample->charging = sample->current_ma > 0;
     }
     sample_error(board, sample, error);
     error = gauge_read_word(board, 0x06, &value);
