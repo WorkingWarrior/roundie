@@ -81,6 +81,53 @@ static esp_err_t read_register(i2c_master_dev_handle_t device, uint8_t address,
                                        I2C_TIMEOUT_MS);
 }
 
+static int pmic_bus_read(void *context, uint8_t reg, uint8_t *value)
+{
+    return read_register(context, reg, value, 1);
+}
+
+static int pmic_bus_write(void *context, uint8_t reg, uint8_t value)
+{
+    uint8_t request[2] = {reg, value};
+    return i2c_master_transmit(context, request, sizeof(request), I2C_TIMEOUT_MS);
+}
+
+/* Enables only what the readings and the codecs need (board_pmic_start() in
+ * board_logic.c, host-tested): the battery voltage ADC and battery detection
+ * feed roundie_board_battery_read(); ALDO1 (A3V3) feeds the ES8311 and ES7210
+ * analog side and is switched on only when already set to 3.3 V. Device test
+ * 2026-11-14: battery 4064..4196 mV and the charge direction followed USB plug
+ * and unplug; playback was heard. */
+static void start_pmic(roundie_board_t *board)
+{
+    const board_pmic_bus_t bus = {
+        .context = board->pmic,
+        .read = pmic_bus_read,
+        .write = pmic_bus_write,
+    };
+    board_pmic_start_t result;
+    board_pmic_start(&bus, &result);
+    if (result.adc_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 battery voltage ADC enable: %s", esp_err_to_name(result.adc_error));
+    }
+    if (result.detection_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 battery detection enable: %s",
+                 esp_err_to_name(result.detection_error));
+    }
+    if (result.aldo1_read_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 ALDO1 voltage read: %s", esp_err_to_name(result.aldo1_read_error));
+        return;
+    }
+    ESP_LOGI(TAG, "AXP2101 ALDO1 setting: %u mV (register 0x%02x)", (unsigned)result.aldo1_mv,
+             result.aldo1_register);
+    if (!result.aldo1_enable_tried) {
+        ESP_LOGW(TAG, "ALDO1 is not %u mV; left unchanged, codec analog supply unverified",
+                 (unsigned)BOARD_PMIC_ALDO1_EXPECTED_MV);
+    } else if (result.aldo1_enable_error != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 ALDO1 enable: %s", esp_err_to_name(result.aldo1_enable_error));
+    }
+}
+
 static esp_err_t start_i2c(roundie_board_t *board, roundie_board_status_t *status)
 {
     const i2c_master_bus_config_t bus_config = {
@@ -114,6 +161,8 @@ static esp_err_t start_i2c(roundie_board_t *board, roundie_board_status_t *statu
     if (pmic_add != ESP_OK) {
         ESP_LOGE(TAG, "PMIC handle: %s", esp_err_to_name(pmic_add));
         status->gauge = pmic_add;
+    } else if (status->gauge == ESP_OK) {
+        start_pmic(board);
     }
     return ESP_OK;
 }
@@ -454,16 +503,20 @@ esp_err_t roundie_board_backlight_set(roundie_board_t *board, uint8_t percent)
     return error;
 }
 
-/* Same policy as the 1.85B: reset and initialize again, then repaint. Whether
- * the CO5300 keeps its memory after DISPOFF or light sleep is not yet tested;
- * the full sequence takes about 1.2 s (two 600 ms vendor delays). */
+/* Screen-off is brightness 0 plus DISPOFF; the panel stays powered and keeps
+ * its frame memory, also through light sleep. A reset and the vendor sequence
+ * would instead show undefined memory until the repaint reaches it: a green band
+ * at the bottom, painted last, was seen on wake. So the panel is only switched
+ * on again and the kept frame is shown at once. Device test 2026-11-14 (owner
+ * observation): no band after screen-off, and the screen came back after touch
+ * and BOOT wakes from light sleep (docs/hardware-audit-1.75c.md). */
 esp_err_t roundie_board_display_restore(roundie_board_t *board, bool *repaint)
 {
     if (board == NULL || board->panel == NULL || repaint == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    *repaint = true;
-    return initialize_panel(board);
+    *repaint = false;
+    return esp_lcd_panel_disp_on_off(board->panel, true);
 }
 
 esp_err_t roundie_board_display_power(roundie_board_t *board, bool on)
@@ -694,15 +747,15 @@ static roundie_sensor_state_t pmic_error(roundie_board_t *board, esp_err_t error
     return ROUNDIE_SENSOR_COMM_ERROR;
 }
 
-/* AXP2101, read only: nothing is written to the PMIC. Register meanings are a
- * hypothesis taken from the XPowersLib register map, not yet checked on this
- * board (docs/hardware-audit-1.75c.md):
- *   0x00 bit 3       battery connected
- *   0x01 bits 6..5   01 charging, 10 discharging
- *   0x34..0x35       battery voltage in mV, 13 bits; reads 0 while the
- *                    PMIC's battery voltage ADC is disabled
- * The PMIC's own fuel gauge is not used, so the state is at best
- * ROUNDIE_SENSOR_UNCALIBRATED with no state of charge, current or temperature. */
+/* AXP2101 status, battery voltage and fuel-gauge percent (board_logic.h); the
+ * ADC is enabled by start_pmic(). The gauge runs on its defaults: the battery
+ * model register 0xA1 that the datasheet recommends is not programmed, so the
+ * percent is the PMIC's uncalibrated estimate, unchecked against a discharge
+ * curve. The state therefore stays ROUNDIE_SENSOR_UNCALIBRATED with
+ * soc_valid set for an in-range percent, and initialized stays false: the
+ * AXP2101 reports nothing comparable to a gauge's initialization flag. The
+ * PMIC reports no current, temperature or capacity here; charging comes from
+ * its charge direction. */
 void roundie_board_battery_read(roundie_board_t *board,
                                  roundie_battery_sample_t *sample)
 {
@@ -717,7 +770,7 @@ void roundie_board_battery_read(roundie_board_t *board,
         return;
     }
     uint8_t status[2];
-    esp_err_t error = read_register(board->pmic, 0x00, status, sizeof(status));
+    esp_err_t error = read_register(board->pmic, BOARD_PMIC_REG_STATUS1, status, sizeof(status));
     if (error != ESP_OK) {
         sample->error = error;
         sample->state = pmic_error(board, error);
@@ -730,12 +783,13 @@ void roundie_board_battery_read(roundie_board_t *board,
         sample->error = ESP_OK;
         return;
     }
+    sample->charging = board_pmic_charging(status);
     sample->discharging = board_pmic_discharging(status);
     sample->state = ROUNDIE_SENSOR_UNCALIBRATED;
     sample->error = ESP_OK;
 
     uint8_t voltage[2];
-    error = read_register(board->pmic, 0x34, voltage, sizeof(voltage));
+    error = read_register(board->pmic, BOARD_PMIC_REG_VBAT_H, voltage, sizeof(voltage));
     if (error != ESP_OK) {
         sample->error = error;
         sample->state = pmic_error(board, error);
@@ -744,5 +798,15 @@ void roundie_board_battery_read(roundie_board_t *board,
     uint16_t millivolts = board_pmic_battery_mv(voltage);
     sample->voltage_mv = millivolts;
     sample->voltage_valid = board_pmic_voltage_plausible(millivolts);
+
+    uint8_t percent = 0;
+    error = read_register(board->pmic, BOARD_PMIC_REG_BAT_PERCENT, &percent, 1);
+    if (error != ESP_OK) {
+        sample->error = error;
+        sample->state = pmic_error(board, error);
+        return;
+    }
+    sample->soc_percent = percent;
+    sample->soc_valid = board_pmic_percent_valid(percent);
     sample->observed_us = esp_timer_get_time();
 }

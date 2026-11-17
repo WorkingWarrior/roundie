@@ -35,7 +35,7 @@ static void discharge_and_charge(void)
     vhw_battery_sample(&sample, now);
     assert(sample.state == ROUNDIE_SENSOR_VALID);
     assert(sample.soc_valid && sample.soc_percent == 5);
-    assert(sample.discharging && (sample.battery_flags & 0x0009) == 0x0009);
+    assert(sample.discharging && !sample.charging && (sample.battery_flags & 0x0009) == 0x0009);
     assert(sample.current_valid && sample.current_ma == -100);
     assert(sample.voltage_valid && sample.voltage_mv < s.open_circuit_mv);
     /* Light sleep draws less. */
@@ -64,7 +64,7 @@ static void discharge_and_charge(void)
     s = get(now);
     assert(s.powered && s.current_ma == 100 && s.charge_mah_x1000 == 1000);
     vhw_battery_sample(&sample, now);
-    assert(!sample.discharging && sample.current_ma == 100);
+    assert(!sample.discharging && sample.charging && sample.current_ma == 100);
     /* Full: no more current. */
     now += S(7200);
     s = get(now);
@@ -125,7 +125,27 @@ static void samples(void)
     roundie_battery_sample_t sample;
     vhw_init(VHW_CHIP_PMIC, now);
     vhw_battery_sample(&sample, now);
-    assert(sample.state == ROUNDIE_SENSOR_UNCALIBRATED && !sample.soc_valid && sample.voltage_valid);
+    /* AXP2101: the gauge percent is an uncalibrated estimate; no current, no
+     * initialization flag. On the battery: present, discharging. */
+    assert(sample.state == ROUNDIE_SENSOR_UNCALIBRATED && sample.voltage_valid);
+    assert(sample.soc_valid && sample.soc_percent == 80 && !sample.initialized);
+    assert(!sample.current_valid && !sample.charging && sample.discharging);
+    assert(sample.battery_flags == 0x0840);
+    /* USB: charging, VBUS good. */
+    vhw_set_usb(true, now);
+    vhw_battery_sample(&sample, now);
+    assert(sample.charging && !sample.discharging && sample.battery_flags == 0x2820);
+    /* Full on USB: standby (charge complete) is neither charging nor discharging. */
+    vhw_set_soc(100, now);
+    vhw_battery_sample(&sample, now);
+    assert(!sample.charging && !sample.discharging && sample.battery_flags == 0x2800);
+    assert(sample.soc_valid && sample.soc_percent == 100);
+    /* No cell: absent, flags still show VBUS. */
+    vhw_set_battery_present(false, now);
+    vhw_battery_sample(&sample, now);
+    assert(sample.state == ROUNDIE_SENSOR_BATTERY_ABSENT && sample.battery_flags == 0x2000);
+    vhw_set_battery_present(true, now);
+    vhw_set_usb(false, now);
     vhw_set_gauge(VHW_BUS_TIMEOUT);
     vhw_battery_sample(&sample, now);
     assert(sample.state == ROUNDIE_SENSOR_COMM_ERROR && sample.error == ESP_ERR_TIMEOUT);

@@ -53,6 +53,17 @@ typedef struct {
     roundie_rtc_time_t time;
 } roundie_rtc_sample_t;
 
+/* Battery as the board's gauge or PMIC reports it.
+ *   state VALID          readings valid and the gauge reports itself
+ *                        initialized and its capacity learned (1.85B BQ27220)
+ *   state UNCALIBRATED   readings valid, accuracy not established: an
+ *                        uninitialized gauge, or a PMIC estimate (1.75C AXP2101)
+ *   initialized          the chip reports a completed initialization; false
+ *                        on chips without such a flag
+ *   soc_valid            soc_percent was read and is 0..100; under
+ *                        UNCALIBRATED it is the chip's uncalibrated estimate
+ *   charging             the chip reports the battery being charged now; not
+ *                        set while idle or charge-complete */
 typedef struct {
     roundie_sensor_state_t state;
     esp_err_t error;
@@ -73,6 +84,7 @@ typedef struct {
     uint16_t full_mah;
     uint16_t battery_flags;
     uint16_t operation_flags;
+    bool charging;
     bool discharging;
     bool sleeping;
 } roundie_battery_sample_t;

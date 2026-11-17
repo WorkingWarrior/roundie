@@ -167,19 +167,50 @@ static void swipe_feedback(uint32_t kind, const lv_point_t *point)
     lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* The battery line follows the system worker's sample while the panel is
+ * open (USB plugged or unplugged, the charge changing): re-read at most once
+ * per QUICK_BATTERY_PERIOD_US, and the label is set only when the text
+ * changes. */
+#define QUICK_BATTERY_PERIOD_US 1000000
+static int64_t quick_battery_read_us;
+static bool quick_battery_known;
+static bool quick_battery_valid;
+static uint8_t quick_battery_percent;
+static bool quick_battery_charging;
+
+static void quick_update_battery(bool force)
+{
+    int64_t now = roundie_time_us();
+    if (!force && now - quick_battery_read_us < QUICK_BATTERY_PERIOD_US) {
+        return;
+    }
+    quick_battery_read_us = now;
+    uint8_t percent = 0;
+    bool charging = false;
+    bool valid = quick_actions->battery(&percent, &charging);
+    bool same = quick_battery_known && valid == quick_battery_valid &&
+        (!valid || (percent == quick_battery_percent && charging == quick_battery_charging));
+    if (same && !force) {
+        return;
+    }
+    quick_battery_known = true;
+    quick_battery_valid = valid;
+    quick_battery_percent = percent;
+    quick_battery_charging = charging;
+    if (valid) {
+        lv_label_set_text_fmt(quick_battery, "Bateria %u%%%s", percent, charging ? " • ładuje" : "");
+    } else {
+        lv_label_set_text(quick_battery, "Bateria: brak odczytu");
+    }
+}
+
 static void quick_show(bool shown)
 {
     if (!shown) {
         lv_obj_add_flag(quick, LV_OBJ_FLAG_HIDDEN);
         return;
     }
-    uint8_t percent = 0;
-    bool charging = false;
-    if (quick_actions->battery(&percent, &charging)) {
-        lv_label_set_text_fmt(quick_battery, "Bateria %u%%%s", percent, charging ? " • ładuje" : "");
-    } else {
-        lv_label_set_text(quick_battery, "Bateria: brak odczytu");
-    }
+    quick_update_battery(true);
     lv_label_set_text_fmt(quick_brightness, "Jasność %u%%", quick_actions->brightness(false));
     lv_obj_remove_flag(quick, LV_OBJ_FLAG_HIDDEN);
 }
@@ -578,6 +609,9 @@ void roundie_launcher_gui_pump(bool safe)
         return; /* Boot confirmation/recovery never depends on launcher. */
     }
     creation_failed = false;
+    if (quick_actions != NULL && !lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN)) {
+        quick_update_battery(false);
+    }
     bool idle = model.state == ROUNDIE_NAV_LIST || model.state == ROUNDIE_NAV_ERROR;
     bool running = model.state == ROUNDIE_NAV_ACTIVE || model.state == ROUNDIE_NAV_LOADING ||
         model.state == ROUNDIE_NAV_EXITING;

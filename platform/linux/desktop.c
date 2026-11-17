@@ -574,12 +574,14 @@ static bool quick_battery(uint8_t *percent, bool *charging)
     roundie_lock(&sensors.lock);
     roundie_battery_sample_t battery = sensors.battery;
     roundie_unlock(&sensors.lock);
-    if (battery.state != ROUNDIE_SENSOR_VALID || !battery.battery_present || !battery.soc_valid ||
-        battery.soc_percent > 100) {
+    /* UNCALIBRATED with a valid percent is a PMIC's estimate (roundie_board.h);
+     * an uninitialized gauge reports no valid percent. */
+    bool readable = battery.state == ROUNDIE_SENSOR_VALID || battery.state == ROUNDIE_SENSOR_UNCALIBRATED;
+    if (!readable || !battery.battery_present || !battery.soc_valid || battery.soc_percent > 100) {
         return false;
     }
     *percent = (uint8_t)battery.soc_percent;
-    *charging = battery.current_valid && battery.current_ma > 0;
+    *charging = battery.charging;
     return true;
 }
 
