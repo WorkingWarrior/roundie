@@ -323,7 +323,8 @@ The cell had run down since 2026-11-15 and was charging on USB (`0x3832`:
 VBUS good, present, direction 01, constant current). State UNCALIBRATED,
 not initialized, percent shown as the estimate. Quick settings showed the
 battery with "ładuje", which went away with USB unplugged and came back on
-replug (owner: "wygląda ok").
+replug (owner: "wygląda ok"). With `d86e652` the line also changes while
+the panel stays open (owner: "zmienia się status").
 
 ## Pending device tests
 
