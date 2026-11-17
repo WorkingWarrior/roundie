@@ -21,7 +21,10 @@ face ([system navigation](system-navigation.md)). This is the spec's
     `roundie_battery_sample_t`: a positive BQ27220 current on the 1.85B, the
     AXP2101 charge direction on the 1.75C), or "brak odczytu". On the 1.75C
     the percent is the AXP2101's uncalibrated estimate (state UNCALIBRATED);
-    an uninitialized 1.85B gauge still shows "brak odczytu";
+    an uninitialized 1.85B gauge still shows "brak odczytu". While the
+    panel is open the line is read again once per second and changes when
+    the sample does (the worker samples every 5 s), so plugging or
+    unplugging USB shows without closing the panel;
   - **Jasność**: the backlight in steps of 30, 60 and 100 %, the same steps as
     the diagnostic screen's button;
   - **Wygaś ekran**: the screen off, as in the power menu;
