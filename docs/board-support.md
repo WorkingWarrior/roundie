@@ -4,8 +4,11 @@
 ESP32-S3-Touch-LCD-1.85B and ESP32-S3-Touch-AMOLED-1.75C. The boundary below is
 an architectural decision of this refactor. Host tests and target builds of
 both boards pass. The 1.85B device results are recorded at the end. The 1.75C
-is **hardware-ready, hardware-unverified**: it has not been run on hardware
-([hardware-audit-1.75c.md](hardware-audit-1.75c.md)).
+ran on one board: boot, scaled display at 40 MHz (14.3 FPS full frame, text
+soft from the upscale), touch gestures, brightness, screen off/on, battery,
+audio and applications; light-sleep wake, ROM Download and
+the hardware facts come from an earlier port with the same code there
+([hardware-audit-1.75c.md](hardware-audit-1.75c.md#device-results-of-this-port-2026-11-15)).
 
 ## Boards
 
@@ -16,11 +19,11 @@ is **hardware-ready, hardware-unverified**: it has not been run on hardware
 | Draw limit | 360 × 20 (or 60) pixels, align 1 | 466 × 24 pixels, align 2 |
 | Touch | CST816S | CST9217 |
 | RTC | PCF85063 (`ROUNDIE_BOARD_CAP_RTC`) | None; system clock and RTC timer |
-| Battery | BQ27220 fuel gauge | AXP2101, read only: presence, charge direction, voltage |
+| Battery | BQ27220 fuel gauge | AXP2101: presence, charging, voltage, gauge percent as an uncalibrated estimate (ADC and detection enabled at start) |
 | Speaker | ES8311 | ES8311 |
 | Wake | Touch INT, BOOT | Touch INT, BOOT |
 | Flash, PSRAM | 16 MB, 8 MB Octal | 32 MB per wiki, 16 MB per schematic; 16 MiB image header, 8 MB Octal |
-| Status | Hardware-verified (results below) | Hardware-ready, hardware-unverified: builds and host tests only |
+| Status | Hardware-verified (results below) | Device-tested on one board (audit); wake latency, touch-filter limit, wall clock and endurance pending |
 
 ## Boundary
 
@@ -34,7 +37,7 @@ GPIOs, bus ports, I²C addresses and chips. Everything else uses
 | Display | `roundie_board_display_set_draw_done`, `roundie_board_display_draw`, `roundie_board_display_power`, `roundie_board_display_restore`, `roundie_board_backlight_set` | GUI task only; the done callback runs in ISR context |
 | Touch | `roundie_board_touch_read` | Polled by the LVGL input device |
 | Speaker | `roundie_board_speaker_start`, `roundie_board_speaker_read_register` | Returns an `esp_codec_dev` output device; `roundie_audio` owns playback |
-| RTC, battery | `roundie_board_rtc_read`, `roundie_board_rtc_set_trusted`, `roundie_board_battery_read` | A missing chip is a sensor state, not an error path |
+| RTC, battery | `roundie_board_rtc_read`, `roundie_board_rtc_set_trusted`, `roundie_board_battery_read` | A missing chip is a sensor state, not an error path; battery semantics (VALID, UNCALIBRATED, `charging`) in `roundie_board.h` |
 | Buttons, wake | `roundie_board_boot_pressed`, `roundie_board_wake_arm`, `roundie_board_wake_source_active`, `roundie_board_wake_disarm` | Light-sleep wake sources are the board's |
 
 Calendar conversion (`rtc_time.c`) is board-independent and shared.
