@@ -305,6 +305,26 @@ written; NVS and LittleFS were kept (LittleFS mounted, 155,648 bytes used).
 | IMU (D13) | Flat, screen up: x -36, y -55, z 914 mg |
 | Applications | Examples built for the 360 × 360 canvas load and run (watch, stopwatch, sound, round, ui; installed as 0.3.0). Packages built by the earlier port with a 466 × 466 root view (`REP_DISPLAY_SIZE=466`) are rejected at start (`-1`); rebuilding them for 360 × 360 fixes it |
 
+### Battery semantics on this change (2026-11-17)
+
+**Firmware:** this change at `210765a` (panel restore and PMIC/battery only),
+REP profile, application and initial otadata written, no erase; partition
+table unchanged. Boot log, then the owner at the board:
+
+```text
+I (1226) roundie_board: AXP2101 ALDO1 setting: 3300 mV (register 0x1c)
+I (2696) roundie: Gauge startup: gauge unverified, present=1, 3299 mV, SoC valid=1 (0%), error=ESP_OK
+I (4036) ota: Core self-test result: ESP_OK
+I (6216) roundie: Gauge gauge unverified, present=1, initialized=0, error=ESP_OK
+I (6216) roundie: Battery 3302 mV, gauge SoC 0% (accuracy unverified), flags=0x3832, op=0x0000
+```
+
+The cell had run down since 2026-11-15 and was charging on USB (`0x3832`:
+VBUS good, present, direction 01, constant current). State UNCALIBRATED,
+not initialized, percent shown as the estimate. Quick settings showed the
+battery with "ładuje", which went away with USB unplugged and came back on
+replug (owner: "wygląda ok").
+
 ## Pending device tests
 
 What the results above already show is noted in "Status". Everything else is
