@@ -302,3 +302,35 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: python3 tools/ci/summarize.py all "$NEEDS" >> "$GITHUB_STEP_SUMMARY"
+
+  # The one check that branch protection requires (docs/ci.md, "CI gate").
+  # Summary reports even after failures and always succeeds; this job fails
+  # unless every required job and every matrix variant succeeded. It runs
+  # after failures, skips and cancellations so that it can say which job
+  # failed; it never passes on a result other than success.
+  gate:
+    name: CI gate
+    if: always()
+    needs: [workflow-lint, firmware, components, ci-image, host, manager, desktop-build, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # actions: read lists this run's jobs, so that each matrix variant is checked.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check every required job
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
+        # A failed request leaves no valid response, so gate.py fails too, but
+        # it still reports the needs results first.
+        run: |
+          if ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+              > "$RUNNER_TEMP/jobs.json"; then
+            echo "::error::The jobs API request failed; the gate cannot check the matrix variants."
+          fi
+          python3 tools/ci/gate.py --needs "$NEEDS" --jobs "$RUNNER_TEMP/jobs.json"
