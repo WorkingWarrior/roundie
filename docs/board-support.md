@@ -9,6 +9,16 @@ soft from the upscale), touch gestures, brightness, screen off/on, battery,
 audio and applications; light-sleep wake, ROM Download and
 the hardware facts come from an earlier port with the same code there
 ([hardware-audit-1.75c.md](hardware-audit-1.75c.md#device-results-of-this-port-2026-11-15)).
+The 1.75C panel restore, the AXP2101 ADC and ALDO1 start, and the battery
+semantics (`charging` flag, uncalibrated SoC estimate) came from darksv in
+pull request #1 and were checked on that board on 2026-11-17
+([battery semantics](hardware-audit-1.75c.md#battery-semantics-on-this-change-2026-11-17)).
+One tested unit does not validate the board as a whole.
+
+**Not implemented on either board:** the ES7210 microphone ADC and the
+QMI8658 IMU. The 1.75C device results include both, from firmware that also
+carried microphone and IMU code. That code is not in this repository; it is
+to be proposed in separate pull requests.
 
 ## Boards
 
