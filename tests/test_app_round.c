@@ -270,6 +270,11 @@ static void bridge_tests(void)
     lv_obj_t *arc_object = lv_obj_get_child(root, 1);
     lv_obj_t *edge_object = lv_obj_get_child(root, 2);
     lv_obj_t *dialog_object = lv_obj_get_child(root, 3);
+    /* An input read can hit-test the slider before the next layout refresh.
+     * A zero-size arc then put its centre at the root origin, and LVGL's
+     * lv_atan2(0, 0) divided by zero: a device panic on 0.3.51 (M8). */
+    lv_point_t root_origin = {0, 0};
+    assert(lv_indev_search_obj(root, &root_origin) != arc_object);
     assert(lv_obj_check_type(roller, &lv_roller_class) && lv_roller_get_selected(roller) == 1);
     assert(lv_obj_check_type(arc_object, &lv_arc_class) && lv_arc_get_value(arc_object) == 5);
     assert(lv_obj_has_flag(dialog_object, LV_OBJ_FLAG_HIDDEN));
