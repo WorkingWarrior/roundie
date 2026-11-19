@@ -98,8 +98,10 @@ python3 -m unittest discover -s tests -p test_ci_gate.py
   request that edits them can change what the gate checks, so changes under
   `.github/` and `tools/ci/` need review before merging.
 - After **Re-run failed jobs**, the gate checks the jobs of the new attempt.
-  GitHub's handling of the unchanged jobs in that listing has not been
-  verified here. If they are missing, the gate fails; use **Re-run all
+  Verified on 2026-11-19 (run 44557496786, attempt 2, after an Actions cache
+  egress-limit failure in Desktop ThreadSanitizer): the listing for the new
+  attempt included the unchanged jobs as success, and the gate passed with
+  all 16 jobs. If they are ever missing, the gate fails; use **Re-run all
   jobs**.
 
 ## Branch protection
