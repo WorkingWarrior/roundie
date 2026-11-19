@@ -1,8 +1,64 @@
 # Roundie Core and the Linux Desktop platform
 
-**Status, 2026-11-15:** dependency audit done; first milestone (M1) in progress.
-This document is the migration plan. Terms as in AGENTS.md: **verified fact**
+**Status, 2026-11-19:** milestones M1–M7 are done and in `main` (see
+[Current state](#current-state-m1m7)). This document began as the migration plan.
+It keeps the audit, the decisions and the plan as they were made, and
+records the results of each step. Terms as in AGENTS.md: **verified fact**
 (source and check), **decision** (recorded here), **assumption**, **pending**.
+
+## Current state (M1–M7)
+
+Each step has three evidence levels:
+
+- **Implemented**: the code is in `main`.
+- **Automatically tested**: host tests, desktop tests or the four firmware
+  builds, which CI ([ci.md](ci.md)) now runs on every pull request.
+- **On a device**: a run on a physical board.
+
+A green CI run is never device evidence.
+
+| Step | What it delivered | Commits | Automatic tests | On a device |
+|---|---|---|---|---|
+| M1a | Platform seam (D1–D2); launcher and UI bridge compiled for both platforms | `02ac03b`, `c50cdb8` | Builds; the machine code was compared with the code before the step ([Results](#results)) | Not run; the code was shown to be equivalent |
+| M1b | Roundie Desktop: Meson target, SDL3 window, Vulkan presentation, mouse touch, both panel profiles, scripts, package install on files | `623fe22`..`b9048fc` | Desktop under ASan/UBSan; gamescope and nested KWin (HiDPI) | Not applicable (desktop). The user's own Plasma session is PENDING (below) |
+| M2 | Power manager split: the GUI half in Core, sleep and restart per platform | `bc9d6e3` | Desktop power scripts | Partial: firmware with M1–M7 booted on one 1.75C on 2026-11-17 and showed quick settings ([1.75C audit](hardware-audit-1.75c.md#battery-semantics-on-this-change-2026-11-17)). Power menu, light sleep and wake after the split PENDING on both boards |
+| M3 | Wall-clock policy and local time behind a clock port (D7); emulated RTC, resets and loss of time | `6caacc0`..`c3933d8` | Clock tests on the production code; desktop fault injection | PENDING on both boards |
+| M4 | No separate step. Package install on files came with M1b. Application storage (`rep_storage_v1`) came with the shared manager in M5a and was checked in M5b | — | Storage across restarts (desktop) | — |
+| M5a | REP applications on Linux x86-64 (`linux-x64.rep1`) through the shared `manager.c` and a loader port; REP Audio through SDL3 ([native-apps.md](native-apps.md)) | `05348fd`..`26e7d8d` | x86-64 validator, native application lifecycle, UI, storage and audio tests | The firmware's shared runtime after the loader-port change is not run on a device (PENDING) |
+| M5b | Faults, virtual time, debug builds of applications | `e3872f6`..`b01e7e1` | Deterministic virtual-time runs, fault tests | — |
+| M6 | Virtual Hardware Lab: battery, charger, PMIC/gauge, supply, PWR latch, resets, RTC, peripheral and storage faults ([virtual-hardware.md](virtual-hardware.md)) | `467141e`..`311f6da` | Model under TSan, lab scenarios twice in virtual time | The models are assumptions; board behaviour is PENDING |
+| M7 | GitHub Actions CI ([ci.md](ci.md)) | `6cf82b3`..`0f204bb` | First passing run 43879239058 (2026-11-16) | — |
+
+After M7, pull request #1 (by darksv, merge `9191be3`) changed only the 1.75C
+board code (panel restore, AXP2101 ADC and battery semantics) and the
+quick-settings battery line. It added host tests and the matching lab model,
+and its device results are in [hardware-audit-1.75c.md](hardware-audit-1.75c.md).
+
+**Platform backends, as built:**
+
+- **ESP-IDF** (`components/`, `main/`): FreeRTOS, `roundie_board` for the two
+  boards, LCD DMA, LittleFS, OTA, TinyUSB, light sleep, the Xtensa ELF loader
+  (`esp_elf`) and the executor task under the task watchdog.
+- **Linux** (`platform/linux`): the files listed under
+  [Desktop platform files](#desktop-platform-files-platformlinux), the x86-64
+  loader (`components/roundie_elf/linux`) and the lab model (`vhw.c`).
+- **Shared**: launcher, UI bridge, power policy and its GUI half, wall-clock
+  policy, package manager, the application manager (`manager.c`) and the
+  audio stream logic (`stream.c`). Both platforms compile them from the same
+  sources.
+
+**REP runtime status:**
+
+- **ESP32-S3 (`esp32s3.rep1`)**: device-tested on the 1.85B before the Core
+  refactor ([elf-loader.md](elf-loader.md), [app-lifecycle.md](app-lifecycle.md)).
+  Examples also ran on the 1.75C on 2026-11-15, with firmware from before M1.
+  Not yet device-tested after the M5a loader-port change.
+- **Linux x86-64 (`linux-x64.rep1`)**: implemented and tested automatically
+  in CI. Applications are trusted, unisolated code in the desktop process. A
+  hung application cannot be stopped; the desktop must be restarted
+  ([native-apps.md](native-apps.md)).
+
+The REP ABI did not change in M1–M7.
 
 ## Goal
 
@@ -186,6 +242,21 @@ host test suite, and the step's own check.
 
 Pending experiments and limits are listed per step in the step's commit and
 in the section below as they arise.
+
+**As built (recorded 2026-11-19).** The plan above is kept as it was
+written. The steps after M3 changed:
+
+- There was no separate M4: see [Current state](#current-state-m1m7).
+- M5 was done as M5a and M5b.
+- The planned M6 audio work was done in M5a as SDL3 stream audio, without a
+  Core mixer.
+- The step named M6 became the Virtual Hardware Lab.
+- M7 (CI) was added.
+
+The results of M1a–M3 are below. Those of M5a and M5b are in
+[native-apps.md](native-apps.md), M6 in
+[virtual-hardware.md](virtual-hardware.md#verification-m6) and M7 in
+[ci.md](ci.md).
 
 ## Running the desktop
 
@@ -450,7 +521,13 @@ unchanged. Builds have no warnings; host tests pass.
 - PENDING, needs the board (no flashing was authorized for M2): the rep
   firmware after the M2 split on the 1.85B and 1.75C, power menu, screen off,
   light sleep and BOOT/touch wake. The code comparison above makes a
-  behaviour change unlikely but is not a device test.
+  behaviour change unlikely but is not a device test. Partial evidence since
+  then: firmware with M1–M7 plus pull request #1 booted on one 1.75C on
+  2026-11-17. The OTA core self-test passed, and quick settings showed the
+  battery line, with "ładuje" following USB
+  ([1.75C audit](hardware-audit-1.75c.md#battery-semantics-on-this-change-2026-11-17)).
+  The power menu, light sleep and wake on that firmware were not reported, and
+  there is no run on the 1.85B.
 - Desktop power emulation limits: no screen dimming hardware (the backlight
   level is kept but not shown), no timer wake source other than the sleep
   safety timer, restart and USB storage mode refused.
