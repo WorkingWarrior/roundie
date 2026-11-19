@@ -24,6 +24,7 @@ pinned containers and writes reports.
 | Desktop ThreadSanitizer | CI image | group `tsan`: the threaded scenarios again, with the desktop built with `-Db_sanitize=thread` | mixed |
 | Workflow syntax | actionlint image by digest | actionlint with shellcheck | none |
 | Summary | runner | `tools/ci/summarize.py`: one table of every group, build and job | none |
+| CI gate | runner | `tools/ci/gate.py`: fails unless every job above except Summary succeeded, each matrix variant included ([CI gate](#ci-gate)) | none |
 
 **Timing.** *none*: no clock is involved. *virtual*: the desktop's
 `--virtual-time` runs the same commands to the same states and outputs
@@ -35,6 +36,161 @@ turns out to be unstable on the runners, that is a finding to investigate.
 
 `tools/ci/run_tests.py --check-coverage` (in the host job) fails when a test
 is in no group or in two primary groups, so a new test cannot drop out of CI.
+
+## CI gate
+
+`CI gate` is the only check that branch protection requires. Summary is not
+a gate: it runs after failures so that it can report them, and it always
+succeeds.
+
+**When it runs.** The gate runs with `if: always()`, so it reports even when
+an earlier job failed, was skipped or was cancelled.
+
+**What it needs.** Its `needs` list holds every other job, including the
+preparatory ones:
+
+- `workflow-lint`
+- `firmware` (the 4 variants)
+- `components`
+- `ci-image`
+- `host`
+- `manager`
+- `desktop-build`
+- `desktop` (the 6 groups)
+
+**What it checks.** `tools/ci/gate.py` checks two sources and passes only
+when both show `success` for everything:
+
+1. The `needs` context: one result per job id. GitHub does not document how
+   it combines a matrix job's variants into that one result.
+2. This run attempt's jobs, from the Actions API (`actions: read`): one
+   entry per matrix variant, 16 named jobs.
+
+**What fails it.** Each of these is a failure, and the log names the job
+and the reason:
+
+- `failure`, `cancelled` or `skipped`;
+- a job that has not completed;
+- a missing job or result;
+- a duplicate job name;
+- an incomplete API response;
+- malformed input.
+
+A failed preparatory job (CI image, managed components) skips the jobs after
+it. The gate reports those skipped jobs as failures.
+
+**How it stays in step with the workflow.** The required lists are in
+`gate.py`. `tests/test_ci_gate.py` (host group) checks them against
+`ci.yml`: the gate's `needs`, every job and matrix name, `if: always()`, and
+that no `continue-on-error` is used. A job added to the workflow without the
+gate fails the host tests. The same file tests the aggregation: all green,
+then a single failure, cancellation, skip or missing result, a failed
+preparatory job, one firmware variant, one desktop group, and invalid or
+incomplete input. Run it locally:
+
+```bash
+python3 -m unittest discover -s tests -p test_ci_gate.py
+```
+
+**Limits:**
+
+- The gate trusts the workflow and `gate.py` of the commit under test. A pull
+  request that edits them can change what the gate checks, so changes under
+  `.github/` and `tools/ci/` need review before merging.
+- After **Re-run failed jobs**, the gate checks the jobs of the new attempt.
+  GitHub's handling of the unchanged jobs in that listing has not been
+  verified here. If they are missing, the gate fails; use **Re-run all
+  jobs**.
+
+## Branch protection (proposed, not active)
+
+Recorded on 2026-11-19: `main` has no ruleset and no branch protection
+(`gh api repos/WorkingWarrior/roundie/rulesets` returned `[]`). The
+repository is public and owned by a user account with a single
+collaborator. The proposal below is not applied yet; applying it needs the
+owner's decision.
+
+**Rules**, one ruleset on the default branch, enforcement Active:
+
+| Rule | Setting |
+|---|---|
+| Restrict deletions | on |
+| Block force pushes | on |
+| Require a pull request before merging | on, **0** required approvals |
+| Require status checks to pass | `CI gate`, source GitHub Actions (app id 15368); branches need not be up to date |
+| Bypass list | empty |
+
+**Effects:**
+
+- Nobody pushes directly to `main`: a pull request is required, and with an
+  empty bypass list that holds for the owner too.
+- The owner merges their own pull request once `CI gate` is green. No
+  approval is needed, so the rule that an author cannot approve their own
+  pull request does not block them.
+- Pull requests from others still need someone with write access to press
+  merge. Only the owner has it.
+- Pinning the check to GitHub Actions stops a commit status with the same
+  name, posted by another app or token, from satisfying the rule.
+
+**Owner bypass.** Adding *Repository admin* to the bypass list (always, or
+for pull requests only) would let an admin merge with a red or running gate,
+or push directly. The policy does not need that, so the list stays empty.
+An admin can still edit or disable the ruleset in an emergency. That change
+is explicit and appears in the ruleset history.
+
+**Apply through the API.** Save the following as `ruleset.json`:
+
+```json
+{
+  "name": "main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+  "bypass_actors": [],
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {"type": "pull_request", "parameters": {
+      "required_approving_review_count": 0,
+      "dismiss_stale_reviews_on_push": false,
+      "require_code_owner_review": false,
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": false}},
+    {"type": "required_status_checks", "parameters": {
+      "strict_required_status_checks_policy": false,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [{"context": "CI gate", "integration_id": 15368}]}}
+  ]
+}
+```
+
+Then post it:
+
+```bash
+gh api --method POST repos/WorkingWarrior/roundie/rulesets --input ruleset.json
+```
+
+**Apply in the UI.** Use the same settings: Settings → Rules → Rulesets →
+New ruleset → New branch ruleset, Target branches → Add target → Include
+default branch, then add `CI gate` with source GitHub Actions under the
+status checks rule.
+
+**Activate it only after `CI gate` has run on GitHub.** Otherwise pull
+requests wait for a check that never reports.
+
+**Verify after activation:**
+
+1. `gh api repos/WorkingWarrior/roundie/rules/branches/main` lists
+   `deletion`, `non_fast_forward`, `pull_request` (0 approvals) and
+   `required_status_checks` with `CI gate`.
+2. On an open pull request, `CI gate` is marked *Required*. The merge button
+   is blocked while the gate runs and enabled once it is green.
+3. A pull request whose gate failed cannot be merged. Making the gate fail
+   on purpose, for example with a test branch that breaks one test, is
+   optional.
+4. A direct push of a new commit to `main` (`git push origin HEAD:main`) is
+   rejected with a rule violation. This is a real push attempt, so do it
+   only when the owner approves it.
 
 ## Reports
 
