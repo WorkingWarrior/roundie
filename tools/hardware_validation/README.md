@@ -78,3 +78,42 @@ python3 -m unittest tests.test_run_m8
 ```
 
 The tests use a fake device and clock and are part of the CI `host` group.
+
+## Endurance (M8.1)
+
+`endurance.py` extends this runner for long unattended runs. It reuses the
+discovery, preflight, serial monitor, reset detection and restore of
+`run_m8.py`, and needs firmware 0.3.55 or later for `RS1 HEALTH` (task count,
+stack high-water marks, minimum heap, failed allocations). On older firmware
+the baseline is BLOCKED and those checks are UNTESTED.
+
+```bash
+python3 tools/hardware_validation/endurance.py --level smoke --serial 28:84:85:87:98:7C --board 1.85b --out <dir>
+python3 tools/hardware_validation/endurance.py --level stress --cycles 100 --ui-rounds 30 --serial … --out <dir>
+```
+
+| Level | What runs |
+|---|---|
+| `smoke` | baseline, 2 lifecycle cycles, 2 UI rounds, recovery, 3 min idle with RTC edges |
+| `stress` | baseline, `--cycles` lifecycle cycles of six applications, `--ui-rounds` round UI rounds, recovery |
+| `soak` | baseline, `--hours` idle on the home application with telemetry every `--interval` s, an RTC second edge every `--rtc-every` s and `--batch-cycles` lifecycle cycles every `--batch-every` s |
+
+- Installed packages start through the launcher, which writes no Flash. The
+  event example is staged once per run through RE1. The bad-package check
+  writes one more file to `/storage/dev`.
+- The RTC is only read (`RT1 DIAG`); drift comes from second-edge captures
+  against the host `CLOCK_MONOTONIC`, `CLOCK_MONOTONIC_RAW`, `CLOCK_REALTIME`
+  and the device's own monotonic clock.
+- `--restart` adds one software restart to the recovery step.
+- `--max-hours` and `--max-log-mb` stop the run at the next safe point.
+- SIGTERM or Ctrl-C keeps a partial report.
+- For runs that should outlive the terminal, start it as a user unit:
+
+  ```bash
+  systemd-run --user --unit=roundie-soak --collect python3 tools/hardware_validation/endurance.py --level soak …
+  systemctl --user stop roundie-soak
+  ```
+
+The PASS/FAIL criteria are fixed in `endurance.CRITERIA` and copied into every
+report. A criterion without data is UNTESTED, never PASS. Host tests:
+`python3 -m unittest tests.test_endurance`.
