@@ -74,6 +74,11 @@ class Blocked(Exception):
     """The step cannot run safely or its precondition is not met."""
 
 
+def is_refusal(error):
+    """True only when the loader rejected the file, not for a refused precondition."""
+    return str(error).startswith("ELF rejected (")
+
+
 def fnv1a(text):
     value = 2166136261
     for byte in text.encode():
@@ -717,7 +722,7 @@ class Runner:
             details["refused"] = False
         except DeviceError as error:
             details.setdefault("refused_at", "upload END")
-            details["refused"] = True
+            details["refused"] = is_refusal(error)
             details["refusal"] = str(error)[:300]
         state = self.wait_for("idle after refusal", lambda: self.call("elf"),
                               lambda s: s["state"] == ELF_IDLE and not s["busy"], 5)

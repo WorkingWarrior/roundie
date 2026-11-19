@@ -610,6 +610,14 @@ class HelperTests(unittest.TestCase):
             with self.assertRaises(run_m8.Blocked):
                 run_m8.discover(None, None, Path(tmp) / "missing")
 
+    def test_only_a_loader_rejection_counts_as_package_refusal(self):
+        # A refused precondition (busy runtime, Safe Mode) must not pass the
+        # bad_package step as if the board had rejected the file.
+        self.assertTrue(run_m8.is_refusal(DeviceError("ELF rejected (258): {'error': 'magic'}")))
+        self.assertFalse(run_m8.is_refusal(DeviceError(
+            "ELF upload requires normal/STABLE, confirmed idle OTA, mounted storage and idle ELF")))
+        self.assertFalse(run_m8.is_refusal(DeviceError("application identity changed")))
+
 
 if __name__ == "__main__":
     unittest.main()
