@@ -10,6 +10,8 @@
 #include "esp_system.h"
 #include "roundie_ota.h"
 #include "recovery_diagnostics.h"
+#include "esp_heap_caps.h"
+#include "freertos/task.h"
 #include "roundie_storage_mode.h"
 
 static uint8_t image[32] = {1};
@@ -78,6 +80,29 @@ esp_err_t nvs_commit(nvs_handle_t handle)
 esp_reset_reason_t esp_reset_reason(void) { return raw_reset; }
 void esp_restart(void) { resets++; }
 size_t heap_caps_get_free_size(unsigned flags) { (void)flags; return 100000; }
+size_t heap_caps_get_minimum_free_size(unsigned flags) { (void)flags; return 90000; }
+size_t heap_caps_get_largest_free_block(unsigned flags) { (void)flags; return 80000; }
+const char *esp_err_to_name(esp_err_t error) { (void)error; return "mock"; }
+static esp_alloc_failed_hook_t failed_alloc_hook;
+esp_err_t heap_caps_register_failed_alloc_callback(esp_alloc_failed_hook_t callback)
+{
+    failed_alloc_hook = callback;
+    return ESP_OK;
+}
+static int known_task;
+TaskHandle_t xTaskGetHandle(const char *name)
+{
+    if (strcmp(name, "main") == 0) {
+        return &known_task;
+    }
+    return NULL;
+}
+unsigned uxTaskGetNumberOfTasks(void) { return 7; }
+unsigned uxTaskGetStackHighWaterMark(void *task)
+{
+    assert(task == &known_task);
+    return 1234;
+}
 static jmp_buf hang_exit;
 static bool hang_expected;
 void vTaskDelay(unsigned ticks)
@@ -273,6 +298,16 @@ int main(void)
 
     fresh();
     assert(command("STATUS", false));
+    assert(strstr(response, "\"tasks\"") == NULL && strstr(response, "\"storage\":0}\n") != NULL);
+    roundie_recovery_health_init();
+    assert(failed_alloc_hook != NULL);
+    failed_alloc_hook(64, MALLOC_CAP_SPIRAM, "test");
+    assert(command("HEALTH", false));
+    assert(strstr(response, "\"internal_min\":90000,\"internal_largest\":80000") != NULL);
+    assert(strstr(response, "\"alloc_failed\":1,\"alloc_failed_size\":64,\"alloc_failed_caps\":4,\"tasks\":7") != NULL);
+    assert(strstr(response, "\"stacks\":{\"main\":1234,\"system_worker\":-1,") != NULL);
+    assert(strstr(response, "\"IDLE1\":-1}}\n") != NULL);
+    assert(!command("HEALTH extra", false));
     assert(!command("REQUEST extra", false) && !status().safe);
     assert(!command("REQUEST", true) && !status().safe);
     ota.running.state = ESP_OTA_IMG_PENDING_VERIFY;
