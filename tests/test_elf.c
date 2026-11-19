@@ -262,6 +262,8 @@ static int32_t runtime_event(const rep_context_v2_t *context, const rep_event_v2
 {
     runtime_callbacks[2]++;
     assert(callback_active);
+    /* ABI 2 knows only these; the event example returns -4 for any other. */
+    assert(event->type == REP2_EVENT_TIMER || event->type == REP2_EVENT_USER);
     unsigned before = runtime_callbacks[2];
     roundie_elf_step(esp_timer_get_time()); /* Callback recursion is refused. */
     assert(before == runtime_callbacks[2]);
@@ -500,6 +502,38 @@ static void control_step(roundie_elf_control_t operation)
     assert(result.control_submitted == result.control_completed);
 }
 
+static bool clock_now(roundie_elf_clock_t *out)
+{
+    *out = (roundie_elf_clock_t){esp_timer_get_time(), 20000, 0, 1};
+    return true;
+}
+
+/* As after an ABI 3 clock application (the watch home): its clock
+ * subscription must not carry over to a following ABI 2 application.
+ * Firmware 0.3.53 delivered a clock event to the event example on the 1.85B
+ * after a time sync (M8), and the example returned -4. */
+static void clock_leak_tests(void)
+{
+    runtime_mode = 0;
+    memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
+    clock_app = true;
+    clock_sent = false;
+    clock_check_us = 0;
+    roundie_elf_set_clock_source(clock_now);
+    roundie_elf_set_allowed(true);
+    assert(roundie_elf_prepare());
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING);
+    for (unsigned i = 0; i < 4; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    assert(status.state == ROUNDIE_ELF_RUNNING && mailbox.count == 0);
+    roundie_elf_set_clock_source(NULL);
+    control_step(ROUNDIE_ELF_STOP);
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0 && allocations_live == 0);
+}
+
 static void runtime_tests(const char *path)
 {
     FILE *source = fopen(path, "rb");
@@ -507,6 +541,7 @@ static void runtime_tests(const char *path)
     fixture_size = fread(fixture, 1, sizeof(fixture), source);
     assert(fclose(source) == 0);
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_ARG);
+    clock_leak_tests();
     for (runtime_mode = 0; runtime_mode <= 11; runtime_mode++) {
         memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
         value_count = 0;

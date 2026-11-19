@@ -1068,11 +1068,13 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         memcpy(&entry_v2, &loaded, sizeof(entry_v2));
         callback_active = true;
         const rep_descriptor_v2_t *descriptor;
+        /* For every ABI: an ABI 2 application must not inherit the previous
+         * application's clock subscription, since it knows no clock event. */
+        round_ui = false;
+        clock_app = false;
+        clock_sent = false;
+        clock_check_us = 0;
         if (status.abi_version == 3) {
-            round_ui = false;
-            clock_app = false;
-            clock_sent = false;
-            clock_check_us = 0;
             ui_owned = roundie_ui_open(status.instance, ui_input);
             if (!ui_owned) {
                 callback_active = false;
