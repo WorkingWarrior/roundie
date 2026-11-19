@@ -45,6 +45,10 @@ as a call. `REP3_EVENT_CLOCK` (5) carries:
   so a zone change or a sync is delivered within about a second.
 - **Invalid wall time.** Nothing is sent while wall time is invalid (no
   trusted sync; see [boards without an external RTC](rtc-time-sync.md#boards-without-an-external-rtc)).
+- **Scope.** Only an ABI 3 application started with `REP3_CAP_CLOCK` receives
+  clock events. The subscription is cleared whenever any application starts,
+  so an ABI 2 application never inherits it from the previous one (fixed in
+  0.3.54; see [M8 validation](hardware-validation-m8.md#clock-subscription-leaked-into-abi-2-applications-fixed-in-0354)).
 - **Coalescing.** A queued clock event is replaced in place by a newer sample,
   including its time.
 - **Extrapolation.** Applications extrapolate from `posted_us` of later events
