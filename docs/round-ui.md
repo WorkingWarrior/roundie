@@ -88,7 +88,14 @@ physical and injected input separately.
   equals the committed value is dropped as stale and counted as rejected. This
   happens when a later input or an applied application request superseded it.
   A dialog choice is delivered while the dialog is enabled, even though it is
-  already hidden.
+  already hidden, and while it equals the dialog's committed choice.
+- **Commit before post (fix, 2026-11-19).** The executor can check an event
+  before the bridge's post returns. The bridge therefore commits the value
+  before posting it, for dialog choices as for lists and sliders. A choice the
+  mailbox refuses restores the previous committed choice. Before the fix, a
+  dialog choice was committed only after the post, and could be rejected as
+  stale while it was still valid. The round test under ThreadSanitizer showed
+  this in about 1 of 13 runs.
 - **Delivery conditions.** Hidden, disabled, unrealized, background and other
   instances' widgets produce no input and no delivery, as for buttons.
 
@@ -135,7 +142,10 @@ and the tool accepts both the old and the new length.
   - the per-view limits;
   - shadow transitions, including input during a pending request;
   - stale-event rejection and coalescing;
-  - dialog self-hide, with a dropped choice leaving it open;
+  - dialog self-hide, with a dropped choice leaving it open and the earlier
+    choice committed;
+  - each posted dialog choice already passing the delivery check inside the
+    post (added 2026-11-19);
   - injection, including out-of-range rejection without touching LVGL;
   - the disabled state;
   - the capability gate for version-2 requests and results;
