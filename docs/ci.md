@@ -102,15 +102,14 @@ python3 -m unittest discover -s tests -p test_ci_gate.py
   verified here. If they are missing, the gate fails; use **Re-run all
   jobs**.
 
-## Branch protection (proposed, not active)
+## Branch protection
 
-Recorded on 2026-11-19: `main` has no ruleset and no branch protection
-(`gh api repos/WorkingWarrior/roundie/rulesets` returned `[]`). The
-repository is public and owned by a user account with a single
-collaborator. The proposal below is not applied yet; applying it needs the
-owner's decision.
+**Active since 2026-11-19:** ruleset `main`, id 27651397, enforcement
+Active, applied through the API after pull request #2 had run `CI gate` on
+GitHub. The repository is public and owned by a user account with a single
+collaborator.
 
-**Rules**, one ruleset on the default branch, enforcement Active:
+**Rules**, one ruleset on the default branch:
 
 | Rule | Setting |
 |---|---|
@@ -138,7 +137,8 @@ or push directly. The policy does not need that, so the list stays empty.
 An admin can still edit or disable the ruleset in an emergency. That change
 is explicit and appears in the ruleset history.
 
-**Apply through the API.** Save the following as `ruleset.json`:
+**The applied payload.** To recreate the ruleset, save the following as
+`ruleset.json`:
 
 ```json
 {
@@ -175,22 +175,31 @@ New ruleset → New branch ruleset, Target branches → Add target → Include
 default branch, then add `CI gate` with source GitHub Actions under the
 status checks rule.
 
-**Activate it only after `CI gate` has run on GitHub.** Otherwise pull
+**Recreate it only after `CI gate` has run on GitHub.** Otherwise pull
 requests wait for a check that never reports.
 
-**Verify after activation:**
+GitHub added one parameter to the stored `pull_request` rule:
+`require_extra_approval_for_unattributed_changes: true`. GitHub documents it
+as applying to Copilot pull requests not attributed to a person, and as
+having no effect when the ruleset requires zero approvals.
 
-1. `gh api repos/WorkingWarrior/roundie/rules/branches/main` lists
-   `deletion`, `non_fast_forward`, `pull_request` (0 approvals) and
-   `required_status_checks` with `CI gate`.
-2. On an open pull request, `CI gate` is marked *Required*. The merge button
-   is blocked while the gate runs and enabled once it is green.
-3. A pull request whose gate failed cannot be merged. Making the gate fail
-   on purpose, for example with a test branch that breaks one test, is
-   optional.
-4. A direct push of a new commit to `main` (`git push origin HEAD:main`) is
-   rejected with a rule violation. This is a real push attempt, so do it
-   only when the owner approves it.
+**Verification, 2026-11-19:**
+
+- Verified through the API: `gh api repos/WorkingWarrior/roundie/rules/branches/main`
+  lists `deletion`, `non_fast_forward`, `pull_request` (0 approvals) and
+  `required_status_checks` (`CI gate`, integration 15368, not strict), all
+  from ruleset 27651397. The ruleset's bypass list is empty
+  (`current_user_can_bypass: never`). `branches/main` reports
+  `protected: true`; another branch (`ci-gate`) has no rules.
+- PENDING: a pull request merged under the ruleset. On it, `CI gate` should
+  be marked *Required*, the merge should be blocked while the gate runs and
+  allowed once it is green.
+- PENDING: a pull request whose gate failed cannot be merged. Making the gate
+  fail on purpose, for example with a test branch that breaks one test, is
+  optional.
+- Not attempted: a direct push of a new commit to `main`
+  (`git push origin HEAD:main`) should be rejected with a rule violation.
+  This is a real push attempt, so do it only when the owner approves it.
 
 ## Reports
 
