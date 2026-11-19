@@ -375,19 +375,30 @@ class Runner:
         raise DeviceError("application still active; no forced unload attempted")
 
     def leave_home(self):
-        nav = self.settled_nav()
-        if nav["state"] == "RESULT":
-            self.call("launcher", f"BACK {nav['request']}")
+        # After boot the launcher shows LIST before it starts home, so a LIST
+        # with a busy runtime is home starting: wait for it, then exit it.
+        for _ in range(3):
             nav = self.settled_nav()
-        if nav["state"] == "ACTIVE":
-            self.call("launcher", f"EXIT {nav['generation']}")
-            nav = self.wait_for("launcher list", lambda: self.call("launcher", "NAV"),
-                                lambda n: n["state"] == "LIST", 8)
-        if nav["state"] != "LIST":
-            raise Blocked(f"launcher is {nav['state']}, not idle")
-        self.wait_for("idle runtime", lambda: self.call("elf"),
-                      lambda s: s["state"] == ELF_IDLE and not s["busy"], 5)
-        return nav
+            if nav["state"] == "RESULT":
+                self.call("launcher", f"BACK {nav['request']}")
+                nav = self.settled_nav()
+            if nav["state"] == "ACTIVE":
+                self.call("launcher", f"EXIT {nav['generation']}")
+                nav = self.wait_for("launcher list", lambda: self.call("launcher", "NAV"),
+                                    lambda n: n["state"] == "LIST", 8)
+            if nav["state"] != "LIST":
+                raise Blocked(f"launcher is {nav['state']}, not idle")
+            try:
+                self.wait_for("idle runtime", lambda: self.call("elf"),
+                              lambda s: s["state"] == ELF_IDLE and not s["busy"], 5)
+                return nav
+            except DeviceError:
+                # A loaded application keeps the runtime busy, so wait for the
+                # launcher to report it, or for the runtime to fall idle.
+                self.wait_for("home start", lambda: (self.call("launcher", "NAV"), self.call("elf")),
+                              lambda pair: pair[0]["state"] == "ACTIVE" or
+                              (pair[1]["state"] == ELF_IDLE and not pair[1]["busy"]), 15, 0.2)
+        raise DeviceError("runtime did not become idle after leaving home three times")
 
     def return_home(self):
         nav = self.settled_nav()
@@ -484,7 +495,7 @@ class Runner:
         self.observe_uptime("after OTA")
         result["after"] = {k: after[k] for k in ("version", "running", "elf", "other", "other_state", "ota_state")}
         result["status"] = PASS
-        self.report["device"]["firmware"] = after["version"]
+        self.report["device"].update(firmware=after["version"], running=after["running"], elf=after["elf"])
         return result
 
     # ---- scenarios -----------------------------------------------------
@@ -697,11 +708,15 @@ class Runner:
         path.write_bytes(bytes(broken))
         info = {"size": len(broken), "sha256": hashlib.sha256(broken).hexdigest()}
         details = {"variant": "ELF magic replaced", "sha256": info["sha256"]}
-        self.device.session(lambda port: elf.upload(port, path, info))
+        # The board may refuse it when the upload ends (it validates the file
+        # then) or, failing that, when it is started.
         try:
+            self.device.session(lambda port: elf.upload(port, path, info))
+            details["refused_at"] = "START"
             self.device.session(lambda port: elf.start(port, info["sha256"]))
             details["refused"] = False
         except DeviceError as error:
+            details.setdefault("refused_at", "upload END")
             details["refused"] = True
             details["refusal"] = str(error)[:300]
         state = self.wait_for("idle after refusal", lambda: self.call("elf"),

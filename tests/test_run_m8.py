@@ -327,6 +327,24 @@ class ScenarioTests(RunnerTestCase):
         self.assertEqual(code, 0)
         self.assertEqual(fake.nav["generation"], 2)
 
+    def test_launcher_waits_for_home_started_after_boot(self):
+        # After boot the launcher shows LIST before home starts (seen on the
+        # 1.85B, M8 run 3): a busy runtime there is home loading.
+        def boot(device, protocol, operation):
+            if protocol == "elf" and device.count("elf") == 30:
+                device.nav.update(state="ACTIVE", selected=run_m8.HOME, generation=1)
+                device.elf.update(state=3)
+            if protocol == "launcher" and operation.startswith("EXIT"):
+                device.elf.update(state=0, busy=0)
+
+        fake = self.device(boot)
+        fake.nav.update(state="LIST", selected="", generation=0)
+        fake.elf.update(state=1, busy=1)
+        code, report = self.run_main("--only", "launcher", fake=fake)
+        self.assertEqual(self.step(report, "launcher")["status"], "PASS", report["steps"])
+        self.assertIn("EXIT 1", fake.operations("launcher"))
+        self.assertEqual(code, 0)
+
     def test_core_status_failure_on_ui_counter(self):
         fake = self.device()
         fake.ui["failed"] = 1
