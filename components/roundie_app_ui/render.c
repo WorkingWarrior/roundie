@@ -393,6 +393,10 @@ static bool create_round(unsigned index, const rep_ui_widget_v2_t *widget)
          * hit; the extension makes that band 44 px wide. */
         lv_obj_add_flag(object, LV_OBJ_FLAG_ADV_HITTEST);
         lv_obj_set_ext_click_area(object, ARC_TOUCH_EXTENSION);
+        /* A new object has zero size until the next layout refresh. An input
+         * read before it would hit-test a zero-radius arc, and a point at its
+         * centre makes lv_atan2(0, 0) divide by zero. Size it now. */
+        lv_obj_update_layout(object);
         if (lv_obj_add_event_cb(object, value_changed, LV_EVENT_VALUE_CHANGED, (void *)(uintptr_t)index) == NULL) {
             return false;
         }

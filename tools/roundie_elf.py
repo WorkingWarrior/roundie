@@ -94,7 +94,9 @@ def parse_reply(line, request_id):
             ui_events = status.get("ui_events", 0)
             if type(ui_events) is not int or not 0 <= ui_events <= 0xffffffff:
                 raise ValueError("ui event accounting")
-            if status["queue"] > 8 or status["subscriptions"] > 1 or status["events"] != status["ticks"] + status["users"] + ui_events:
+            # events also counts types without their own counter, such as
+            # REP3_EVENT_CLOCK, so it bounds the per-type counters from above.
+            if status["queue"] > 8 or status["subscriptions"] > 1 or status["events"] < status["ticks"] + status["users"] + ui_events:
                 raise ValueError("event accounting")
     except (ValueError, TypeError, KeyError) as error:
         raise TransportError(f"malformed ELF response: {error}") from error

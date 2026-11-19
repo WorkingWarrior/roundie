@@ -181,3 +181,9 @@ slider, edge button, dialog, shadow state) without LVGL access. This was
 verified on the device by injection and by user touch.
 
 Evidence is in `roundie-backups/round-ui-0.3.22-2026-11-03/`, outside Git.
+
+**ArcSlider layout at creation (0.3.53, M8):** the slider is laid out when it
+is created, because an input read before the next layout refresh hit-tested a
+zero-size arc. That hit-test made `lv_atan2(0, 0)` divide by zero, which
+panicked the device on 0.3.51. Details are in
+[M8 validation](hardware-validation-m8.md#arc-slider-hit-tested-before-layout-fixed-in-0353).
