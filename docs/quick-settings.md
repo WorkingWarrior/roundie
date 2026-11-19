@@ -1,7 +1,15 @@
 # Quick settings
 
-Status: implemented in firmware 0.3.31 and host-tested. The device check is
-PENDING (see the end of this document).
+**Status, 2026-11-19:** implemented in firmware 0.3.31 on the 1.85B and
+host-tested; in the shared Core since M1 ([roundie-core.md](roundie-core.md)).
+
+- **1.75C:** the panel and its battery line were checked on one board
+  after pull request #1.
+- **1.85B:** nothing has been checked by a person at the board, before or
+  after the Core refactor.
+- Most finger checks are still PENDING on both boards.
+
+[Evidence](#evidence) lists what was shown where.
 
 ## Decision
 
@@ -67,12 +75,28 @@ loaded, so without a change they would always be refused.
   `none`. After the timer wake, `sleeps` was 1 and home ran again
   (`org.roundie.watch`, generation 2). The screen stayed off after the timer
   wake, as for any timer wake.
+  That run was on the 1.85B, before the Core refactor. The 1.85B has had no
+  device run since M1.
+- **Device, 1.75C, one board, 2026-11-17** (firmware with M1–M7 and pull
+  request #1, by darksv;
+  [details](hardware-audit-1.75c.md#battery-semantics-on-this-change-2026-11-17)):
+  - the panel opened and showed the battery line;
+  - "ładuje" went away with USB unplugged and came back on replug ("wygląda
+    ok");
+  - with `d86e652` the line also changed while the panel stayed open.
+
+  The percent is the AXP2101's uncalibrated estimate. The other actions of
+  the panel were not reported on this firmware. An earlier 1.75C run
+  (2026-11-15, firmware from before M1) showed brightness steps and light
+  sleep with touch wake. It did not record whether these were started from
+  this panel or from the power menu, which also has Uśpij.
 - **Device (PENDING until reported):**
-  - finger swipe down and its panel;
-  - brightness steps;
-  - screen off;
-  - Uśpij from the panel, then wake by touch: the watch face returns;
-  - Restart from the BOOT menu with home loaded.
+  - 1.85B: everything in this list, on firmware after the Core refactor;
+  - finger swipe down and its panel (1.85B);
+  - brightness steps and screen off from the panel (both boards);
+  - Uśpij from the panel, then wake by touch: the watch face returns (both
+    boards);
+  - Restart from the BOOT menu with home loaded (both boards).
 
 ## Polish system strings
 
