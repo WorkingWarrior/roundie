@@ -219,6 +219,22 @@ def rtc_analysis(edges):
     return result
 
 
+# The soak level injects no UI input; its delivery check belongs to the stress level.
+NOT_APPLICABLE = {"soak": ("delivery",)}
+
+
+def boot_ids(uptimes):
+    """Number boots from 0: a drop in uptime starts a new boot; a missing uptime stays in the current one."""
+    ids, boot, last = [], 0, None
+    for uptime in uptimes:
+        if uptime is not None:
+            if last is not None and uptime < last:
+                boot += 1
+            last = uptime
+        ids.append(boot)
+    return ids
+
+
 def evaluate(analysis, monitoring, phases):
     """Apply CRITERIA. A criterion without data is UNTESTED, never PASS."""
     results = {}
@@ -792,25 +808,14 @@ class EnduranceRunner(m8.Runner):
         else:
             analysis["alloc_failed_growth"] = None
         analysis["memory"], analysis["tasks"], analysis["stacks_min"] = {}, {}, {}
-        for state in ("list", "home"):
-            series = [s for s in with_health if s["state"] == state and self.same_boot(s)]
-            if not series:
-                continue
-            warmup = min(self.args.warmup, max(0, len(series) - 5))
-            times = [s["t_s"] for s in series]
-            memory = {}
-            for key in ("internal_free", "internal_largest", "psram_free"):
-                values = [s["health"][key] for s in series]
-                memory[key] = dict(leak_check(values, warmup, LEAK_TOLERANCE[key]),
-                                   slope_per_hour=slope_per_hour(times, values))
-            lvgl = [s["ui"]["lvgl_bytes"] for s in series]
-            memory["lvgl_bytes"] = dict(leak_check([-v for v in lvgl], warmup, LEAK_TOLERANCE["lvgl_bytes"]),
-                                        note="growth of LVGL bytes, checked as a decline of its negative")
-            memory["internal_min_last"] = series[-1]["health"]["internal_min"]
-            memory["psram_min_last"] = series[-1]["health"]["psram_min"]
-            analysis["memory"][state] = memory
-            analysis["tasks"][state] = dict(task_stability([s["health"]["tasks"] for s in series], warmup),
-                                            values=sorted({s["health"]["tasks"] for s in series}))
+        boots = boot_ids([s["uptime_us"] for s in self.samples])
+        boot_of = {id(s): boot for s, boot in zip(self.samples, boots)}
+        for boot in sorted(set(boots)):
+            for state in ("list", "home"):
+                series = [s for s in with_health if s["state"] == state and boot_of[id(s)] == boot]
+                if series:
+                    key = state if len(set(boots)) == 1 else f"{state} (boot {boot})"
+                    self.analyze_state(analysis, key, series)
         for s in with_health:
             for task, mark in s["health"]["stacks"].items():
                 if mark >= 0:
@@ -819,15 +824,23 @@ class EnduranceRunner(m8.Runner):
         analysis["host_time_sync"] = self.report["host_time_sync"]
         return analysis
 
-    def same_boot(self, sample):
-        """Series after a planned restart start again: compare within the last boot."""
-        uptimes = [s["uptime_us"] for s in self.samples if s["uptime_us"] is not None]
-        boot_start = 0
-        for index in range(1, len(uptimes)):
-            if uptimes[index] < uptimes[index - 1]:
-                boot_start = index
-        last_boot = self.samples[boot_start:] if uptimes else self.samples
-        return any(sample is s for s in last_boot)
+    def analyze_state(self, analysis, key, series):
+        """Leak and task verdicts for one device state within one boot."""
+        warmup = min(self.args.warmup, max(0, len(series) - 5))
+        times = [s["t_s"] for s in series]
+        memory = {}
+        for metric in ("internal_free", "internal_largest", "psram_free"):
+            values = [s["health"][metric] for s in series]
+            memory[metric] = dict(leak_check(values, warmup, LEAK_TOLERANCE[metric]),
+                               slope_per_hour=slope_per_hour(times, values))
+        lvgl = [s["ui"]["lvgl_bytes"] for s in series]
+        memory["lvgl_bytes"] = dict(leak_check([-v for v in lvgl], warmup, LEAK_TOLERANCE["lvgl_bytes"]),
+                                    note="growth of LVGL bytes, checked as a decline of its negative")
+        memory["internal_min_last"] = series[-1]["health"]["internal_min"]
+        memory["psram_min_last"] = series[-1]["health"]["psram_min"]
+        analysis["memory"][key] = memory
+        analysis["tasks"][key] = dict(task_stability([s["health"]["tasks"] for s in series], warmup),
+                                      values=sorted({s["health"]["tasks"] for s in series}))
 
 
 def markdown(report):
@@ -877,7 +890,7 @@ def outcome(report):
     results = report.get("criteria_results", {}).values()
     if FAIL in statuses or FAIL in results or report.get("restore_failed"):
         return FAIL
-    if BLOCKED in statuses or report.get("stopped"):
+    if BLOCKED in statuses or report.get("stopped") or "UNTESTED" in results:
         return "INCOMPLETE"
     return PASS
 
@@ -982,6 +995,9 @@ def finish(runner):
     report["host_time_sync"]["end"] = m8.clock.host_sync_state()
     report["analysis"] = runner.analyze()
     report["criteria_results"] = evaluate(report["analysis"], report["monitoring"], report["steps"])
+    for name in NOT_APPLICABLE.get(report["level"], ()):
+        if report["criteria_results"][name] == "UNTESTED":
+            report["criteria_results"][name] = "NOT APPLICABLE"
     report["outcome"] = outcome(report)
     return report["outcome"]
 

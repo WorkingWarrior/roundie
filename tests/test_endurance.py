@@ -1,8 +1,10 @@
 import contextlib
+import functools
 import io
 import json
 from pathlib import Path
 import sys
+import types
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,6 +126,34 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(len(result["host_realtime_steps"]), 1)
         self.assertIn("skipped", result["wall"]["status"])
 
+    def test_boot_ids_split_at_uptime_drop(self):
+        self.assertEqual(endurance.boot_ids([5, None, 9, 2, 3, None, 1]), [0, 0, 0, 1, 1, 1, 2])
+        self.assertEqual(endurance.boot_ids([]), [])
+
+    def test_analysis_keeps_each_boot_after_a_planned_restart(self):
+        """A restart at the end of a run must not discard the lifecycle series before it."""
+        health = dict(internal_free=150000, internal_largest=80000, psram_free=7300000, internal_min=120000,
+                      psram_min=7290000, alloc_failed=0, tasks=8, stacks={"main": 2500})
+        samples = [dict(t_s=k, state="list", uptime_us=1000 + k, health=dict(health), ui={"lvgl_bytes": 0,
+                        "input_latency_max_us": 0}) for k in range(12)]
+        samples.append(dict(samples[0], t_s=20, state="home", uptime_us=5))
+        runner = types.SimpleNamespace(
+            counts={}, latency={"start_ms": {}, "close_ms": {}, "event_ms": [], "ui_input_ms": []},
+            delivery={"bursts": []}, samples=samples, edges=[], args=types.SimpleNamespace(warmup=3),
+            report={"steps": [], "host_time_sync": {}})
+        runner.analyze_state = functools.partial(endurance.EnduranceRunner.analyze_state, runner)
+        analysis = endurance.EnduranceRunner.analyze(runner)
+        self.assertEqual(set(analysis["tasks"]), {"list (boot 0)", "home (boot 1)"})
+        self.assertEqual(analysis["tasks"]["list (boot 0)"]["verdict"], "stable")
+        self.assertEqual(analysis["memory"]["list (boot 0)"]["internal_free"]["verdict"], "stable")
+
+    def test_untested_criterion_is_not_a_pass(self):
+        report = {"preflight": {"status": PASS}, "steps": [{"status": PASS}],
+                  "criteria_results": {"resets": PASS, "memory": "UNTESTED"}}
+        self.assertEqual(endurance.outcome(report), "INCOMPLETE")
+        report["criteria_results"]["memory"] = "NOT APPLICABLE"
+        self.assertEqual(endurance.outcome(report), PASS)
+
     def test_evaluate_marks_missing_data_untested(self):
         monitoring = {"unexpected_resets": [], "faults": [], "lost": []}
         results = endurance.evaluate({"alloc_failed_growth": None, "memory": {}, "tasks": {}}, monitoring, [])
@@ -175,7 +205,7 @@ class SoakTests(RunnerTestCase):
         self.assertGreaterEqual(len(self.telemetry()), 14)
         self.assertEqual(report["analysis"]["tasks"]["home"]["verdict"], "stable")
         self.assertEqual(report["analysis"]["memory"]["home"]["internal_free"]["verdict"], "stable")
-        self.assertEqual(report["criteria_results"]["delivery"], "UNTESTED")
+        self.assertEqual(report["criteria_results"]["delivery"], "NOT APPLICABLE")
         self.assertTrue((self.out / "report.md").read_text().startswith("# M8.1 endurance"))
 
     def test_heap_regression_fails_memory(self):
