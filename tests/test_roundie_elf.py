@@ -51,6 +51,22 @@ class ElfToolTests(unittest.TestCase):
         with self.assertRaises(elf.DeviceError):
             elf.parse_reply(line, "12345678")
 
+    def test_clock_events_count_without_a_counter_of_their_own(self):
+        # Reply of the watch app on firmware 0.3.51 (1.85B, 2026-11-19): 401
+        # REP3_EVENT_CLOCK deliveries are in events but in no per-type counter.
+        data = status()
+        data.update(abi=3, state=3, busy=1, control=[0, 0, 0], resources=[48917, 48907, 0, 10],
+                    callbacks=24251, callback_max_us=188, init_us=190, suspend_us=0, resume_us=0,
+                    shutdown_us=0, events=24248, ticks=23847, users=0, ui_events=0, value=0,
+                    latency_max_us=10029, queue=0, dropped=0, coalesced=0, rejected=0, timer=3,
+                    subscriptions=1)
+        line = b"!RE1 12345678 0 " + json.dumps(data).encode() + b"\n"
+        self.assertEqual(elf.parse_reply(line, "12345678")["events"], 24248)
+        data["events"] = data["ticks"] - 1
+        line = b"!RE1 12345678 0 " + json.dumps(data).encode() + b"\n"
+        with self.assertRaises(elf.TransportError):
+            elf.parse_reply(line, "12345678")
+
     def test_actual_result_and_instance(self):
         with patch.object(elf, "request", side_effect=[status(), status()]) as request:
             self.assertEqual(elf.run(object(), "a" * 64)["app_result"], 42)
