@@ -593,7 +593,13 @@ bool roundie_ui_value_input(uint32_t generation, uint32_t widget, int32_t value,
     bool valid = target_valid(generation, index) && event_sink != NULL && value_valid(index, value) &&
         (origin == REP3_ORIGIN_TOUCH || origin == REP3_ORIGIN_INJECTED);
     bool dialog = valid && slots[index].type == REP_UI_DIALOG;
-    if (valid && !dialog) {
+    int32_t previous_choice = 0;
+    if (valid && dialog) {
+        /* The executor checks a choice against committed when it delivers the
+         * event, possibly before sink() returns here, so commit it first. */
+        previous_choice = slots[index].committed;
+        slots[index].committed = value;
+    } else if (valid) {
         /* LVGL already shows this value; a pending app request will replace it. */
         slots[index].committed = value;
         if (slots[index].pending == 0) {
@@ -618,12 +624,16 @@ bool roundie_ui_value_input(uint32_t generation, uint32_t widget, int32_t value,
         status.injected += origin == REP3_ORIGIN_INJECTED;
         if (dialog && index >= 0) {
             /* The renderer hides the dialog after an accepted choice. */
-            slots[index].committed = value;
             slots[index].requested = value;
             slots[index].visible = false;
         }
     } else {
         status.input_dropped++;
+        if (dialog && index >= 0) {
+            /* No event was posted. Only the GUI thread, this one, changes the
+             * committed value of an existing widget. */
+            slots[index].committed = previous_choice;
+        }
     }
     roundie_unlock(&lock);
     return accepted;

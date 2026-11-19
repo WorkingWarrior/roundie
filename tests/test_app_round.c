@@ -110,6 +110,7 @@ static struct {
     uint32_t widget;
     uint32_t payload;
     bool coalesce;
+    bool valid_at_post;
 } sunk;
 static bool sink_accepts = true;
 
@@ -126,6 +127,9 @@ static bool sink(uint32_t generation, uint32_t type, uint32_t widget, uint32_t p
     sunk.widget = widget;
     sunk.payload = payload;
     sunk.coalesce = coalesce;
+    /* The executor may deliver before the bridge's sink call returns; the
+     * event must already pass the delivery check (manager.c) here. */
+    sunk.valid_at_post = roundie_ui_event_valid(generation, type, widget, payload);
     return true;
 }
 
@@ -340,7 +344,7 @@ static void bridge_tests(void)
     assert(!lv_obj_has_flag(dialog_object, LV_OBJ_FLAG_HIDDEN));
     assert(lv_obj_get_index(dialog_object) == (int32_t)lv_obj_get_child_count(root) - 1);
     click(secondary);
-    assert(sunk.widget == dialog && sunk.payload == 2 && !sunk.coalesce);
+    assert(sunk.widget == dialog && sunk.payload == 2 && !sunk.coalesce && sunk.valid_at_post);
     assert(lv_obj_has_flag(dialog_object, LV_OBJ_FLAG_HIDDEN));
     shadow(generation, dialog, 2, 2, 0);
     assert(roundie_ui_event_valid(generation, REP3_EVENT_VALUE, dialog, 2));
@@ -352,10 +356,11 @@ static void bridge_tests(void)
     sink_accepts = false;
     click(primary);
     assert(!lv_obj_has_flag(dialog_object, LV_OBJ_FLAG_HIDDEN)); /* dropped: stays open */
+    shadow(generation, dialog, 2, 2, 0); /* and the earlier choice stays committed */
     sink_accepts = true;
     assert(roundie_ui_inject_value(generation, dialog, 1));
     pump();
-    assert(sunk.payload == 1 && lv_obj_has_flag(dialog_object, LV_OBJ_FLAG_HIDDEN));
+    assert(sunk.payload == 1 && sunk.valid_at_post && lv_obj_has_flag(dialog_object, LV_OBJ_FLAG_HIDDEN));
 
     /* Edge button reports BUTTON; slider injection goes through LVGL. */
     click(edge_object);
