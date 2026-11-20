@@ -179,7 +179,9 @@ esp_err_t roundie_launcher_park_home(void)
 {
     roundie_lock(&lock);
     bool valid = home_parked;
-    if (!valid && status.home_active && !status.exit_pending &&
+    /* M8-B: any foreground application, not only home, ends through its
+     * normal lifecycle before light sleep; home starts after the wake. */
+    if (!valid && !status.exit_pending &&
         (status.state == ROUNDIE_NAV_ACTIVE || status.state == ROUNDIE_NAV_LOADING) &&
         status.generation != 0) {
         status.exit_pending = true;
@@ -400,7 +402,7 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
             } else {
                 /* A normal end of any other application returns home; the
                  * home application's own end shows the list. */
-                home_due = !status.home_active && status.unload_result == ESP_OK;
+                home_due = !status.home_active && status.unload_result == ESP_OK && !home_parked;
                 set_state(snapshot_valid ? ROUNDIE_NAV_LIST : ROUNDIE_NAV_ERROR);
             }
             status.home_active = false;

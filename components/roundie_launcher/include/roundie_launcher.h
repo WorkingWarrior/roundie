@@ -81,9 +81,11 @@ esp_err_t roundie_launcher_refresh(void);
 void roundie_launcher_set_home(const char *id, bool autostart);
 /* From the list: launch the home package. Same admission as a selection. */
 esp_err_t roundie_launcher_home(void);
-/* Sole worker, for light sleep: unload a running home application (ESP_OK
- * also while that unload is in progress), and launch it again on resume. Any
- * other application keeps the existing refusal. */
+/* Sole worker, for light sleep and power-menu restarts: end the foreground
+ * application through its normal lifecycle (ESP_OK also while that unload is
+ * in progress); resume launches home, also when another application was
+ * parked (M8-B: a running application does not block sleep by itself; one
+ * whose unload does not finish in time still refuses it). */
 esp_err_t roundie_launcher_park_home(void);
 void roundie_launcher_resume_home(void);
 void roundie_launcher_status(roundie_launcher_status_t *out);
