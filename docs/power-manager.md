@@ -91,6 +91,14 @@ a new ABI entry. This milestone therefore uses conditions instead of handles:
 The ABI is unchanged. Application inhibitors and the final policy remain open
 (REP §25 item 25).
 
+**M8-B (2026-11-20)** replaces parts of this section; see
+[power-management-m8-b.md](power-management-m8-b.md):
+
+- an explicit state model;
+- owned system inhibitors with timeouts;
+- a guard recheck after every light sleep;
+- any foreground app is ended for sleep, not only Home.
+
 **Diagnostics.** `CONFIG_ROUNDIE_DEV_POWER` adds RW1 on the shared USB framer:
 `STATUS`, `SCREEN OFF`, `SCREEN ON` and `SLEEP <1..3600>`. A diagnostic sleep
 always carries a timer. The reply is sent before parking; USB then disconnects

@@ -56,8 +56,12 @@ loaded, so without a change they would always be refused.
   idle, then admits the request as before.
 - After the wake, or after a refusal, `roundie_launcher_resume_home` launches
   home again. A restart needs no resume.
-- Any other loaded application still refuses, as before.
-- Light sleep with native code loaded remains excluded; it is unmeasured.
+- **M8-B (2026-11-20):** any other foreground application is now ended the same
+  way, and home is launched on resume
+  ([M8-B](power-management-m8-b.md#3-lifecycle-contract-internal-core-api-no-rep-abi-change)).
+  Previously it refused.
+- No native code runs during light sleep. After the wake the executor rechecks
+  the M9.1 stack guard before any native code runs again.
 
 ## Evidence
 
@@ -67,7 +71,8 @@ loaded, so without a change they would always be refused.
   - closing by a swipe up, and the Screen off and Sleep actions;
   - the panel closes with home;
   - park and resume: home unloads, stays unloaded, and relaunches once on
-    resume; another application is not parked.
+    resume; another application is parked too, and home starts only after
+    resume (M8-B).
 - **Not host-tested.** The power worker glue in `main/power_manager.c` and the
   callbacks in `main/main.c`.
 - **Device, 0.3.31 (OTA VALID, RW1 command, not touch):** with home ACTIVE
