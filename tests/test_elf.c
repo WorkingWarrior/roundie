@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <elf.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -420,10 +421,24 @@ int xQueueSend(QueueHandle_t queue, const void *value, unsigned wait)
     (void)queue; (void)value; (void)wait;
     return !fail_send;
 }
+/* executor_once() runs the real execute() loop: the first receive delivers
+ * one request, the second leaves the endless loop by longjmp. */
+static bool executor_running;
+static jmp_buf executor_exit;
+static request_t executor_request;
+static unsigned executor_receives;
 int xQueueReceive(QueueHandle_t queue, void *out, unsigned wait)
 {
-    (void)queue; (void)out; (void)wait;
-    abort(); /* Not exercising a real FreeRTOS task on host. */
+    (void)queue; (void)wait;
+    if (!executor_running) {
+        abort(); /* Only executor_once() drives the executor loop on host. */
+    }
+    executor_receives++;
+    if (executor_receives == 1U) {
+        memcpy(out, &executor_request, sizeof(executor_request));
+        return 1;
+    }
+    longjmp(executor_exit, 1);
 }
 /* idf/executor_stack.c is target-only (MMU, assist-debug); M9.1 tests its
  * host-visible contract: creation can fail, arming can fail closed. */
@@ -433,12 +448,43 @@ bool roundie_elf_stack_create(TaskFunction_t entry, TaskHandle_t *task)
     *task = fail_task ? NULL : (void *)1;
     return !fail_task;
 }
-bool roundie_elf_stack_arm(void) { return true; }
+static bool fail_arm;
+bool roundie_elf_stack_arm(void) { return !fail_arm; }
 int esp_task_wdt_add(void *task) { (void)task; return 0; }
 int esp_task_wdt_delete(void *task) { (void)task; return 0; }
 
 static unsigned char fixture[ROUNDIE_ELF_MAX_FILE];
 static size_t fixture_size;
+
+/* One request through execute(), the guard check included: with the guard
+ * unarmed the request is cancelled and never loaded. */
+static void executor_once(bool arm_fails)
+{
+    uint8_t *copy = heap_caps_malloc(fixture_size, 0);
+    memcpy(copy, fixture, fixture_size);
+    assert(roundie_elf_prepare());
+    atomic_store(&input_owned, true);
+    unsigned loads = load_count;
+    fail_arm = arm_fails;
+    executor_request = (request_t){copy, fixture_size};
+    executor_receives = 0;
+    executor_running = true;
+    if (setjmp(executor_exit) == 0) {
+        execute(NULL);
+    }
+    executor_running = false;
+    fail_arm = false;
+    assert(executor_receives == 2U);
+    assert(atomic_load(&guard_state) == (arm_fails ? GUARD_FAILED : GUARD_ARMED));
+    if (arm_fails) {
+        assert(load_count == loads);
+    } else {
+        assert(load_count == loads + 1U);
+    }
+    assert(!roundie_elf_busy() && !roundie_elf_input_busy());
+    assert(live_bytes == 0 && allocations_live == 0);
+    atomic_store(&guard_state, GUARD_PENDING);
+}
 
 static void validation_tests(void)
 {
@@ -1081,6 +1127,8 @@ int main(int argc, char **argv)
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_NOT_SUPPORTED);
     assert(!roundie_elf_busy() && !roundie_elf_input_busy());
     atomic_store(&guard_state, GUARD_PENDING);
+    executor_once(false);
+    executor_once(true);
     roundie_elf_set_allowed(false);
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_STATE);
     assert(!roundie_elf_busy() && allocations_live == 0);
