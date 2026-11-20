@@ -115,6 +115,11 @@ void roundie_elf_loader_unload(void)
     esp_elf_deinit(&image);
 }
 
+void roundie_elf_loader_phase(uint32_t phase)
+{
+    roundie_elf_crash_phase(phase);
+}
+
 void *roundie_elf_loader_alloc(uint32_t bytes)
 {
     return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

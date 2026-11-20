@@ -307,7 +307,7 @@ int main(void)
     assert(strstr(response, "\"internal_min\":90000,\"internal_largest\":80000") != NULL);
     assert(strstr(response, "\"alloc_failed\":1,\"alloc_failed_size\":64,\"alloc_failed_caps\":4,\"tasks\":7") != NULL);
     assert(strstr(response, "\"stacks\":{\"main\":1234,\"system_worker\":-1,") != NULL);
-    assert(strstr(response, "\"IDLE1\":-1}}\n") != NULL);
+    assert(strstr(response, "\"IDLE1\":-1},\"executor_guard\":{\"armed\":0,\"limit\":0,\"usable_min\":-1,\"spurious\":0}}\n") != NULL);
     assert(!command("HEALTH extra", false));
     assert(command("CRASH", false) && strcmp(response, "\n!RS1 1234abcd 0 {\"crash\":{\"valid\":0}}\n") == 0);
     roundie_elf_crash_boot();
@@ -322,7 +322,8 @@ int main(void)
     assert(strstr(response, "{\"crash\":{\"valid\":1,\"loaded\":1,\"fault\":1,\"instance\":7,\"digest\":\"abababab") != NULL);
     assert(strstr(response, "\"text_exec\":1107296256,\"sections\":[[0,1006632960,256],[0,0,0],[0,0,0],[0,0,0],[0,0,0]],"
                   "\"pc\":1107296272,\"cause\":28,\"vaddr\":4,\"sp\":1070137344,\"exception\":4,\"core\":0,"
-                  "\"frames\":[1107296272,1077411840]}}\n") != NULL);
+                  "\"frames\":[1107296272,1077411840],\"frame\":0,\"phase\":\"idle\",\"trigger\":0,"
+                  "\"monitor_pc\":0,\"stack\":[0,0,0,0,0],\"origin\":\"app_code\"}}\n") != NULL);
     assert(!command("CRASH extra", false));
     assert(!command("REQUEST extra", false) && !status().safe);
     assert(!command("REQUEST", true) && !status().safe);

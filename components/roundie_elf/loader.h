@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include "roundie_elf.h"
 #include "roundie_elf_validate.h"
+#include "roundie_elf_crash.h"
 
 typedef uintptr_t (*roundie_elf_resolver_t)(const char *name);
 
@@ -50,6 +51,9 @@ bool roundie_elf_loader_contains(const void *pointer, uint32_t bytes, roundie_el
 /* Release the image initialized by roundie_elf_loader_init(). */
 void roundie_elf_loader_unload(void);
 
+/* What the executor is doing (roundie_elf_crash_phase_t), for the crash
+ * record's attribution (M9.1). ESP-IDF stores it; other backends ignore it. */
+void roundie_elf_loader_phase(uint32_t phase);
 /* The application's heap (rep_api_t alloc/release). */
 void *roundie_elf_loader_alloc(uint32_t bytes);
 void roundie_elf_loader_free(void *pointer);

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <elf.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -237,6 +238,7 @@ static const rep_app_descriptor_t *entry(const rep_api_t *table)
 static int32_t runtime_init(const rep_context_v2_t *context)
 {
     runtime_callbacks[0]++;
+    assert(roundie_elf_crash_current_phase() == ROUNDIE_ELF_PHASE_CALLBACK);
     assert(context->abi_version == 2 && context->struct_size == sizeof(*context));
     assert(runtime_api->alloc(context->instance, 0) == NULL);
     assert(runtime_api->alloc(context->instance, UINT32_MAX) == NULL);
@@ -267,6 +269,7 @@ static int32_t runtime_init(const rep_context_v2_t *context)
 static int32_t runtime_start(const rep_context_v2_t *context)
 {
     runtime_callbacks[1]++;
+    assert(roundie_elf_crash_current_phase() == ROUNDIE_ELF_PHASE_CALLBACK);
     assert(runtime_api->timer_start(context->instance, 250) != 0);
     return runtime_mode == 2 ? -12 : 0;
 }
@@ -275,6 +278,7 @@ static int32_t runtime_event(const rep_context_v2_t *context, const rep_event_v2
 {
     runtime_callbacks[2]++;
     assert(callback_active);
+    assert(roundie_elf_crash_current_phase() == ROUNDIE_ELF_PHASE_CALLBACK);
     /* ABI 2 knows only these; the event example returns -4 for any other. */
     assert(event->type == REP2_EVENT_TIMER || event->type == REP2_EVENT_USER);
     unsigned before = runtime_callbacks[2];
@@ -310,6 +314,7 @@ static int32_t runtime_resume(const rep_context_v2_t *context)
 static int32_t runtime_stop(const rep_context_v2_t *context)
 {
     runtime_callbacks[5]++;
+    assert(roundie_elf_crash_current_phase() == ROUNDIE_ELF_PHASE_CALLBACK);
     assert(runtime_api->alloc(context->instance, 8) == NULL);
     assert(roundie_elf_post(context->instance, 8) == ESP_ERR_INVALID_STATE);
     return runtime_mode == 8 ? -18 : 0;
@@ -317,6 +322,7 @@ static int32_t runtime_stop(const rep_context_v2_t *context)
 static int32_t runtime_destroy(const rep_context_v2_t *context)
 {
     runtime_callbacks[6]++;
+    assert(roundie_elf_crash_current_phase() == ROUNDIE_ELF_PHASE_CALLBACK);
     if (runtime_memory != NULL && runtime_mode != 11) {
         assert(runtime_api->release(context->instance, runtime_memory) == 0);
     }
@@ -340,6 +346,7 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
 {
     (void)bytes;
     load_count++;
+    assert(roundie_elf_crash_current_phase() == ROUNDIE_ELF_PHASE_LOAD);
     assert(resolve(status.abi_version == 1 ? "rep_abi_v1" :
         status.abi_version == 2 ? "rep_abi_v2" : "rep_abi_v3") ==
         (status.abi_version == 1 ? (uintptr_t)rep_abi_v1 :
@@ -397,6 +404,7 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
 void esp_elf_deinit(esp_elf_t *elf)
 {
     deinit_count++;
+    assert(roundie_elf_crash_current_phase() == ROUNDIE_ELF_PHASE_UNLOAD);
     heap_caps_free(elf->pdata);
     heap_caps_free(elf->ptext);
     memset(elf, 0, sizeof(*elf));
@@ -413,24 +421,70 @@ int xQueueSend(QueueHandle_t queue, const void *value, unsigned wait)
     (void)queue; (void)value; (void)wait;
     return !fail_send;
 }
+/* executor_once() runs the real execute() loop: the first receive delivers
+ * one request, the second leaves the endless loop by longjmp. */
+static bool executor_running;
+static jmp_buf executor_exit;
+static request_t executor_request;
+static unsigned executor_receives;
 int xQueueReceive(QueueHandle_t queue, void *out, unsigned wait)
 {
-    (void)queue; (void)out; (void)wait;
-    abort(); /* Not exercising a real FreeRTOS task on host. */
+    (void)queue; (void)wait;
+    if (!executor_running) {
+        abort(); /* Only executor_once() drives the executor loop on host. */
+    }
+    executor_receives++;
+    if (executor_receives == 1U) {
+        memcpy(out, &executor_request, sizeof(executor_request));
+        return 1;
+    }
+    longjmp(executor_exit, 1);
 }
-int xTaskCreate(void (*function)(void *), const char *name, unsigned stack, void *arg,
-                 unsigned priority, TaskHandle_t *out)
+/* idf/executor_stack.c is target-only (MMU, assist-debug); M9.1 tests its
+ * host-visible contract: creation can fail, arming can fail closed. */
+bool roundie_elf_stack_create(TaskFunction_t entry, TaskHandle_t *task)
 {
-    (void)function; (void)arg;
-    assert(strcmp(name, "rep_executor") == 0 && stack == 12288 && priority == 1);
-    *out = fail_task ? NULL : (void *)1;
+    assert(entry == execute);
+    *task = fail_task ? NULL : (void *)1;
     return !fail_task;
 }
+static bool fail_arm;
+bool roundie_elf_stack_arm(void) { return !fail_arm; }
 int esp_task_wdt_add(void *task) { (void)task; return 0; }
 int esp_task_wdt_delete(void *task) { (void)task; return 0; }
 
 static unsigned char fixture[ROUNDIE_ELF_MAX_FILE];
 static size_t fixture_size;
+
+/* One request through execute(), the guard check included: with the guard
+ * unarmed the request is cancelled and never loaded. */
+static void executor_once(bool arm_fails)
+{
+    uint8_t *copy = heap_caps_malloc(fixture_size, 0);
+    memcpy(copy, fixture, fixture_size);
+    assert(roundie_elf_prepare());
+    atomic_store(&input_owned, true);
+    unsigned loads = load_count;
+    fail_arm = arm_fails;
+    executor_request = (request_t){copy, fixture_size};
+    executor_receives = 0;
+    executor_running = true;
+    if (setjmp(executor_exit) == 0) {
+        execute(NULL);
+    }
+    executor_running = false;
+    fail_arm = false;
+    assert(executor_receives == 2U);
+    assert(atomic_load(&guard_state) == (arm_fails ? GUARD_FAILED : GUARD_ARMED));
+    if (arm_fails) {
+        assert(load_count == loads);
+    } else {
+        assert(load_count == loads + 1U);
+    }
+    assert(!roundie_elf_busy() && !roundie_elf_input_busy());
+    assert(live_bytes == 0 && allocations_live == 0);
+    atomic_store(&guard_state, GUARD_PENDING);
+}
 
 static void validation_tests(void)
 {
@@ -695,6 +749,148 @@ static void budget_tests(void)
     puts("Executor budget/mailbox PASS: 8 deterministic cases with exact boundaries; soft budget");
 }
 
+/* M9.1 origin classification: overflow first, then PC in the loaded text,
+ * then the executor stack and the phase. Attribution to the application
+ * needs an image loaded and application code running (load or callback). */
+static roundie_elf_crash_report_t classify_case(bool loaded, uint32_t phase, uint32_t trigger, uint32_t pc,
+                                                uint32_t sp, uint32_t excvaddr)
+{
+    roundie_elf_crash_report_t report = {.loaded = loaded, .fault = true};
+    report.context = (roundie_elf_crash_context_t){.text_exec = 0x42010000,
+        .sections = {{0x0, 0x3c010000, 0x200}, {0x400, 0x3fc90000, 0x40}}};
+    report.details.pc = pc;
+    report.details.sp = sp;
+    report.details.excvaddr = excvaddr;
+    report.details.phase = phase;
+    report.details.trigger = trigger;
+    report.details.stack = (roundie_elf_crash_stack_t){
+        .guard_low = 0x3c200000, .stack_low = 0x3c210000, .limit = 0x3c21a000, .stack_high = 0x3c220000, .armed = 1};
+    return report;
+}
+
+static void crash_classify_tests(void)
+{
+    const uint32_t app_pc = 0x42010010;
+    const uint32_t core_pc = 0x40380000;
+    const uint32_t executor_sp = 0x3c21f000;
+    const uint32_t red_zone_sp = 0x3c215000;
+    const uint32_t guard_sp = 0x3c20fff0;
+    const uint32_t other_sp = 0x3fcb0000;
+    struct {
+        bool loaded;
+        uint32_t phase;
+        uint32_t trigger;
+        uint32_t pc;
+        uint32_t sp;
+        uint32_t excvaddr;
+        roundie_elf_crash_origin_t origin;
+    } cases[] = {
+        /* 1: the monitor fired while an application callback ran */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_MONITOR, core_pc, other_sp, 0,
+         ROUNDIE_ELF_ORIGIN_APP_STACK_OVERFLOW},
+        /* 2: SP in the red zone or the guard page without the monitor (masked) */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, app_pc, red_zone_sp, 0,
+         ROUNDIE_ELF_ORIGIN_APP_STACK_OVERFLOW},
+        {true, ROUNDIE_ELF_PHASE_LOAD, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, guard_sp, 0,
+         ROUNDIE_ELF_ORIGIN_APP_STACK_OVERFLOW},
+        /* 3: a load or store into the guard page */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, app_pc, executor_sp, 0x3c208000,
+         ROUNDIE_ELF_ORIGIN_APP_STACK_OVERFLOW},
+        /* 4: executor overflow with no application code running is the core's */
+        {true, ROUNDIE_ELF_PHASE_IDLE, ROUNDIE_ELF_TRIGGER_MONITOR, core_pc, other_sp, 0,
+         ROUNDIE_ELF_ORIGIN_EXECUTOR_STACK_OVERFLOW},
+        {false, ROUNDIE_ELF_PHASE_LOAD, ROUNDIE_ELF_TRIGGER_MONITOR, core_pc, other_sp, 0,
+         ROUNDIE_ELF_ORIGIN_EXECUTOR_STACK_OVERFLOW},
+        /* 5: PC in the loaded text, either bus */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, app_pc, executor_sp, 0,
+         ROUNDIE_ELF_ORIGIN_APP_CODE},
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, 0x3c010010, executor_sp, 0,
+         ROUNDIE_ELF_ORIGIN_APP_CODE},
+        /* 6: firmware code on the executor during a callback (an API call) */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, executor_sp, 0,
+         ROUNDIE_ELF_ORIGIN_APP_CALLBACK},
+        /* 7: another task or an interrupt while a callback ran: not attributed */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, other_sp, 0,
+         ROUNDIE_ELF_ORIGIN_CORE_WHILE_APP_ACTIVE},
+        /* 8: the monitor fired under another task */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_FOREIGN, core_pc, other_sp, 0,
+         ROUNDIE_ELF_ORIGIN_CORE_WHILE_APP_ACTIVE},
+        /* 9: executor between callbacks or unloading */
+        {true, ROUNDIE_ELF_PHASE_IDLE, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, executor_sp, 0,
+         ROUNDIE_ELF_ORIGIN_EXECUTOR_CORE},
+        {true, ROUNDIE_ELF_PHASE_UNLOAD, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, executor_sp, 0,
+         ROUNDIE_ELF_ORIGIN_EXECUTOR_CORE},
+        /* 10: no image: an application PC is just an address */
+        {false, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, app_pc, executor_sp, 0,
+         ROUNDIE_ELF_ORIGIN_EXECUTOR_CORE},
+        {false, ROUNDIE_ELF_PHASE_IDLE, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, other_sp, 0,
+         ROUNDIE_ELF_ORIGIN_CORE},
+        /* 11: stack top is exclusive, the limit is inclusive of usable stack */
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, 0x3c220000, 0,
+         ROUNDIE_ELF_ORIGIN_CORE_WHILE_APP_ACTIVE},
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, 0x3c21a000, 0,
+         ROUNDIE_ELF_ORIGIN_APP_CALLBACK},
+        {true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION, core_pc, 0x3c219ff0, 0,
+         ROUNDIE_ELF_ORIGIN_APP_STACK_OVERFLOW},
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        roundie_elf_crash_report_t report = classify_case(cases[i].loaded, cases[i].phase, cases[i].trigger,
+                                                          cases[i].pc, cases[i].sp, cases[i].excvaddr);
+        roundie_elf_crash_origin_t origin = roundie_elf_crash_classify(&report);
+        if (origin != cases[i].origin) {
+            fprintf(stderr, "classify case %u: %s, expected %s\n", i, roundie_elf_crash_origin_name(origin),
+                    roundie_elf_crash_origin_name(cases[i].origin));
+        }
+        assert(origin == cases[i].origin);
+    }
+    /* Without a guarded stack (zero layout) nothing is an overflow. */
+    roundie_elf_crash_report_t plain = classify_case(true, ROUNDIE_ELF_PHASE_CALLBACK, ROUNDIE_ELF_TRIGGER_EXCEPTION,
+                                                     core_pc, 0x3c215000, 0x3c208000);
+    plain.details.stack = (roundie_elf_crash_stack_t){0};
+    assert(roundie_elf_crash_classify(&plain) == ROUNDIE_ELF_ORIGIN_CORE_WHILE_APP_ACTIVE);
+    plain.fault = false;
+    assert(roundie_elf_crash_classify(&plain) == ROUNDIE_ELF_ORIGIN_NONE);
+    assert(strcmp(roundie_elf_crash_origin_name(ROUNDIE_ELF_ORIGIN_APP_STACK_OVERFLOW), "app_stack_overflow") == 0);
+    assert(strcmp(roundie_elf_crash_phase_name(ROUNDIE_ELF_PHASE_UNLOAD), "unload") == 0);
+    assert(strcmp(roundie_elf_crash_phase_name(9), "unknown") == 0);
+
+    /* The panic hook path stores the live phase, monitor and layout; a v1
+     * record (M9 firmware) reads as absent after the update. */
+    roundie_elf_crash_stack_t layout = {0x3c200000, 0x3c210000, 0x3c21a000, 0x3c220000, 1};
+    roundie_elf_crash_executor(&layout);
+    roundie_elf_crash_phase(ROUNDIE_ELF_PHASE_CALLBACK);
+    /* An ignored monitor hit is only counted: it marks no fault. */
+    uint32_t spurious = roundie_elf_crash_monitor_spurious_count();
+    roundie_elf_crash_monitor_spurious();
+    assert(roundie_elf_crash_monitor_spurious_count() == spurious + 1U);
+    assert(crash_trigger_now == ROUNDIE_ELF_TRIGGER_EXCEPTION && crash_monitor_pc == 0);
+    roundie_elf_crash_monitor(0x42010020, true);
+    roundie_elf_crash_fault_t fault = {.pc = 0x40380000, .sp = 0x3fcb0000, .phase = 3, .trigger = 0};
+    roundie_elf_crash_fault(&fault);
+    assert(crash_valid() && crash_retained.details.phase == ROUNDIE_ELF_PHASE_CALLBACK &&
+           crash_retained.details.trigger == ROUNDIE_ELF_TRIGGER_MONITOR &&
+           crash_retained.details.monitor_pc == 0x42010020 && crash_retained.details.stack.limit == 0x3c21a000);
+    roundie_elf_crash_phase(ROUNDIE_ELF_PHASE_IDLE);
+    crash_monitor_pc = 0;
+    crash_trigger_now = ROUNDIE_ELF_TRIGGER_EXCEPTION;
+    /* Out-of-range enums with a matching checksum are not a record either. */
+    crash_record_t saved = crash_retained;
+    crash_retained.details.trigger = ROUNDIE_ELF_TRIGGER_FOREIGN + 1U;
+    crash_retained.crc = crash_checksum(&crash_retained);
+    assert(!crash_valid());
+    crash_retained = saved;
+    crash_retained.details.phase = ROUNDIE_ELF_PHASE_UNLOAD + 1U;
+    crash_retained.crc = crash_checksum(&crash_retained);
+    assert(!crash_valid());
+    crash_retained = saved;
+    crash_retained.version = 1U;
+    crash_retained.crc = crash_checksum(&crash_retained);
+    roundie_elf_crash_boot();
+    roundie_elf_crash_report_t report;
+    assert(!roundie_elf_crash_last(&report) && crash_valid() && crash_retained.version == CRASH_VERSION);
+    crash_stack_now = (roundie_elf_crash_stack_t){0};
+}
+
 /* Retained crash record (M9): load context, panic details, persistence across
  * simulated restarts until the next load, torn records, address mapping. */
 static void crash_tests(void)
@@ -767,7 +963,9 @@ static void crash_tests(void)
     assert(roundie_elf_crash_locate(&map, 0x42000100, &vaddr) == -1);
     assert(roundie_elf_crash_locate(&map, 0x3fc80000, &vaddr) == -1); /* empty bss */
     assert(roundie_elf_crash_locate(&map, 0, &vaddr) == -1);
-    puts("ELF crash record PASS: context, panic details, restart persistence, torn record, address map");
+    crash_classify_tests();
+    puts("ELF crash record PASS: context, panic details, restart persistence, torn record, address map, "
+         "phase, origin classification");
 }
 
 static void runtime_tests(const char *path)
@@ -924,6 +1122,13 @@ int main(int argc, char **argv)
     fail_send = true;
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_STATE);
     fail_send = false;
+    /* M9.1: an executor whose stack guard did not arm refuses every load. */
+    atomic_store(&guard_state, GUARD_FAILED);
+    assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_NOT_SUPPORTED);
+    assert(!roundie_elf_busy() && !roundie_elf_input_busy());
+    atomic_store(&guard_state, GUARD_PENDING);
+    executor_once(false);
+    executor_once(true);
     roundie_elf_set_allowed(false);
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_STATE);
     assert(!roundie_elf_busy() && allocations_live == 0);

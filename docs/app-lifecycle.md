@@ -53,8 +53,12 @@ callbacks. USB, GUI, timer interrupts and other workers never call application
 code. No application tasks or workers are created. Static application state
 and SDK allocations persist between callbacks. No application starts at boot.
 
-The dedicated task keeps its existing priority 1, 12288-byte stack and watchdog
-policy. It waits at most 10 ms for system work; this is a scheduling granularity,
+The dedicated task keeps its existing priority 1 and watchdog policy. Since
+M9.1 its stack is the guarded PSRAM stack of
+[elf-runtime-hardening-m9-1.md](elf-runtime-hardening-m9-1.md): 24 KiB usable
+above a 40 KiB red zone; the 8 KiB application stack budget is unchanged. An
+application that descends into the red zone is aborted as
+`app_stack_overflow`. It waits at most 10 ms for system work; this is a scheduling granularity,
 not a latency guarantee. Task watchdog subscription covers native execution
 and teardown, and is removed while waiting. Every callback and entry is timed;
 exceeding the existing 100 ms soft budget sets a sticky diagnostic and warning.

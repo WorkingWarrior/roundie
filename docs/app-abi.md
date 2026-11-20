@@ -94,3 +94,11 @@ and accidental exposure; it cannot prevent direct memory access, corruption or
 non-returning code. A task/watchdog is not process isolation or safe preemption.
 Only trusted development artifacts are permitted. Signatures, packages, full
 events/lifecycle, persistent installation and SDK release remain deferred.
+
+**Stack (M9.1, no ABI change).** Callbacks run on the executor stack: 24 KiB
+usable above a 40 KiB red zone and an unmapped guard page. The application
+budget stays 8 KiB ([app-lifecycle.md](app-lifecycle.md)). A descent into the
+red zone aborts the firmware with `app_stack_overflow` in `RS1 CRASH`. A single
+allocation larger than the red zone plus the guard (`alloca`, VLA) can jump over
+both and is outside the contract. This limits stack overflow only; it is not
+memory isolation ([elf-runtime-hardening-m9-1.md](elf-runtime-hardening-m9-1.md)).
