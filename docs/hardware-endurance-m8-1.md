@@ -314,7 +314,7 @@ about 38 ppm during this run, about 3.3 s per day.
 
 ## Recommendations before M8-B and M9
 
-1. **Core stability (verified).** Over 645 application runs and 10 h of
+1. **Core stability (verified).** Over 870 application runs (stress and soak) and 10 h of
    home, internal heap, PSRAM, largest block and task count did not move.
    No leak, fault or reset was seen. This supports starting M9 on the
    runtime as it is.
