@@ -13,14 +13,15 @@ the Flash layout or the panic behaviour.
 Implementation: `components/roundie_elf/crash.c` (logic, host-tested) and
 `components/roundie_elf/idf/crash_target.c` (SHA-256 and panic hook).
 Header: `components/roundie_elf/include/roundie_elf_crash.h`. The record is
-firmware-internal and versioned (`RCR1`, version 1); it is not part of the REP
-ABI.
+firmware-internal and versioned (`RCR1`, version 2 since M9.1; a version 1
+record from older firmware reads as absent); it is not part of the REP ABI.
 
 | Moment | What is written |
 | --- | --- |
 | Application relocated (`idf/loader.c`) | Record reset; instance, SHA-256 of the ELF bytes (as package `elf_digest`), five-section map `{ELF vaddr, load address, size}` (text, bss, data, rodata, drlro) and the instruction-bus address of text; `loaded = 1` |
 | Application unloaded | `loaded = 0`; an earlier fault is kept |
 | Panic (`__wrap_esp_panic_handler`) | PC, EXCCAUSE (or panic pseudo-cause), EXCVADDR, SP, panic exception kind, core, and up to 8 backtrace PCs; `fault = 1`; then the normal IDF panic handler runs |
+| Panic, since M9.1 | Also: the exception-frame address, the executor phase (`idle`, `load`, `callback`, `unload`), the trigger (0 exception, 1 executor stack monitor, 2 foreign), the PC latched by the stack monitor, and the executor stack layout `[guard, stack_low, limit, top, armed]` ([elf-runtime-hardening-m9-1.md](elf-runtime-hardening-m9-1.md)). A frame or stack pointer inside the unmapped guard page is not read: frame fields stay 0 |
 | Boot (`main.c`, before any load) | A valid record is copied for reading; an invalid one is reset |
 
 Properties:
@@ -51,10 +52,26 @@ changes no state. Reply:
 !RS1 <id> 0 {"crash":{"valid":0}}
 !RS1 <id> 0 {"crash":{"valid":1,"loaded":1,"fault":1,"instance":7,"digest":"<64 hex>",
   "text_exec":…,"sections":[[vaddr,addr,size]×5],"pc":…,"cause":…,"vaddr":…,"sp":…,
-  "exception":…,"core":…,"frames":[…]}}
+  "exception":…,"core":…,"frames":[…],"frame":…,"phase":"callback","trigger":0,
+  "monitor_pc":…,"stack":[guard,stack_low,limit,top,armed],"origin":"app_code"}}
 ```
 
-The reply is one line (wrapped here) of at most 768 bytes. Firmware before
+The reply is one line (wrapped here) of at most 1024 bytes (768 before M9.1).
+
+`origin` is computed when the reply is formatted (`roundie_elf_crash_classify()`,
+host-tested), first match wins:
+
+| Origin | Condition |
+| --- | --- |
+| `app_stack_overflow` / `executor_stack_overflow` | Monitor trigger, SP below the monitor limit, or EXCVADDR in the guard page; `app_` when an image was loaded and the phase was `load` or `callback` |
+| `app_code` | An image was loaded and PC lies in its text |
+| `app_callback` | Phase `load`/`callback`, SP on the executor stack, PC in firmware (for example an SDK or libc call made by the application) |
+| `core_while_app_active` | Phase `load`/`callback`, SP elsewhere |
+| `executor_core` | SP on the executor stack, no application running |
+| `core` | Anything else |
+
+The classification is an attribution aid, not proof: an application can
+corrupt firmware memory and leave the fault to be taken later in `core`. Firmware before
 0.3.56 answers `CRASH` as an unknown operation, which the tool reports as
 unsupported (exit code 3).
 
@@ -87,7 +104,8 @@ The tool:
 It parses ELF32 directly and needs no toolchain. When no file matches the
 digest, addresses are still mapped to ELF offsets. Tests:
 `tests/test_roundie_crash.py` (synthetic ELF32), `tests/test_elf.c`
-(`crash_tests`), `tests/test_boot_guard.c` (`RS1 CRASH` formatting).
+(`crash_tests`, `crash_classify_tests`), `tests/test_boot_guard.c` (`RS1 CRASH`
+formatting).
 
 Limits:
 
@@ -112,7 +130,8 @@ Proposal for a later milestone, as a decision to take, not a decided change:
 - **Benefit.** Full task stacks and registers of every task, decoded by
   `idf.py coredump-info` or `coredump-debug` with the firmware ELF.
 - **Size: pending experiment.** The dump of about 20 task stacks
-  (system_worker and rep_executor are 12 KiB each) must fit in 128 KiB.
+  (system_worker 12 KiB; rep_executor, since M9.1, a 64 KiB PSRAM stack of which
+only the used part matters) must fit in 128 KiB.
   Acceptance: `coredump-info` decodes a dump from the fault_elf `store` case on
   the dev board.
 - **Panic-path cost: pending experiment.** The panic writes Flash with the

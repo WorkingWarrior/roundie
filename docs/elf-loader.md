@@ -91,8 +91,11 @@ rejected. No forced unload exists: entry/callback returns first, SDK allocations
 are released, loader deinit frees text/data and clears pointers, then the input
 buffer is freed by the executor. No background worker retains application data.
 
-`rep_executor`: lazy task, 12,288-byte stack, priority 1, no affinity, one-element
-request queue. Its infrastructure persists after the first explicit RUN and is
+`rep_executor`: lazy task, priority 1, one-element request queue. Since M9.1 it
+is pinned to core 1 on a 64 KiB PSRAM stack with an unmapped 64 KiB guard page,
+a 40 KiB red zone and a stack-pointer monitor; it refuses every load if that
+guard cannot be armed ([elf-runtime-hardening-m9-1.md](elf-runtime-hardening-m9-1.md)).
+Before M9.1: 12,288-byte internal stack, no affinity. Its infrastructure persists after the first explicit RUN and is
 not a per-run leak. It is never created on ordinary/Safe Mode startup. App code
 does not execute in GUI/USB contexts. The task subscribes to the existing
 10-second panic watchdog during requests and unsubscribes while idle. The
