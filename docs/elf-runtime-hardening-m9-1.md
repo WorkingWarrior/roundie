@@ -1,7 +1,8 @@
 # M9.1 — Native ELF runtime hardening and fault containment
 
 Status: implemented on branch `m9.1-hardening`. Device results are from the 1.85B
-board (serial `28:84:85:87:98:7C`) running firmware 0.3.58–0.3.60. Each statement
+board (serial `28:84:85:87:98:7C`) running firmware 0.3.58–0.3.60 and, for the
+review, 0.3.67 plus uncommitted diagnostic images 0.3.61–0.3.66 and 0.3.68. Each statement
 is marked **verified** (with its evidence), **decision**, **assumption** or
 **PENDING**.
 
@@ -84,6 +85,38 @@ One 128 KiB PSRAM block, aligned to the 64 KiB MMU page, never freed. Ascending:
   `esp_cache_msync` and never disables the cache. `CONFIG_ELF_LOADER_SET_MMU` is
   off. No executor path runs with the cache disabled, so a PSRAM stack is
   usable. SHA DMA handles PSRAM buffers.
+
+### PSRAM stack and cache-disabling operations (review, IDF v6.1)
+
+Source review of the pinned IDF v6.1 image and of this sdkconfig
+(`SPIRAM_FETCH_INSTRUCTIONS`, `SPIRAM_RODATA`, `SPIRAM_XIP_FROM_PSRAM`,
+`FREERTOS_TASK_CREATE_ALLOW_EXT_MEM`, `SPI_FLASH_YIELD_DURING_ERASE` set;
+`SPI_FLASH_AUTO_SUSPEND`, `LITTLEFS_MMAP_PARTITION` unset). Not a device
+measurement.
+
+- **Flash reads** never disable the cache here. `spi_flash_os_func_app.c`
+  defines `MMAP_EXECUTABLES_FROM_FLASH` as 0 when code and rodata run from
+  PSRAM.
+- **Flash writes and erases** (NVS, LittleFS, OTA) disable the cache only while
+  a Flash mapping exists (`flash_mmap_remain()`), for example during an image
+  check. The project itself creates no Flash mapping.
+- **While the cache is off**, `spi_flash_disable_interrupts_caches_and_other_cpu()`
+  stalls the other core through `esp_ipc`. The IPC task has an internal stack and
+  preempts the executor on core 1, so the executor's PSRAM stack is not touched.
+  Non-IRAM interrupts, including the stack monitor, are masked, but the executor
+  does not run in that window.
+- **On the executor itself**, the same function asserts
+  `esp_task_stack_is_sane_cache_disabled()`, as does light sleep
+  (`sleep_modes.c`). A cache-disabling call from the executor is therefore an
+  abort (controlled panic), not silent corruption. No such call path exists:
+  `roundie_elf` and `roundie_app_ui` make no Flash, NVS or LittleFS call, and the
+  SDK services reachable from callbacks are the UI queue, time, the audio ring,
+  logging and `app_alloc`.
+- **Concurrency.** RO1 refuses every OTA mutation while an application is loaded
+  (verified on the device in M9.1). Storage, package and OTA work runs in system
+  workers.
+- **Rule.** Future SDK services must not write Flash, NVS or LittleFS on the
+  executor; they hand the work to a system worker (AGENTS.md).
 - **Stack monitor.**
   - Mechanism: the ESP32-S3 assist-debug `SP_SPILL_MIN` interrupt of core 1,
     with `SP_MIN` set to the red-zone top. It is allocated at level 3.
@@ -108,8 +141,61 @@ One 128 KiB PSRAM block, aligned to the 64 KiB MMU page, never freed. Ascending:
 
 - **Hypothesis (unverified).** The comparator sees transient `a1` values of
   rotated register windows during window exceptions or context switches.
-- `ASSIST_DEBUG_CORE_1_SP_UNSTABLE` (register map: R/W, bits 7:0, default 0, no
-  description) may relate to this. Not tried: PENDING.
+
+**Spurious hits and the saved SP (verified, diagnostic image 0.3.68, 30 s, watch
+running, not committed).**
+
+- 1,483 hits; in 1,120 of them the executor was the interrupted task.
+- Every SP read from its interrupt frame lay between `0x3c13fa10` and
+  `0x3c13fbc0`, the top 1.5 KiB of the stack. That matches the measured executor
+  peak (3,200 B). None was below the limit (`0x3c13a000`).
+- Latched PCs are ordinary code:
+  - `printf` and USB-JTAG writes;
+  - FreeRTOS mutex and critical sections (`pvTaskIncrementMutexHeldCount`,
+    `xTaskPriorityDisinherit`, `xQueueSemaphoreTake`);
+  - `_WindowUnderflow8`;
+  - the task watchdog feed in `IDLE1`. The remaining 363 hits had another task
+    interrupted.
+- So the monitor fires while the real SP is about 22 KiB above `SP_MIN`. The SP
+  read is consistent with the executor's real stack use but was not checked
+  against a second, independent SP source.
+- Code reading, not measured: if the level-3 interrupt nests in another
+  interrupt, `pxTopOfStack` holds the SP saved at the outer entry. It is still
+  the executor's SP, because the executor does not run in between.
+
+**`ASSIST_DEBUG_CORE_1_SP_UNSTABLE` (verified on the 1.85B, M9.1 review).**
+
+- The register map gives R/W, bits 7:0, default 0, and no description.
+- **It survives a software restart.** 0.3.62 wrote 255; after `RTC_SW_CPU_RST`,
+  0.3.63, which did not write it, read 255. The IDF bootloader enables the
+  assist-debug clock and releases its reset (`bootloader_esp32s3.c`), but never
+  resets the block.
+- **Self-test by value** (0.3.65 and 0.3.66, 20 runs for each value 4–16):
+
+| `SP_UNSTABLE` | Self-test | Failing check |
+|---|---|---|
+| 0 | 0 of 1 | nothing fires |
+| 1–3 | 0 of 1 | also fires at the real limit |
+| 4 | 3/20 | also fires at the real limit |
+| 5 / 6 | 14/20 / 17/20 | as 4, less often |
+| 7–12 | 20/20 each | — |
+| 13 / 14 / 15 / 16 | 16/20 / 5/20 / 3/20 / 1/20 | the recursion is missed |
+| 32, 64, 128, 255 | 0 of 1 | nothing fires |
+
+- **Hypothesis.** The value is a filter: the number of cycles SP must stay below
+  `SP_MIN` before the monitor latches.
+- **Consequence, a bug in the first M9.1 commit.** The code relied on the value
+  left by reset. After an image wrote a value outside 7–12, the committed code
+  (0.3.64) no longer passed the self-test after a software restart. It failed
+  closed: native applications were disabled. 0.3.58–0.3.60 passed with the
+  register never written, so its power-on value lies inside the window. That
+  contradicts the documented default of 0; the reason is unknown.
+- **Decision.** `roundie_elf_stack_arm()` writes 10, the middle of 7–12, before
+  every self-test.
+- **Ignored hits by value** (60 s with the watch): about 28/s at 8 and about
+  42/s at 10 (0.3.67). The rate is not monotonic and does not reach zero, so
+  `SP_UNSTABLE` does not explain the spurious hits. The SP check in the ISR stays
+  required.
 
 **Decision.** A monitor hit alone is not trusted. The ISR aborts only when both
 hold:
@@ -154,12 +240,14 @@ table.
 
 | Kind | Result |
 |---|---|
-| Host: `test_elf` | PASS. Covers the classification table (17 cases), phases, the spurious counter, rejection of out-of-range enums and of v1 records, fail closed, and the creation mock |
+| Host: `test_elf` | PASS. Covers the classification table (17 cases), phases, the spurious counter, rejection of out-of-range enums and of v1 records, fail closed, the creation mock, and one request through the real `execute()` loop with the guard armed (loaded) and unarmed (cancelled, never loaded) |
+| Host: `test_runtime_policy` (in `test_elf`) | PASS. RO1 refuses `BEGIN` and `ACTIVATE` in a Safe Mode whose next image could not confirm |
 | Host: `test_boot_guard` | PASS. `RS1 HEALTH` `executor_guard` and the `RS1 CRASH` v2 fields |
 | Host: `test_roundie_crash` | PASS. 11 tests, including M9.1 origin fields |
 | Host: `test_stack_overflow_model` | PASS. 4 model tests (section 1) |
 | Mutation, `crash.c` | 11 of 11 killed |
-| Mutation, `executor.c` | 1 of 2 killed. The survivor is the `guarded` check inside the target-only `execute()` loop, which host tests do not run; submit-time refusal is killed |
+| Mutation, `executor.c` | 6 of 6 killed: `guarded` check removed, `guarded` forced true, guard state not stored, guard state inverted, cancel not called, submit ignores a failed guard |
+| Mutation, `ota_diagnostics.c` | Safe Mode gate removed: killed |
 
 ## 7. Measurements (1.85B rep, verified)
 
@@ -185,7 +273,7 @@ Run time, 20 load/unload cycles of `run_m8.py` (M8 baseline from
 | ELF unload, median (ms) | 0.175 (M8.1 soak batches, a different workload) | 1.31 (max 1.33) | not comparable; no regression claim |
 | `rep_executor` peak in the usable 24 KiB | 2,168 (M9, 12 KiB stack) | 3,200 (24,576 − `usable_min` 21,376) | the block covers the smoke apps |
 | Callback max (µs), RE1 BUDGET, watch | — | 233, all 53 under 1 ms | 0 over budget |
-| Monitor ISR hits ignored | — | about 6/s with the watch, 0 idle | about 6 short level-3 ISRs/s |
+| Monitor ISR hits ignored | — | about 6/s with the watch, 0 idle (register never written); about 42/s at `SP_UNSTABLE` 10 (0.3.67) | at most about 40 short level-3 ISRs/s |
 
 ## 8. Device validation
 
@@ -195,6 +283,24 @@ Run time, 20 load/unload cycles of `run_m8.py` (M8 baseline from
 - 0.3.59 activated from latched Safe Mode was not confirmed and ended INVALID.
   The board stayed on VALID 0.3.58. `RS1 REBOOT` (one normal trial) then cleared
   the latch, and the OTA was repeated from normal mode.
+- **Why INVALID (code review).**
+  1. The 0.3.58 false positive latched Safe Mode (reason core).
+  2. RO1 still accepted `BEGIN` and `ACTIVATE`: the running image was a
+     confirmed VALID image.
+  3. 0.3.59 booted with the inherited latch, in Safe Mode, as `PENDING_VERIFY`.
+  4. `roundie_recovery_confirmation_allowed()` refuses that case ("an inherited
+     latch is no pass"). The GUI health result was therefore false, and
+     `roundie_ota_boot_result(false)` called `roundie_ota_rollback()`, which
+     marked the image INVALID and rebooted into 0.3.58.
+
+  The `run_m8.py` preflight refuses Safe Mode, but the direct
+  `roundie_ota.py upload`/`activate` path used for 0.3.59 had no such check.
+- **Fix.** RO1 now refuses `BEGIN` and `ACTIVATE` with `ESP_ERR_INVALID_STATE`
+  whenever an image started from the current mode could not confirm. It uses the
+  same predicate as confirmation. The host test and mutation are in section 6.
+  Leave Safe Mode first (`RS1 REBOOT`). Selecting the other valid slot
+  (spec §19.7) is a separate command and is unaffected. Device check: PENDING,
+  because it needs a latched Safe Mode.
 
 `run_m8.py` on 0.3.60 (unattended, injected input only, report in
 `build-ci/hardware-validation/m91-smoke-0.3.60`, not committed):
@@ -229,15 +335,28 @@ After the run:
   - the per-boot self-test (positive, recursion and negative);
   - the guard map check;
   - the host model.
-- **`SP_UNSTABLE` effect and the cause of the spurious hits.** Method:
-  1. set the register on a development image;
-  2. compare the `spurious` rate under the same workload;
-  3. accept only if the self-test still passes.
-- **Cache autoload across the guard boundary.** The value is logged at arm time.
-  Whether a prefetch of an unmapped line raises a fault is not measured.
-- **Allocations larger than the red zone (`alloca`/VLA).** With more than 104 KiB
-  (red zone plus guard) between two touches, a frame can jump over the guard,
-  as with the watchpoint. The SDK documents this as a limit; native code is
-  trusted.
+- **Cause of the spurious hits.** `SP_UNSTABLE` does not remove them (section 3).
+  Also open: the register's power-on value, measured by reading it once after a
+  power cycle, which needs a physical cable change.
+- **Cache autoload (resolved, verified).** `EXTMEM_DCACHE_AUTOLOAD_CTRL` reads
+  `0x00000008` at every arm. Only the read-only `AUTOLOAD_DONE` bit is set;
+  `AUTOLOAD_ENA` and both section enables are 0. The D-cache does not prefetch, so
+  no autoload can touch the guard. Not covered: a future configuration that
+  enables autoload.
+- **Guard mapping across light sleep.** At creation the MMU check proves the
+  guard is unmapped and the stack mapped (logged on every boot). IDF v6.1 has no
+  S3 MMU-table save or restore in its sleep code, so nothing should remap the
+  guard. Not measured: `light_sleep` is BLOCKED. Method: after a timer-woken
+  light sleep, read the MMU entry of `guard_low` (for example, a HEALTH field).
+- **Allocations larger than the red zone (`alloca`/VLA), not protected.**
+  - One SP drop beyond the red zone plus guard (about 104 KiB minus the stack in
+    use) skips the guard. It lands in other PSRAM below `guard_low`, as the
+    watchpoint was skipped.
+  - The monitor still sees SP below `SP_MIN`, but only after `SP_UNSTABLE`
+    cycles and interrupt latency, or after a masked section ends. The first
+    writes into the allocation may precede it.
+  - Drops between the usable stack and 104 KiB write the red zone or the guard.
+  - The SDK documents this as a limit; native code is trusted. Not
+    device-tested: it needs a destructive test.
 - **Writes through pointers** anywhere in memory. Not prevented. Isolation would
   need PMS/World Controller work that is not evaluated.
