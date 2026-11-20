@@ -16,3 +16,6 @@ esp_err_t roundie_local_time_set_zone(const char *rule);
 void roundie_local_time_zone(char out[ROUNDIE_TIME_ZONE_CAPACITY]);
 /* roundie_elf_clock_source_t for the runtime. */
 bool roundie_local_time_now(roundie_elf_clock_t *out);
+/* Watch faces: local fields and the UTC seconds of the same wall-clock read,
+ * so their difference is the zone's current UTC offset. */
+bool roundie_local_time_sample(roundie_elf_clock_t *out, int64_t *utc_seconds);
