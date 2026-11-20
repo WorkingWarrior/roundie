@@ -19,7 +19,10 @@
  * monitor fires and the panic handler can run.
  * Last line: a frame larger than the red zone (alloca/VLA) or a monitor
  * masked by an interrupt level >= 3 reaches the unmapped guard page instead
- * of other memory; the MMU fault is a cache error, which panics.
+ * of other memory, as long as the first write lands within the 64 KiB guard.
+ * One SP drop beyond red zone plus guard (about 104 KiB, alloca/VLA) skips
+ * the guard and is caught only by the monitor, possibly after writes. The
+ * guard-access fault path (cache error panic) is not yet tested on a board.
  *
  * Neither is memory isolation: the application still shares the address
  * space and can write anywhere through a pointer. */
@@ -226,6 +229,7 @@ static uint32_t NOINLINE_ATTR probe_depth(uint32_t depth)
 }
 
 #define PROBE_DEPTH 24U
+#define MONITOR_SP_UNSTABLE 10U /* middle of the measured 7..12 window */
 #define PROBE_DEPTH_DROP 1024U /* far less than PROBE_DEPTH frames of >= 96 bytes */
 
 /* Three checks with the abort suppressed:
@@ -299,6 +303,11 @@ bool roundie_elf_stack_arm(void)
             return false;
         }
     }
+    /* SP_UNSTABLE is not reset by a software restart (the bootloader only
+     * enables the assist-debug clock), so program it on every arm. Measured on
+     * the 1.85B: 7..12 pass the self-test 20/20; <= 6 adds hits at the limit,
+     * >= 13 misses short excursions, 0 detects nothing. */
+    REG_WRITE(ASSIST_DEBUG_CORE_1_SP_UNSTABLE_REG, MONITOR_SP_UNSTABLE);
     if (!self_test_monitor(layout.limit)) {
         return false;
     }
