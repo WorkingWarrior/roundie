@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 TOOLS = Path(__file__).resolve().parents[1]
 ROOT = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
+import roundie_budget as budget  # noqa: E402
 import roundie_clock as clock  # noqa: E402
 import roundie_elf as elf  # noqa: E402
 import roundie_launcher as launcher  # noqa: E402
@@ -159,6 +160,7 @@ HANDLERS = {
     "ota": lambda port, operation, timeout: ota.request(port, operation, timeout or 8.0),
     "elf": lambda port, operation, timeout: elf.request(port, operation, timeout or 8),
     "ui": lambda port, operation, timeout: ui.request(port, operation, timeout or 4),
+    "budget": lambda port, operation, timeout: budget.request(port, operation, timeout or 4),
     "launcher": lambda port, operation, timeout: launcher.request(port, operation, timeout or 4),
     "power": lambda port, operation, timeout: power.request(port, operation, timeout or 4.0),
     "time": lambda port, operation, timeout: rtime.request(port, operation, timeout or 5.0),

@@ -270,6 +270,7 @@ class EnduranceRunner(m8.Runner):
         self.staged = None
         self.stop_reason = None
         self.samples = []
+        self.budget_supported = True
         self.edges = []
         self.latency = {"start_ms": {}, "close_ms": {}, "event_ms": [], "ui_input_ms": []}
         self.delivery = {"checked": False, "spaced_sent": 0, "spaced_delivered": 0, "undelivered_spaced": 0,
@@ -346,11 +347,23 @@ class EnduranceRunner(m8.Runner):
         record["elf"] = {key: elf_status.get(key) for key in ELF_KEYS}
         ui_status = self.call("ui")
         record["ui"] = {key: ui_status.get(key) for key in UI_KEYS}
+        record["budget"] = self.budget_sample()
         record["uptime_us"] = self.observe_uptime(label)
         self.samples.append(record)
         with open(self.out / "telemetry.jsonl", "a") as stream:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
         return record
+
+    def budget_sample(self):
+        """Boot-wide callback budget counters (RE1 BUDGET, M9); None on older
+        firmware, which is then not asked again."""
+        if not self.budget_supported:
+            return None
+        try:
+            return self.call("budget")["boot"]
+        except m8.budget.Unsupported:
+            self.budget_supported = False
+            return None
 
     # ---- launcher-driven applications -------------------------------------
     def to_list(self):

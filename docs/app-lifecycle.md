@@ -73,6 +73,16 @@ tests in `tests/test_elf.c` (`budget_tests`) cover the boundaries, a series of
 expensive callbacks, overflow, backpressure, a stale event and stop with
 pending events.
 
+`!RE1 <id> BUDGET` (development diagnostics, read-only) replies with
+`{"budget":[…],"boot":[…]}`: fourteen counters each, in the field order of
+`roundie_elf_budget_t` (instance, callbacks, five buckets, longest callback,
+longest latency, queue peak, dropped, coalesced, rejected, discarded), at most
+about 350 bytes. It is a separate command so the STATUS, UI STATUS and RS1
+HEALTH frames keep their size. `tools/roundie_budget.py` decodes it; firmware
+before M9 answers with a STATUS frame, which the tool reports as unsupported.
+The endurance runner stores the boot counters in each telemetry sample and
+stops asking after an unsupported reply.
+
 ## States and failure handling
 
 Numeric states retain ABI 1 diagnostics 0–5:
