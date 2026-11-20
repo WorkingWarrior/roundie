@@ -57,6 +57,8 @@ class FakeDevice:
                         over_budget=0, resources=[0, 0, 0, 0], users=0, value=0, ui_events=0,
                         rejected=0, after=[1, 1, 1, 1, 1], load_us=0, unload_us=0, dropped=0,
                         app_result=0, executed=0, control=[0, 0, 0])
+        self.budget = dict.fromkeys(run_m8.budget.FIELDS, 0)
+        self.budget_queries = 0
         self.ui = dict(generation=0, view=0, button=0, widgets=0, pending=0, max_depth=0, submitted=0,
                        applied=0, failed=0, rejected=0, canceled=0, input_accepted=0, input_dropped=0,
                        input_rejected=0, physical=0, injected=0, delivered=0, latency_max_us=0,
@@ -105,6 +107,11 @@ class FakeDevice:
             return dict(self.elf)
         if protocol == "ui":
             return dict(self.ui)
+        if protocol == "budget":
+            self.budget_queries += 1
+            if self.budget is None:
+                raise run_m8.budget.Unsupported("firmware has no RE1 BUDGET")
+            return {"instance": dict(self.budget), "boot": dict(self.budget)}
         if protocol == "launcher":
             return self.launcher(operation)
         if protocol == "power":

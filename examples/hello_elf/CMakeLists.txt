@@ -8,7 +8,7 @@ if(NOT REP_GCC STREQUAL "15.2.0")
     message(FATAL_ERROR "Use Roundie's pinned IDF v6.1 GCC 15.2.0 toolchain")
 endif()
 set(REP_TEST_VARIANT "0" CACHE STRING "0 hello, 1 forbidden import, 2 invalid ABI")
-add_custom_command(OUTPUT hello.app.elf
+add_custom_command(OUTPUT hello.app.elf hello.app.debug.elf
     COMMAND ${REP_CC} -std=c11 -Os -Wall -Wextra -Werror -mlongcalls
         -fPIC -fvisibility=hidden -ffunction-sections -fdata-sections
         -fno-builtin -fno-stack-protector -nostdlib -nostartfiles -shared
@@ -16,10 +16,10 @@ add_custom_command(OUTPUT hello.app.elf
         -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/text-padding.ld
         -DREP_TEST_VARIANT=${REP_TEST_VARIANT}
         -I${CMAKE_CURRENT_SOURCE_DIR}/../../include
-        ${CMAKE_CURRENT_SOURCE_DIR}/hello.c -o hello.app.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/hello.c -o hello.app.debug.elf
     COMMAND ${REP_STRIP} --strip-unneeded --remove-section=.comment
         --remove-section=.got.loc --remove-section=.dynamic
         --remove-section=.xt.lit --remove-section=.xt.prop
-        --remove-section=.xtensa.info hello.app.elf
+        --remove-section=.xtensa.info -o hello.app.elf hello.app.debug.elf
     DEPENDS hello.c text-padding.ld ../../include/rep/rep_app.h VERBATIM)
 add_custom_target(elf ALL DEPENDS hello.app.elf)

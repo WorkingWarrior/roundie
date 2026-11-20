@@ -337,6 +337,45 @@ static void ui_reply(const char *id, esp_err_t error)
     }
 }
 
+/* Read-only callback budget counters (M9), separate from STATUS and UI STATUS
+ * so neither frame grows. Instance counters, then boot totals, each in
+ * roundie_elf_budget_t field order. */
+static size_t budget_values(char *out, size_t capacity, const roundie_elf_budget_t *counters)
+{
+    uint32_t values[] = {counters->instance, counters->callbacks, counters->buckets[0],
+        counters->buckets[1], counters->buckets[2], counters->buckets[3], counters->buckets[4],
+        counters->callback_max_us, counters->latency_max_us, counters->queue_peak,
+        counters->dropped, counters->coalesced, counters->rejected, counters->discarded};
+    size_t length = 0;
+    for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        int added = snprintf(out + length, capacity - length, "%s%" PRIu32, i == 0 ? "" : ",", values[i]);
+        if (added < 0 || (size_t)added >= capacity - length) {
+            return 0;
+        }
+        length += (size_t)added;
+    }
+    return length;
+}
+
+static void budget_reply(const char *id, esp_err_t error)
+{
+    roundie_elf_budget_t instance;
+    roundie_elf_budget_t boot;
+    roundie_elf_budget(&instance, &boot);
+    char current[192];
+    char total[192];
+    if (budget_values(current, sizeof(current), &instance) == 0 ||
+        budget_values(total, sizeof(total), &boot) == 0) {
+        return;
+    }
+    char response[512];
+    int length = snprintf(response, sizeof(response), "\n!RE1 %s %d {\"budget\":[%s],\"boot\":[%s]}\n",
+                          id, (int)error, current, total);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
 void roundie_elf_command(char *line, bool discard)
 {
     roundie_elf_poll(esp_timer_get_time());
@@ -358,6 +397,14 @@ void roundie_elf_command(char *line, bool discard)
             ui_error = ui_command(runtime);
         }
         ui_reply(command.id, ui_error);
+        return;
+    }
+    if (strcmp(runtime, "BUDGET") == 0) {
+        char frame[21];
+        memcpy(frame, line, 14);
+        memcpy(frame + 14, "STATUS", 7);
+        esp_err_t budget_error = roundie_transfer_parse(frame, discard, "!RE1 ", "RUN", &command);
+        budget_reply(command.id, budget_error);
         return;
     }
     esp_err_t error = roundie_transfer_parse(line, discard, "!RE1 ", start ? "START" : "RUN", &command);

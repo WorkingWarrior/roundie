@@ -97,6 +97,30 @@ bool roundie_elf_storage_take(void *data, size_t *length);
 void roundie_elf_status(roundie_elf_status_t *out);
 void roundie_elf_set_allowed(bool allowed);
 
+/* Soft callback budget (docs/app-lifecycle.md). A callback is timed after it
+ * returns; native code cannot be interrupted, so exceeding the budget is
+ * counted, never enforced. Near-budget callbacks are counted separately. */
+#define ROUNDIE_ELF_CALLBACK_BUDGET_US 100000U
+#define ROUNDIE_ELF_CALLBACK_NEAR_US 80000U
+/* Callback durations: below 1 ms, below 10 ms, below the near threshold,
+ * near (up to and including the budget), over the budget. */
+#define ROUNDIE_ELF_BUDGET_BUCKETS 5U
+typedef struct {
+    uint32_t instance;      /* the latest prepared instance */
+    uint32_t callbacks;
+    uint32_t buckets[ROUNDIE_ELF_BUDGET_BUCKETS];
+    uint32_t callback_max_us;
+    uint32_t latency_max_us; /* post to dispatch of queued events */
+    uint32_t queue_peak;
+    uint32_t dropped;        /* refused: queue full (backpressure) */
+    uint32_t coalesced;
+    uint32_t rejected;       /* refused or skipped as stale or not admitted */
+    uint32_t discarded;      /* queued, then cleared by stop or suspend */
+} roundie_elf_budget_t;
+/* Copies of the counters of the current instance (reset when an instance is
+ * prepared) and of all instances since boot. Either pointer may be NULL. */
+void roundie_elf_budget(roundie_elf_budget_t *instance, roundie_elf_budget_t *boot);
+
 /* Local wall time for REP3_CAP_CLOCK applications. The source is sampled by the
  * executor at most once per second, outside native callbacks; it returns false
  * while wall time is not valid. revision changes on time sync or zone change. */

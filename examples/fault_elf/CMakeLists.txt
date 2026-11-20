@@ -10,7 +10,7 @@ endif()
 set(kind 0)
 foreach(name hang load store illegal fetch intwdt stack)
     math(EXPR kind "${kind} + 1")
-    add_custom_command(OUTPUT ${name}.app.elf
+    add_custom_command(OUTPUT ${name}.app.elf ${name}.app.debug.elf
         COMMAND ${REP_CC} -std=c11 -Os -Wall -Wextra -Werror -mlongcalls -DFAULT_KIND=${kind}
             -fPIC -fvisibility=hidden -ffunction-sections -fdata-sections
             -fno-builtin -fno-stack-protector -fno-optimize-sibling-calls
@@ -18,11 +18,11 @@ foreach(name hang load store illegal fetch intwdt stack)
             -Wl,--gc-sections -Wl,-e,rep_app_entry_v2 -Wl,--undefined=rep_abi_metadata
             -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/../hello_elf/text-padding.ld
             -I${CMAKE_CURRENT_SOURCE_DIR}/../../include
-            ${CMAKE_CURRENT_SOURCE_DIR}/fault.c -o ${name}.app.elf
+            ${CMAKE_CURRENT_SOURCE_DIR}/fault.c -o ${name}.app.debug.elf
         COMMAND ${REP_STRIP} --strip-unneeded --remove-section=.comment
             --remove-section=.got.loc --remove-section=.dynamic
             --remove-section=.xt.lit --remove-section=.xt.prop
-            --remove-section=.xtensa.info ${name}.app.elf
+            --remove-section=.xtensa.info -o ${name}.app.elf ${name}.app.debug.elf
         DEPENDS fault.c ../hello_elf/text-padding.ld ../../include/rep/rep_app_v2.h VERBATIM)
     list(APPEND outputs ${name}.app.elf)
 endforeach()

@@ -110,7 +110,7 @@ TSAN = [
 HOST_MODULES = [
     "test_app_ui", "test_board_1_75c", "test_boot_guard", "test_ci_gate", "test_display_completion", "test_elf",
     "test_endurance",
-    "test_lcd_clock", "test_packages", "test_power", "test_rep_deployment", "test_roundie_clock",
+    "test_lcd_clock", "test_packages", "test_power", "test_rep_deployment", "test_roundie_budget", "test_roundie_clock", "test_roundie_crash",
     "test_roundie_display", "test_roundie_elf", "test_roundie_launcher", "test_roundie_ota",
     "test_roundie_safe", "test_roundie_time", "test_run_m8", "test_storage_layout", "test_storage_mode", "test_tone",
 ]

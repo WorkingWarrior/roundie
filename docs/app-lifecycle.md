@@ -61,6 +61,37 @@ exceeding the existing 100 ms soft budget sets a sticky diagnostic and warning.
 A timeout does not mean instructions stopped. Non-returning native code is
 left to the configured watchdog/BootGuard; no task deletion or forced unload.
 
+**Application stack budget (M9 decision):** an application callback, including
+everything it calls through the SDK, may use at most 8 KiB of this stack. The
+measured peak, firmware path and the six example applications together, was
+about 2.2 KiB (RS1 HEALTH high-water mark 10,120 B free during the M8.1 runs).
+8 KiB for the application leaves about 4 KiB for the firmware path and reserve. Deeper use is
+an application fault. An overflow with large frames is not caught as such: it
+corrupts memory below the stack and appears as an unrelated panic
+([m9-stabilization.md](m9-stabilization.md)).
+
+Budget counters (M9, `roundie_elf_budget()`), kept per instance (reset on
+prepare) and per boot: callback durations in five buckets (< 1 ms, < 10 ms,
+< 80 ms, 80–100 ms near, > 100 ms over; exactly 100 ms is within the budget),
+the longest callback, the longest post-to-dispatch latency, the mailbox peak,
+and events dropped (queue full, `ESP_ERR_NO_MEM` to the poster), coalesced,
+rejected (stale instance or not admitted) and discarded (queued, then cleared
+by stop or suspend without a callback). They are measured after the callback
+returns, so they describe overruns and do not prevent them. Deterministic host
+tests in `tests/test_elf.c` (`budget_tests`) cover the boundaries, a series of
+expensive callbacks, overflow, backpressure, a stale event and stop with
+pending events.
+
+`!RE1 <id> BUDGET` (development diagnostics, read-only) replies with
+`{"budget":[…],"boot":[…]}`: fourteen counters each, in the field order of
+`roundie_elf_budget_t` (instance, callbacks, five buckets, longest callback,
+longest latency, queue peak, dropped, coalesced, rejected, discarded), at most
+about 350 bytes. It is a separate command so the STATUS, UI STATUS and RS1
+HEALTH frames keep their size. `tools/roundie_budget.py` decodes it; firmware
+before M9 answers with a STATUS frame, which the tool reports as unsupported.
+The endurance runner stores the boot counters in each telemetry sample and
+stops asking after an unsupported reply.
+
 ## States and failure handling
 
 Numeric states retain ABI 1 diagnostics 0–5:

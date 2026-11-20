@@ -49,11 +49,11 @@ static const rep_descriptor_v3_t *test_entry(const rep_api_v3_t *table)
 void mock_ui_relocate(esp_elf_t *elf)
 {
     elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){(uintptr_t)&__executable_start,
-        (uintptr_t)&etext - (uintptr_t)&__executable_start};
+        (uintptr_t)&etext - (uintptr_t)&__executable_start, 0};
     elf->sec[ELF_SEC_DATA] = (esp_elf_sec_t){(uintptr_t)&__data_start,
-        (uintptr_t)&_end - (uintptr_t)&__data_start};
+        (uintptr_t)&_end - (uintptr_t)&__data_start, 0};
     elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&etext,
-        (uintptr_t)&__data_start - (uintptr_t)&etext};
+        (uintptr_t)&__data_start - (uintptr_t)&etext, 0};
     const rep_descriptor_v3_t *(*entry3)(const rep_api_v3_t *) = test_entry;
     memcpy(&elf->entry, &entry3, sizeof(entry3));
 }

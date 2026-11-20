@@ -10,6 +10,7 @@
 #include "../components/roundie_elf/manager.c"
 #include "../components/roundie_elf/executor.c"
 #include "../components/roundie_elf/idf/loader.c"
+#include "../components/roundie_elf/crash.c"
 
 /* rep_audio_v1 backend: roundie_audio's stream calls, mocked. The ring takes
  * up to ROUNDIE_AUDIO_RING_BYTES; tests empty it as playback would. */
@@ -131,6 +132,8 @@ static uintptr_t (*resolve)(const char *);
 static const rep_api_t *app_api;
 static uint32_t previous_instance;
 static int64_t mock_clock = 100000;
+static int64_t mock_step = 1000; /* 0 freezes time for the budget tests. */
+static uint32_t event_cost_us;   /* Mock time a USER event callback takes. */
 static unsigned runtime_mode;
 static const rep_api_v2_t *runtime_api;
 static uint32_t runtime_callbacks[7];
@@ -139,13 +142,23 @@ static unsigned value_count;
 static uint32_t old_timer;
 static void *runtime_memory;
 
+static unsigned digests;
+bool roundie_elf_crash_digest(const uint8_t *bytes, size_t size, uint8_t digest[32])
+{
+    digests++;
+    for (unsigned i = 0; i < 32; i++) {
+        digest[i] = (uint8_t)(bytes[i % size] + i);
+    }
+    return true;
+}
+
 void mock_log(const char *tag, const char *format, ...)
 {
     (void)tag;
     (void)format;
 }
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return current_task; }
-int64_t esp_timer_get_time(void) { return mock_clock += 1000; }
+int64_t esp_timer_get_time(void) { return mock_clock += mock_step; }
 void *heap_caps_malloc(size_t bytes, unsigned caps)
 {
     (void)caps;
@@ -270,6 +283,7 @@ static int32_t runtime_event(const rep_context_v2_t *context, const rep_event_v2
     if (event->type == REP2_EVENT_USER) {
         assert(value_count < 32);
         values[value_count++] = event->value;
+        mock_clock += event_cost_us;
     }
     if (runtime_mode == 10) {
         unsigned deinit_before = deinit_count;
@@ -350,8 +364,8 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
 #endif
     uintptr_t first = (uintptr_t)entry < (uintptr_t)callback ? (uintptr_t)entry : (uintptr_t)callback;
     uintptr_t last = (uintptr_t)entry > (uintptr_t)callback ? (uintptr_t)entry : (uintptr_t)callback;
-    elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16};
-    elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&descriptor, sizeof(descriptor)};
+    elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16, 0};
+    elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&descriptor, sizeof(descriptor), 0};
     typedef const rep_app_descriptor_t *(*rep_entry_t)(const rep_api_t *);
     rep_entry_t address = entry;
     memcpy(&elf->entry, &address, sizeof(address));
@@ -369,8 +383,8 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
                 last = functions[i];
             }
         }
-        elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16};
-        elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&runtime_descriptor, sizeof(runtime_descriptor)};
+        elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16, 0};
+        elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&runtime_descriptor, sizeof(runtime_descriptor), 0};
         typedef const rep_descriptor_v2_t *(*entry_v2_t)(const rep_api_v2_t *);
         entry_v2_t entry_v2 = runtime_entry;
         memcpy(&elf->entry, &entry_v2, sizeof(entry_v2));
@@ -534,6 +548,228 @@ static void clock_leak_tests(void)
     assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0 && allocations_live == 0);
 }
 
+static roundie_elf_budget_t budget_now(void)
+{
+    roundie_elf_budget_t counters;
+    roundie_elf_budget(&counters, NULL);
+    return counters;
+}
+
+/* Posts one USER event costing cost_us and steps until it is dispatched; a
+ * TIMER event queued ahead of it is dispatched first at no cost. */
+static void budget_dispatch(uint32_t generation, uint32_t value, uint32_t cost_us)
+{
+    unsigned before = value_count;
+    event_cost_us = cost_us;
+    assert(roundie_elf_post(generation, value) == ESP_OK);
+    for (unsigned i = 0; i < 4 && value_count == before; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    assert(value_count == before + 1 && values[before] == value);
+    event_cost_us = 0;
+}
+
+/* Deterministic callback budget and mailbox cases (M9): mock time advances
+ * only by the cost a callback declares, so each duration is exact. */
+static void budget_tests(void)
+{
+    runtime_mode = 0;
+    memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
+    value_count = 0;
+    roundie_elf_budget_t boot_before;
+    roundie_elf_budget(NULL, &boot_before);
+    mock_step = 0;
+    roundie_elf_set_allowed(true);
+    assert(roundie_elf_prepare());
+    uint32_t generation = status.instance;
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING);
+    roundie_elf_budget_t counters = budget_now();
+    assert(counters.instance == generation && counters.dropped == 0 && counters.discarded == 0);
+    for (unsigned i = 1; i < ROUNDIE_ELF_BUDGET_BUCKETS; i++) {
+        assert(counters.buckets[i] == 0);
+    }
+
+    /* 1-3: in budget, at the near threshold and at the limit, over by 1 us. */
+    const uint32_t costs[] = {500, 5000, 79999, 80000, 100000, 100001};
+    const unsigned expected[] = {0, 1, 2, 3, 3, 4};
+    for (unsigned i = 0; i < sizeof(costs) / sizeof(costs[0]); i++) {
+        roundie_elf_budget_t previous = budget_now();
+        budget_dispatch(generation, i, costs[i]);
+        counters = budget_now();
+        assert(counters.buckets[expected[i]] == previous.buckets[expected[i]] + 1);
+        for (unsigned bucket = 1; bucket < ROUNDIE_ELF_BUDGET_BUCKETS; bucket++) {
+            if (bucket != expected[i]) {
+                assert(counters.buckets[bucket] == previous.buckets[bucket]);
+            }
+        }
+        assert(status.over_budget == (costs[i] > ROUNDIE_ELF_CALLBACK_BUDGET_US));
+        assert(status.state == ROUNDIE_ELF_RUNNING);
+    }
+    assert(counters.callback_max_us == 100001 && status.callback_max_us == 100001);
+
+    /* 4: a series of expensive callbacks is counted; the budget is soft and
+     * the application keeps running (a native callback cannot be preempted). */
+    for (uint32_t i = 0; i < 5; i++) {
+        budget_dispatch(generation, 10 + i, 90000);
+    }
+    for (uint32_t i = 0; i < 3; i++) {
+        budget_dispatch(generation, 20 + i, 150000);
+    }
+    counters = budget_now();
+    assert(counters.buckets[3] == 2 + 5 && counters.buckets[4] == 1 + 3);
+    assert(counters.callback_max_us == 150000 && status.state == ROUNDIE_ELF_RUNNING);
+    assert(counters.callbacks == status.callbacks);
+
+    /* Drain a due timer with time frozen, so nothing else enters the queue. */
+    for (unsigned i = 0; i < 4; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    assert(mailbox.count == 0);
+
+    /* 5: overflow refuses the newest event and keeps the queued ones. */
+    value_count = 0;
+    for (uint32_t i = 0; i < ROUNDIE_ELF_EVENT_CAPACITY; i++) {
+        assert(roundie_elf_post(generation, 100 + i) == ESP_OK);
+    }
+    assert(roundie_elf_post(generation, 199) == ESP_ERR_NO_MEM);
+    counters = budget_now();
+    assert(counters.queue_peak == ROUNDIE_ELF_EVENT_CAPACITY && counters.dropped == 1);
+
+    /* 6: backpressure clears after one dispatch; the queue keeps FIFO order. */
+    roundie_elf_step(esp_timer_get_time());
+    assert(value_count == 1 && values[0] == 100);
+    assert(roundie_elf_post(generation, 108) == ESP_OK);
+    assert(roundie_elf_post(generation, 199) == ESP_ERR_NO_MEM);
+    for (unsigned i = 0; i < ROUNDIE_ELF_EVENT_CAPACITY && mailbox.count != 0; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    assert(mailbox.count == 0 && value_count == ROUNDIE_ELF_EVENT_CAPACITY + 1);
+    for (unsigned i = 0; i < value_count; i++) {
+        assert(values[i] == 100 + i);
+    }
+    counters = budget_now();
+    assert(counters.dropped == 2 && counters.queue_peak == ROUNDIE_ELF_EVENT_CAPACITY);
+
+    /* Latency: the third of three queued 30 ms events waits for two. */
+    value_count = 0;
+    event_cost_us = 30000;
+    for (uint32_t i = 0; i < 3; i++) {
+        assert(roundie_elf_post(generation, i) == ESP_OK);
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    event_cost_us = 0;
+    assert(value_count == 3 && budget_now().latency_max_us >= 60000);
+
+    /* 7: an event for a previous instance is rejected as stale. */
+    uint32_t rejected = budget_now().rejected;
+    assert(roundie_elf_post(generation - 1, 0) == ESP_ERR_INVALID_STATE);
+    assert(budget_now().rejected == rejected + 1);
+
+    /* 8: stop with pending events discards them without a callback. */
+    uint32_t event_callbacks = runtime_callbacks[2];
+    for (uint32_t i = 0; i < 3; i++) {
+        assert(roundie_elf_post(generation, 200 + i) == ESP_OK);
+    }
+    control_step(ROUNDIE_ELF_STOP);
+    assert(status.state == ROUNDIE_ELF_STOPPED && runtime_callbacks[2] == event_callbacks);
+    counters = budget_now();
+    assert(counters.discarded == 3);
+    /* Refused: the post from runtime_stop and this one after stop. */
+    assert(roundie_elf_post(generation, 1) == ESP_ERR_INVALID_STATE);
+    assert(budget_now().rejected == rejected + 3);
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0 && allocations_live == 0);
+    assert(budget_now().discarded == 3);
+
+    /* Boot totals accumulate across instances; the next instance resets. */
+    roundie_elf_budget_t boot;
+    roundie_elf_budget(&counters, &boot);
+    assert(boot.callbacks >= boot_before.callbacks + counters.callbacks);
+    assert(boot.dropped == boot_before.dropped + 2 && boot.discarded == boot_before.discarded + 3);
+    assert(boot.callback_max_us >= 150000);
+    mock_step = 1000;
+    value_count = 0;
+    puts("Executor budget/mailbox PASS: 8 deterministic cases with exact boundaries; soft budget");
+}
+
+/* Retained crash record (M9): load context, panic details, persistence across
+ * simulated restarts until the next load, torn records, address mapping. */
+static void crash_tests(void)
+{
+    memset(&crash_retained, 0xa5, sizeof(crash_retained)); /* power-on garbage */
+    roundie_elf_crash_boot();
+    roundie_elf_crash_report_t report;
+    assert(!roundie_elf_crash_last(&report) && crash_valid() && crash_retained.loaded == 0);
+
+    runtime_mode = 0;
+    memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
+    value_count = 0;
+    roundie_elf_set_allowed(true);
+    assert(roundie_elf_prepare());
+    uint32_t generation = status.instance;
+    unsigned digests_before = digests;
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING && digests == digests_before + 1);
+    assert(crash_valid() && crash_retained.loaded == 1 && crash_retained.fault == 0);
+    const roundie_elf_crash_context_t *context = &crash_retained.context;
+    assert(context->instance == generation && context->digest[1] == (uint8_t)(fixture[1] + 1));
+    assert(context->sections[0].addr == (uint32_t)image.sec[ELF_SEC_TEXT].addr);
+    assert(context->sections[0].size == image.sec[ELF_SEC_TEXT].size && context->text_exec == context->sections[0].addr);
+
+    /* A panic inside application text, then a restart. */
+    roundie_elf_crash_fault_t fault = {.pc = context->sections[0].addr + 4, .exccause = 29, .excvaddr = 0x10,
+        .sp = 0x3fc90000, .exception = 4, .core = 1, .depth = 99,
+        .frames = {context->sections[0].addr + 4, 0x40380000}};
+    roundie_elf_crash_fault(&fault);
+    roundie_elf_crash_boot();
+    assert(roundie_elf_crash_last(&report) && report.loaded && report.fault);
+    assert(report.details.pc == fault.pc && report.details.exccause == 29 && report.details.excvaddr == 0x10);
+    assert(report.details.depth == ROUNDIE_ELF_CRASH_FRAMES && report.context.instance == generation);
+    uint32_t vaddr = 0;
+    assert(roundie_elf_crash_locate(&report.context, report.details.pc, &vaddr) == 0 && vaddr == 4);
+    assert(roundie_elf_crash_locate(&report.context, report.details.frames[1], &vaddr) == -1);
+    roundie_elf_crash_boot(); /* Safe Mode, then RS1 REBOOT: still reported. */
+    assert(roundie_elf_crash_last(&report) && report.fault && report.context.instance == generation);
+
+    /* Unload keeps the fault; the next load clears it. */
+    control_step(ROUNDIE_ELF_STOP);
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && crash_valid() && crash_retained.loaded == 0 &&
+           crash_retained.fault == 1);
+    assert(roundie_elf_prepare());
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(crash_retained.loaded == 1 && crash_retained.fault == 0 &&
+           crash_retained.context.instance == status.instance);
+    control_step(ROUNDIE_ELF_STOP);
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0 && allocations_live == 0);
+
+    /* A torn record is absent; a panic on a torn record keeps only the details. */
+    crash_retained.context.text_exec ^= 1U;
+    roundie_elf_crash_boot();
+    assert(!roundie_elf_crash_last(&report) && crash_valid() && crash_retained.fault == 0);
+    crash_retained.context.instance = 77; /* torn, not resealed */
+    roundie_elf_crash_fault(&fault);
+    roundie_elf_crash_boot();
+    assert(roundie_elf_crash_last(&report) && report.fault && !report.loaded && report.context.instance == 0);
+
+    /* Text matches its data-bus and instruction-bus addresses; ends are exclusive. */
+    roundie_elf_crash_context_t map = {.text_exec = 0x42000000,
+        .sections = {{0x0, 0x3c000000, 0x100}, {0x300, 0x3fc80000, 0}, {0x280, 0x3fc80100, 0x40},
+                     {0x200, 0x3c100000, 0x20}}};
+    assert(roundie_elf_crash_locate(&map, 0x42000010, &vaddr) == 0 && vaddr == 0x10);
+    assert(roundie_elf_crash_locate(&map, 0x3c000010, &vaddr) == 0 && vaddr == 0x10);
+    assert(roundie_elf_crash_locate(&map, 0x3c100004, &vaddr) == 3 && vaddr == 0x204);
+    assert(roundie_elf_crash_locate(&map, 0x3fc8013f, &vaddr) == 2 && vaddr == 0x2bf);
+    assert(roundie_elf_crash_locate(&map, 0x42000100, &vaddr) == -1);
+    assert(roundie_elf_crash_locate(&map, 0x3fc80000, &vaddr) == -1); /* empty bss */
+    assert(roundie_elf_crash_locate(&map, 0, &vaddr) == -1);
+    puts("ELF crash record PASS: context, panic details, restart persistence, torn record, address map");
+}
+
 static void runtime_tests(const char *path)
 {
     FILE *source = fopen(path, "rb");
@@ -542,6 +778,8 @@ static void runtime_tests(const char *path)
     assert(fclose(source) == 0);
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_ARG);
     clock_leak_tests();
+    budget_tests();
+    crash_tests();
     for (runtime_mode = 0; runtime_mode <= 11; runtime_mode++) {
         memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
         value_count = 0;

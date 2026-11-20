@@ -27,6 +27,17 @@ bool roundie_ui_input(uint32_t generation, uint32_t widget, uint32_t origin)
 bool roundie_ui_inject_value(uint32_t generation, uint32_t widget, int32_t value)
 { (void)generation; (void)widget; (void)value; return false; }
 static char digest_hex[65];
+void roundie_elf_budget(roundie_elf_budget_t *instance, roundie_elf_budget_t *boot)
+{
+    roundie_elf_budget_t counters = {42, 9, {1, 2, 3, 2, 1}, 150000, 60000, 8, 2, 1, 3, 4294967295U};
+    if (instance != NULL) {
+        *instance = counters;
+    }
+    if (boot != NULL) {
+        counters.callbacks = 4294967295U;
+        *boot = counters;
+    }
+}
 
 int64_t esp_timer_get_time(void) { return clock_us; }
 void roundie_ota_status(roundie_ota_status_t *out) { *out = ota; }
@@ -152,6 +163,10 @@ int main(int argc, char **argv)
     boot.stage = ROUNDIE_BOOT_STABLE;
     assert(command("STATUS") == ESP_OK && allow);
     assert(command("RESOURCES") == ESP_OK);
+    assert(command("BUDGET") == ESP_OK);
+    assert(strcmp(response, "\n!RE1 12345678 0 {\"budget\":[42,9,1,2,3,2,1,150000,60000,8,2,1,3,4294967295],"
+                  "\"boot\":[42,4294967295,1,2,3,2,1,150000,60000,8,2,1,3,4294967295]}\n") == 0);
+    assert(command("BUDGET x") != ESP_OK); /* Only the exact command reads counters. */
     assert(command("EVENT 42 4294967295") == ESP_OK);
     assert(command("EVENT 42 4294967296") == ESP_ERR_INVALID_ARG);
     assert(command("EVENT 4294967296 1") == ESP_ERR_INVALID_ARG);

@@ -208,6 +208,19 @@ class SoakTests(RunnerTestCase):
         self.assertEqual(report["criteria_results"]["delivery"], "NOT APPLICABLE")
         self.assertTrue((self.out / "report.md").read_text().startswith("# M8.1 endurance"))
 
+    def test_budget_counters_are_sampled_and_older_firmware_is_asked_once(self):
+        fake = self.health_device()
+        fake.budget["over"] = 2
+        self.run_endurance("--hours", "0.02", fake=fake)
+        self.assertEqual({sample["budget"]["over"] for sample in self.telemetry()}, {2})
+        first_run = len(self.telemetry())
+        older = self.health_device()
+        older.budget = None
+        code, report = self.run_endurance("--hours", "0.02", fake=older)
+        self.assertEqual(code, 0, report["criteria_results"])
+        self.assertTrue(all(sample["budget"] is None for sample in self.telemetry()[first_run:]))
+        self.assertEqual(older.budget_queries, 1)
+
     def test_heap_regression_fails_memory(self):
         fake = self.health_device()
         fake.health_step = {"internal_free": -3000}
