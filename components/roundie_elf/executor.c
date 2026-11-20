@@ -18,9 +18,53 @@ static QueueHandle_t requests;
 static TaskHandle_t task;
 static atomic_bool input_owned;
 
-/* Executor stack guard (M9.1): fail closed when it cannot be armed. */
+/* Executor stack guard (M9.1): fail closed when it cannot be armed. A light
+ * sleep (M8-B) raises guard_epoch; the executor rechecks and re-arms the guard
+ * before it runs native code again, and a failed recheck is final until
+ * restart. */
 enum { GUARD_PENDING, GUARD_ARMED, GUARD_FAILED };
 static atomic_int guard_state;
+static atomic_uint guard_epoch;   /* recheck requests (power manager) */
+static atomic_uint guard_checked; /* the epoch the executor last checked */
+static atomic_uint guard_checks;
+static atomic_uint guard_failures;
+static atomic_uint guard_lost;    /* lost mask of the last recheck */
+
+void roundie_elf_guard_recheck(void)
+{
+    atomic_fetch_add(&guard_epoch, 1U);
+}
+
+void roundie_elf_guard_status(roundie_elf_guard_status_t *out)
+{
+    int state = atomic_load(&guard_state);
+    out->state = state == GUARD_ARMED ? ROUNDIE_ELF_GUARD_ARMED :
+        state == GUARD_FAILED ? ROUNDIE_ELF_GUARD_FAILED : ROUNDIE_ELF_GUARD_PENDING;
+    out->recheck_pending = atomic_load(&guard_epoch) != atomic_load(&guard_checked);
+    out->checks = atomic_load(&guard_checks);
+    out->failures = atomic_load(&guard_failures);
+    out->lost = atomic_load(&guard_lost);
+}
+
+/* Executor only, before every entry into native code: whether the guard is
+ * armed for the current epoch. */
+static bool guard_current(bool guarded)
+{
+    unsigned epoch = atomic_load(&guard_epoch);
+    if (!guarded || epoch == atomic_load(&guard_checked)) {
+        return guarded;
+    }
+    uint32_t lost = 0;
+    bool armed = roundie_elf_stack_recheck(&lost);
+    atomic_store(&guard_lost, lost);
+    atomic_fetch_add(&guard_checks, 1U);
+    if (!armed) {
+        atomic_fetch_add(&guard_failures, 1U);
+        atomic_store(&guard_state, GUARD_FAILED);
+    }
+    atomic_store(&guard_checked, epoch);
+    return armed;
+}
 
 bool roundie_elf_input_busy(void)
 {
@@ -31,6 +75,8 @@ static void execute(void *unused)
 {
     (void)unused;
     roundie_elf_bind_executor(xTaskGetCurrentTaskHandle());
+    /* Arming covers every sleep before it. */
+    atomic_store(&guard_checked, atomic_load(&guard_epoch));
     bool guarded = roundie_elf_stack_arm();
     atomic_store(&guard_state, guarded ? GUARD_ARMED : GUARD_FAILED);
     if (!guarded) {
@@ -42,6 +88,7 @@ static void execute(void *unused)
         if (xQueueReceive(requests, &request, pdMS_TO_TICKS(10)) == pdTRUE) {
             /* Idle task is unsubscribed. A non-returning native callback trips
              * the configured system watchdog; never delete/unload it forcibly. */
+            guarded = guard_current(guarded);
             if (guarded && esp_task_wdt_add(NULL) == ESP_OK) {
                 roundie_elf_execute(request.bytes, request.size);
                 esp_task_wdt_delete(NULL);
@@ -52,6 +99,14 @@ static void execute(void *unused)
         }
         roundie_elf_status_t current;
         roundie_elf_status(&current);
+        /* A loaded application's callbacks are native code too; with the
+         * guard lost it stays frozen rather than run unguarded. */
+        if (current.state != ROUNDIE_ELF_UNLOADED) {
+            guarded = guard_current(guarded);
+        }
+        if (current.state != ROUNDIE_ELF_UNLOADED && !guarded) {
+            continue;
+        }
         if ((current.state != ROUNDIE_ELF_UNLOADED ||
              current.control_submitted != current.control_completed) && esp_task_wdt_add(NULL) == ESP_OK) {
             roundie_elf_step(esp_timer_get_time());

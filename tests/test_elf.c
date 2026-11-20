@@ -449,7 +449,23 @@ bool roundie_elf_stack_create(TaskFunction_t entry, TaskHandle_t *task)
     return !fail_task;
 }
 static bool fail_arm;
-bool roundie_elf_stack_arm(void) { return !fail_arm; }
+static bool sleep_after_arm; /* a light sleep right after the executor armed */
+bool roundie_elf_stack_arm(void)
+{
+    if (sleep_after_arm) {
+        roundie_elf_guard_recheck();
+    }
+    return !fail_arm;
+}
+/* M8-B: the recheck after a light sleep. */
+static bool fail_recheck;
+static unsigned rechecks;
+bool roundie_elf_stack_recheck(uint32_t *lost)
+{
+    rechecks++;
+    *lost = fail_recheck ? 0x01U : 0x00U;
+    return !fail_recheck;
+}
 int esp_task_wdt_add(void *task) { (void)task; return 0; }
 int esp_task_wdt_delete(void *task) { (void)task; return 0; }
 
@@ -480,6 +496,54 @@ static void executor_once(bool arm_fails)
         assert(load_count == loads);
     } else {
         assert(load_count == loads + 1U);
+    }
+    assert(!roundie_elf_busy() && !roundie_elf_input_busy());
+    assert(live_bytes == 0 && allocations_live == 0);
+    atomic_store(&guard_state, GUARD_PENDING);
+}
+
+/* M8-B: a light sleep between arming and the next request. The request runs
+ * only after a successful recheck; a failed recheck cancels it, disables
+ * native applications (submit refuses) and is reported. */
+static void executor_after_sleep(bool recheck_fails)
+{
+    uint8_t *copy = heap_caps_malloc(fixture_size, 0);
+    memcpy(copy, fixture, fixture_size);
+    assert(roundie_elf_prepare());
+    atomic_store(&input_owned, true);
+    unsigned loads = load_count;
+    unsigned checks_before = rechecks;
+    roundie_elf_guard_status_t before;
+    roundie_elf_guard_status(&before);
+    sleep_after_arm = true;
+    fail_recheck = recheck_fails;
+    executor_request = (request_t){copy, fixture_size};
+    executor_receives = 0;
+    executor_running = true;
+    if (setjmp(executor_exit) == 0) {
+        execute(NULL);
+    }
+    executor_running = false;
+    sleep_after_arm = false;
+    fail_recheck = false;
+    assert(executor_receives == 2U);
+    assert(rechecks == checks_before + 1U);
+    roundie_elf_guard_status_t after;
+    roundie_elf_guard_status(&after);
+    assert(!after.recheck_pending);
+    assert(after.checks == before.checks + 1U);
+    if (recheck_fails) {
+        assert(load_count == loads);
+        assert(after.state == ROUNDIE_ELF_GUARD_FAILED && after.failures == before.failures + 1U);
+        assert(after.lost == 0x01U);
+        uint8_t *again = heap_caps_malloc(fixture_size, 0);
+        memcpy(again, fixture, fixture_size);
+        assert(roundie_elf_start(again, fixture_size) == ESP_ERR_NOT_SUPPORTED ||
+               roundie_elf_submit(again, fixture_size) == ESP_ERR_NOT_SUPPORTED);
+        heap_caps_free(again);
+    } else {
+        assert(load_count == loads + 1U);
+        assert(after.state == ROUNDIE_ELF_GUARD_ARMED && after.failures == before.failures);
     }
     assert(!roundie_elf_busy() && !roundie_elf_input_busy());
     assert(live_bytes == 0 && allocations_live == 0);
@@ -1129,6 +1193,14 @@ int main(int argc, char **argv)
     atomic_store(&guard_state, GUARD_PENDING);
     executor_once(false);
     executor_once(true);
+    {
+        /* Without a sleep there is no recheck. */
+        unsigned before = rechecks;
+        executor_once(false);
+        assert(rechecks == before);
+    }
+    executor_after_sleep(false);
+    executor_after_sleep(true);
     roundie_elf_set_allowed(false);
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_STATE);
     assert(!roundie_elf_busy() && allocations_live == 0);
