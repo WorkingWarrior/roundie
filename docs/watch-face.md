@@ -212,3 +212,22 @@ Polish watch face and accepted Google Sans instead of Montserrat.
   device.
 
 Evidence is in `roundie-backups/watch-0.3.24-2026-11-03/`, outside Git.
+
+## Migration to the watch face platform (M10)
+
+- **Decision (M10):** Home is no longer the Watch application. It is the
+  watch face host ([watch-face-platform.md](watch-face-platform.md)): the
+  built-in system face or a face installed as an RWF1 package and chosen in
+  the gallery. Boot and the end of an application return to it.
+- `org.roundie.watch` stays an ordinary REP application with ABI 3,
+  unchanged, opened from the list (one swipe up from Home). It is no longer
+  started at boot; `roundie_launcher_set_home(…)` remains for builds that
+  want an application as home, and the firmware calls
+  `roundie_launcher_set_home_face` instead.
+- The Watch application's own gestures are unchanged inside it: the
+  left-edge swipe closes it, now returning to the face Home.
+- Face equivalents of the Watch application's dial live in `faces/`
+  (`classic_analog`, `minimal_digital`, `information`), built with
+  `tools/roundie_face.py` ([watch-face-authoring.md](watch-face-authoring.md)).
+- The time zone, clock events and fonts described above are shared: faces
+  receive the same local time and POSIX TZ rule through the face data sample.

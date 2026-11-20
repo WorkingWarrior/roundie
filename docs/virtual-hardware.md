@@ -74,6 +74,11 @@ together with `wait`, `release`, `screenshot` and `quit`.
 | `panel-click X Y` | The panel control at frame pixel (X, Y): prints `panel-click COMMAND` and applies it; fails off a control. |
 | `panel-screenshot FILE.png` | The panel's frame (360 × 392). |
 
+Watch faces (M10) add `--install-face FILE.rwf` and the script commands
+`face-select`, `face-remove`, `face-status` and `wait-face`; Home is the
+launcher state `HOME` (`wait-nav HOME`). See
+[watch-face-platform.md](watch-face-platform.md#on-the-virtual-hardware).
+
 The existing `reset KIND` command (M3) still restarts only the time
 subsystem inside the running process; `reboot` restarts the whole process.
 
