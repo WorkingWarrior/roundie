@@ -248,6 +248,26 @@ class WorkflowAgreementTests(unittest.TestCase):
         self.assertEqual(sorted(names), sorted(gate.REQUIRED_JOBS))
         self.assertEqual(len(set(gate.REQUIRED_JOBS)), len(gate.REQUIRED_JOBS))
 
+    def test_every_idf_image_reference_has_one_pinned_digest(self):
+        # M9: the firmware toolchain is pinned by image digest in the workflow,
+        # the CI Containerfile and the documented local command.
+        digests = set()
+        for path in (WORKFLOW, ROOT / "tools" / "ci" / "Containerfile", ROOT / "docs" / "ci.md"):
+            for reference in re.findall(r"espressif/idf:[^\s`\"']*", path.read_text()):
+                pinned = re.fullmatch(r"espressif/idf:v6\.1@sha256:([0-9a-f]{64})", reference)
+                if path.suffix == ".md" and pinned is None:
+                    continue  # prose: "espressif/idf:v6.1 by digest", "@sha256:81893c71…"
+                self.assertIsNotNone(pinned, f"{path.name}: {reference}")
+                digests.add(pinned.group(1))
+        self.assertEqual(len(digests), 1, digests)
+
+    def test_firmware_build_fails_when_dependencies_lock_changes(self):
+        # A cache miss lets the component manager resolve components; the
+        # build must not silently rewrite the lock.
+        block = self.jobs["firmware"]
+        self.assertIn('cp dependencies.lock "$RUNNER_TEMP/dependencies.lock"', block)
+        self.assertIn('cmp dependencies.lock "$RUNNER_TEMP/dependencies.lock"', block)
+
 
 if __name__ == "__main__":
     unittest.main()
