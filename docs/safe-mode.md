@@ -33,6 +33,8 @@ remain optional. A LittleFS-only failure may enter Safe Mode while a real
 successful core self-test confirms the image. An inherited recovery latch
 does not itself pass the new image's self-test. Missing/broken GUI cannot
 confirm PENDING_VERIFY; existing IDF rollback behavior remains authoritative.
+For that reason RO1 refuses BEGIN and ACTIVATE in a Safe Mode whose next
+image could not confirm (M9.1). Leave Safe Mode with `RS1 REBOOT` first.
 For already VALID images, failed GUI evidence enters recovery without an
 INVALID/ABORTED write. Recovery operational/stable markers are separate from
 OTA confirmation.

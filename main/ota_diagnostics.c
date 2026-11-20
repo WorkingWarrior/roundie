@@ -159,6 +159,12 @@ void roundie_ota_command(char *line, bool discard)
             restart = roundie_ota_restart_allowed() ||
                 (roundie_recovery_active() && roundie_recovery_restart_allowed());
             error = restart ? ESP_OK : ESP_ERR_INVALID_STATE;
+        } else if ((command.operation == ROUNDIE_OTA_BEGIN || command.operation == ROUNDIE_OTA_ACTIVATE) &&
+                   !roundie_recovery_confirmation_allowed(ESP_OTA_IMG_PENDING_VERIFY)) {
+            /* A new image started from this Safe Mode inherits the latch and
+             * can never confirm, so it would end INVALID (0.3.59, M9.1).
+             * Leave Safe Mode first (RS1 REBOOT). */
+            error = ESP_ERR_INVALID_STATE;
         } else {
             error = roundie_ota_execute(&command);
         }

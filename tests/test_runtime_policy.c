@@ -6,6 +6,8 @@
 #include "../main/ota_diagnostics.c"
 
 static bool app_busy;
+static bool safe_latched;
+static roundie_ota_operation_t next_operation = ROUNDIE_OTA_BEGIN;
 static unsigned mutations;
 static roundie_ota_status_t backend;
 static char reply[1024];
@@ -14,6 +16,11 @@ bool roundie_app_runtime_busy(void) { return app_busy; }
 void roundie_ota_status(roundie_ota_status_t *out) { *out = backend; }
 bool roundie_recovery_active(void) { return false; }
 bool roundie_recovery_restart_allowed(void) { return false; }
+bool roundie_recovery_confirmation_allowed(int ota_state)
+{
+    assert(ota_state == ESP_OTA_IMG_PENDING_VERIFY);
+    return !safe_latched;
+}
 void roundie_boot_planned_restart(void) { assert(!app_busy); }
 void esp_restart(void) { assert(!app_busy); }
 void vTaskDelay(unsigned ticks) { (void)ticks; }
@@ -33,12 +40,12 @@ esp_err_t roundie_ota_parse(char *line, bool discard, roundie_ota_command_t *out
 {
     (void)line;
     (void)discard;
-    *out = (roundie_ota_command_t){.id = "12345678", .operation = ROUNDIE_OTA_BEGIN};
+    *out = (roundie_ota_command_t){.id = "12345678", .operation = next_operation};
     return ESP_OK;
 }
 esp_err_t roundie_ota_execute(const roundie_ota_command_t *command)
 {
-    assert(command->operation == ROUNDIE_OTA_BEGIN);
+    assert(command->operation == ROUNDIE_OTA_BEGIN || command->operation == ROUNDIE_OTA_ACTIVATE);
     mutations++;
     return ESP_OK;
 }
@@ -58,5 +65,18 @@ int main(void)
     roundie_ota_command(line, false);
     assert(mutations == 1 && strstr(reply, "12345678 0 ") != NULL);
     assert(roundie_ota_restart_allowed());
+    /* M9.1: an image started from a latched Safe Mode can never confirm, so
+     * BEGIN and ACTIVATE are refused before they reach the manager. */
+    safe_latched = true;
+    roundie_ota_operation_t refused[] = {ROUNDIE_OTA_BEGIN, ROUNDIE_OTA_ACTIVATE};
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        next_operation = refused[i];
+        roundie_ota_command(line, false);
+        assert(sscanf(reply, "\n!RO1 12345678 %d", &code) == 1);
+        assert(mutations == 1 && code == ESP_ERR_INVALID_STATE);
+    }
+    safe_latched = false;
+    roundie_ota_command(line, false);
+    assert(mutations == 2 && strstr(reply, "12345678 0 ") != NULL);
     puts("RO1 controller exclusion PASS: manager mutation and restart denied while native owner exists");
 }

@@ -134,6 +134,11 @@ IDLE -> RECEIVING -> VERIFYING -> READY -> ACTIVATION_PENDING
 Only one session exists. BEGIN requires passed core self-test, a compatible,
 structurally valid running image with metadata `VALID`, unchanged boot
 selection, and IDF's next partition equal to the checked inactive slot.
+BEGIN and ACTIVATE are also refused (`ESP_ERR_INVALID_STATE`) in a Safe Mode
+whose next image could not confirm, for example one with an inherited latch.
+Such an image would end INVALID (0.3.59, see
+[elf-runtime-hardening-m9-1.md](elf-runtime-hardening-m9-1.md)). Leave Safe
+Mode first (`RS1 REBOOT`).
 Manual `UNDEFINED` or missing metadata is diagnosed separately and does not
 authorize overwriting the other slot. Metadata repair is not implemented.
 
