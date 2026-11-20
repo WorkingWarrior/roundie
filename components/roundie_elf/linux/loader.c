@@ -296,6 +296,11 @@ bool roundie_elf_image_range(uintptr_t *begin, uintptr_t *end)
     return *begin < *end;
 }
 
+void roundie_elf_loader_phase(uint32_t phase)
+{
+    (void)phase; /* no retained crash record on the desktop */
+}
+
 void roundie_elf_loader_unload(void)
 {
     atomic_store(&image_end, 0);

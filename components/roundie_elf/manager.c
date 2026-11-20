@@ -693,6 +693,13 @@ void roundie_elf_budget(roundie_elf_budget_t *instance, roundie_elf_budget_t *bo
     roundie_unlock(&lock);
 }
 
+/* callback_active and the crash-record phase change together (M9.1). */
+static void callback_state(bool active)
+{
+    callback_active = active;
+    roundie_elf_loader_phase(active ? ROUNDIE_ELF_PHASE_CALLBACK : ROUNDIE_ELF_PHASE_IDLE);
+}
+
 static void callback_finished(int64_t started)
 {
     uint32_t elapsed = (uint32_t)(roundie_time_us() - started);
@@ -709,14 +716,14 @@ static void callback_finished(int64_t started)
     budget_callback(&budget, elapsed);
     budget_callback(&budget_boot, elapsed);
     roundie_unlock(&lock);
-    callback_active = false;
+    callback_state(false);
 }
 
 static int32_t invoke(rep_callback_v2_t callback)
 {
     rep_context_v2_t context = {status.abi_version, sizeof(context), status.instance, 0};
     int64_t started = roundie_time_us();
-    callback_active = true;
+    callback_state(true);
     int32_t result = callback(&context);
     callback_finished(started);
     if (status.app_result == 0) {
@@ -810,7 +817,9 @@ static void unload(void)
     storage.available = false;
     release_audio(); /* ABI 1 and 2 never open one; ABI 3 released it at stop */
     if (loader_initialized) {
+        roundie_elf_loader_phase(ROUNDIE_ELF_PHASE_UNLOAD);
         roundie_elf_loader_unload();
+        roundie_elf_loader_phase(ROUNDIE_ELF_PHASE_IDLE);
         loader_initialized = false;
         status.resources_released++;
     }
@@ -1060,7 +1069,7 @@ void roundie_elf_step(int64_t now_us)
         budget_latency(&budget, latency);
         budget_latency(&budget_boot, latency);
         roundie_unlock(&lock);
-        callback_active = true;
+        callback_state(true);
         result = lifecycle.on_event(&context, &event);
         callback_finished(started);
         status.events_delivered++;
@@ -1121,7 +1130,9 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
     }
     loader_initialized = true;
     status.resources_acquired++;
+    roundie_elf_loader_phase(ROUNDIE_ELF_PHASE_LOAD);
     status.loader_result = roundie_elf_loader_relocate(bytes, size, resolver);
+    roundie_elf_loader_phase(ROUNDIE_ELF_PHASE_IDLE);
     if (status.loader_result != 0) {
         snprintf(status.error, sizeof(status.error), "loader-relocation");
         goto cleanup;
@@ -1141,7 +1152,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         roundie_elf_entry_t loaded = roundie_elf_loader_entry();
         _Static_assert(sizeof(entry_v2) == sizeof(loaded), "Loader entry pointer");
         memcpy(&entry_v2, &loaded, sizeof(entry_v2));
-        callback_active = true;
+        callback_state(true);
         const rep_descriptor_v2_t *descriptor;
         /* For every ABI: an ABI 2 application must not inherit the previous
          * application's clock subscription, since it knows no clock event. */
@@ -1152,7 +1163,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
         if (status.abi_version == 3) {
             ui_owned = roundie_ui_open(status.instance, ui_input);
             if (!ui_owned) {
-                callback_active = false;
+                callback_state(false);
                 snprintf(status.error, sizeof(status.error), "ui-owner-unavailable");
                 goto cleanup;
             }
@@ -1235,7 +1246,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
     roundie_elf_entry_t loaded = roundie_elf_loader_entry();
     _Static_assert(sizeof(entry) == sizeof(loaded), "Loader entry pointer representation");
     memcpy(&entry, &loaded, sizeof(entry));
-    callback_active = true;
+    callback_state(true);
     const rep_app_descriptor_t *descriptor = entry(&api);
     callback_finished(started);
     if (((uintptr_t)descriptor & 3U) != 0 || !loaded_range(descriptor, sizeof(*descriptor), false) ||
@@ -1253,7 +1264,7 @@ bool roundie_elf_execute(const uint8_t *bytes, size_t size)
     status.during = memory();
     status.executed = true;
     started = roundie_time_us();
-    callback_active = true;
+    callback_state(true);
     status.app_result = descriptor->on_start(&context);
     callback_finished(started);
 cleanup:

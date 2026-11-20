@@ -89,7 +89,21 @@ static int append_health(char *response, size_t capacity, int length)
         }
         length += added;
     }
-    added = snprintf(response + length, capacity - (size_t)length, "}");
+    /* M9.1: executor stack guard; usable_min is the high-water mark above the
+     * monitor limit (the red zone is never usable), -1 without an executor. */
+    roundie_elf_crash_stack_t guard;
+    roundie_elf_crash_executor_layout(&guard);
+    TaskHandle_t executor = xTaskGetHandle("rep_executor");
+    long usable_min = -1;
+    if (executor != NULL && guard.stack_high != 0U) {
+        long free_bytes = (long)uxTaskGetStackHighWaterMark(executor);
+        long red_zone = (long)(guard.limit - guard.stack_low);
+        usable_min = free_bytes > red_zone ? free_bytes - red_zone : 0;
+    }
+    added = snprintf(response + length, capacity - (size_t)length,
+                     "},\"executor_guard\":{\"armed\":%lu,\"limit\":%lu,\"usable_min\":%ld,\"spurious\":%lu}",
+                     (unsigned long)guard.armed, (unsigned long)guard.limit, usable_min,
+                     (unsigned long)roundie_elf_crash_monitor_spurious_count());
     if (added < 0 || (size_t)added >= capacity - (size_t)length) {
         return -1;
     }
@@ -167,11 +181,13 @@ void roundie_recovery_poll(int64_t now_us)
 
 /* RS1 CRASH (M9, read-only): the retained native crash record found at boot,
  * in its own frame so the STATUS/HEALTH frame keeps its margin. Addresses are
- * run-time addresses; tools/roundie_crash.py maps them to the ELF. */
+ * run-time addresses; tools/roundie_crash.py maps them to the ELF. M9.1 adds
+ * the exception frame address, the executor phase, the trigger, the PC the
+ * stack monitor latched, the executor stack layout and the derived origin. */
 static void crash_reply(const char *id)
 {
     roundie_elf_crash_report_t report;
-    char response[768];
+    char response[1024];
     int length;
     if (!roundie_elf_crash_last(&report)) {
         length = snprintf(response, sizeof(response), "\n!RS1 %s 0 {\"crash\":{\"valid\":0}}\n", id);
@@ -204,7 +220,15 @@ static void crash_reply(const char *id)
                                i == 0 ? "" : ",", (unsigned long)fault->frames[i]);
         }
         if (length > 0 && (size_t)length < sizeof(response)) {
-            length += snprintf(response + length, sizeof(response) - (size_t)length, "]}}\n");
+            const roundie_elf_crash_stack_t *stack = &fault->stack;
+            length += snprintf(response + length, sizeof(response) - (size_t)length,
+                "],\"frame\":%lu,\"phase\":\"%s\",\"trigger\":%lu,\"monitor_pc\":%lu,"
+                "\"stack\":[%lu,%lu,%lu,%lu,%lu],\"origin\":\"%s\"}}\n",
+                (unsigned long)fault->frame, roundie_elf_crash_phase_name(fault->phase),
+                (unsigned long)fault->trigger, (unsigned long)fault->monitor_pc,
+                (unsigned long)stack->guard_low, (unsigned long)stack->stack_low, (unsigned long)stack->limit,
+                (unsigned long)stack->stack_high, (unsigned long)stack->armed,
+                roundie_elf_crash_origin_name(roundie_elf_crash_classify(&report)));
         }
     }
     if (length > 0 && (size_t)length < sizeof(response)) {

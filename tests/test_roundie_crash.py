@@ -131,6 +131,29 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tool.parse(b"garbage\n")
 
+    def test_m9_1_origin_fields(self):
+        record = dict(RECORD, frame=0x3c21f000, phase="callback", trigger=1, monitor_pc=0x42010030,
+                      stack=[0x3c200000, 0x3c210000, 0x3c21a000, 0x3c220000, 1], origin="app_stack_overflow")
+        self.assertEqual(tool.parse(self.reply(record)), record)
+        lines = tool.symbolize(record)
+        self.assertIn("Origin: app_stack_overflow - application overflowed the executor stack", lines[1])
+        self.assertIn("trigger=executor stack monitor", lines[2])
+        self.assertIn("red zone 0x3c210000-0x3c21a000", lines[3])
+        self.assertTrue(any(line.strip().startswith("sp< 0x42010030  application text 0x30") for line in lines))
+        unread = dict(record, frame=0, origin="core_while_app_active", stack=[0, 0, 0, 0, 0], monitor_pc=0)
+        lines = tool.symbolize(unread)
+        self.assertIn("not attributed", lines[1])
+        self.assertIn("exception frame not read", "\n".join(lines))
+        for change in ({"phase": "running"}, {"origin": "app"}, {"stack": [0, 0, 0, 0]}, {"trigger": -1},
+                       {"monitor_pc": "0"}):
+            with self.subTest(change=change):
+                with self.assertRaises((ValueError, KeyError, TypeError)):
+                    tool.parse(self.reply(dict(record, **change)))
+        partial = dict(record)
+        del partial["stack"]
+        with self.assertRaises(KeyError):
+            tool.parse(self.reply(partial))
+
     def test_older_firmware_is_unsupported(self):
         with self.assertRaises(tool.Unsupported):
             tool.parse(b'!RS1 0123abcd -1 {"error":"unknown operation"}\n')

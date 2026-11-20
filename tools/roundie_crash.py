@@ -96,6 +96,22 @@ def find_application(digest, paths):
     return None, None
 
 
+# M9.1 origins (components/roundie_elf/crash.c); only APP_* attribute the
+# panic to the loaded application.
+ORIGINS = {
+    "none": "no panic recorded",
+    "core": "firmware, no application code running",
+    "core_while_app_active": "firmware outside the executor while an application ran: not attributed",
+    "executor_core": "executor, no application code running",
+    "executor_stack_overflow": "executor stack limit crossed with no application code running",
+    "app_code": "application code (PC in the loaded text)",
+    "app_callback": "executor during an application callback (firmware PC, e.g. an API call)",
+    "app_stack_overflow": "application overflowed the executor stack (limit crossed during its code)",
+}
+PHASES = ("idle", "load", "callback", "unload", "unknown")
+TRIGGERS = {0: "exception", 1: "executor stack monitor", 2: "stack monitor under another task"}
+
+
 def symbolize(record, elf_paths=(), firmware=None):
     """Lines describing the record, application addresses first mapped to the ELF."""
     if not record.get("valid"):
@@ -105,6 +121,15 @@ def symbolize(record, elf_paths=(), firmware=None):
     cause = record["cause"]
     lines = [f"Panic: pc=0x{record['pc']:08x} cause={cause} ({EXCCAUSE.get(cause, 'see EXCCAUSE / panic reason')}) "
              f"vaddr=0x{record['vaddr']:08x} sp=0x{record['sp']:08x} core={record['core']}"]
+    if "origin" in record:
+        lines.append(f"Origin: {record['origin']} - {ORIGINS.get(record['origin'], 'unknown')}")
+        lines.append(f"  phase={record['phase']} trigger={TRIGGERS.get(record['trigger'], record['trigger'])}")
+        guard, low, limit, high, armed = record["stack"]
+        if high:
+            lines.append(f"  executor stack: guard 0x{guard:08x}, red zone 0x{low:08x}-0x{limit:08x}, "
+                         f"usable 0x{limit:08x}-0x{high:08x}, monitor {'armed' if armed else 'NOT armed'}")
+        if not record["frame"]:
+            lines.append("  exception frame not read (absent or in the guard page)")
     application = None
     if record["loaded"]:
         stripped, debug = find_application(record["digest"], elf_paths)
@@ -120,6 +145,8 @@ def symbolize(record, elf_paths=(), firmware=None):
         lines.append("No application was loaded at the panic: firmware fault.")
     firmware_table = symbols(firmware) if firmware else None
     frames = [("pc", record["pc"])] + [(f"#{i}", pc) for i, pc in enumerate(record["frames"])]
+    if record.get("monitor_pc"):
+        frames.append(("sp<", record["monitor_pc"]))
     if record["vaddr"] and record["loaded"] and locate(record, record["vaddr"]) is not None:
         frames.append(("vaddr", record["vaddr"]))
     for label, address in frames:
@@ -157,6 +184,11 @@ def validate(record):
             len(record["sections"]) != len(SECTION_NAMES) or any(len(s) != 3 for s in record["sections"]) or
             len(record["frames"]) > 8 or re.fullmatch(r"[0-9a-f]{64}", record["digest"]) is None):
         raise ValueError("crash record fields")
+    if "origin" in record:  # M9.1 fields, all or none
+        extra = [record["frame"], record["trigger"], record["monitor_pc"]] + list(record["stack"])
+        if (any(type(v) is not int or not 0 <= v <= 0xffffffff for v in extra) or len(record["stack"]) != 5 or
+                record["phase"] not in PHASES or record["origin"] not in ORIGINS):
+            raise ValueError("crash record M9.1 fields")
     return record
 
 
