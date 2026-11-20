@@ -131,6 +131,8 @@ static uintptr_t (*resolve)(const char *);
 static const rep_api_t *app_api;
 static uint32_t previous_instance;
 static int64_t mock_clock = 100000;
+static int64_t mock_step = 1000; /* 0 freezes time for the budget tests. */
+static uint32_t event_cost_us;   /* Mock time a USER event callback takes. */
 static unsigned runtime_mode;
 static const rep_api_v2_t *runtime_api;
 static uint32_t runtime_callbacks[7];
@@ -145,7 +147,7 @@ void mock_log(const char *tag, const char *format, ...)
     (void)format;
 }
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return current_task; }
-int64_t esp_timer_get_time(void) { return mock_clock += 1000; }
+int64_t esp_timer_get_time(void) { return mock_clock += mock_step; }
 void *heap_caps_malloc(size_t bytes, unsigned caps)
 {
     (void)caps;
@@ -270,6 +272,7 @@ static int32_t runtime_event(const rep_context_v2_t *context, const rep_event_v2
     if (event->type == REP2_EVENT_USER) {
         assert(value_count < 32);
         values[value_count++] = event->value;
+        mock_clock += event_cost_us;
     }
     if (runtime_mode == 10) {
         unsigned deinit_before = deinit_count;
@@ -534,6 +537,153 @@ static void clock_leak_tests(void)
     assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0 && allocations_live == 0);
 }
 
+static roundie_elf_budget_t budget_now(void)
+{
+    roundie_elf_budget_t counters;
+    roundie_elf_budget(&counters, NULL);
+    return counters;
+}
+
+/* Posts one USER event costing cost_us and steps until it is dispatched; a
+ * TIMER event queued ahead of it is dispatched first at no cost. */
+static void budget_dispatch(uint32_t generation, uint32_t value, uint32_t cost_us)
+{
+    unsigned before = value_count;
+    event_cost_us = cost_us;
+    assert(roundie_elf_post(generation, value) == ESP_OK);
+    for (unsigned i = 0; i < 4 && value_count == before; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    assert(value_count == before + 1 && values[before] == value);
+    event_cost_us = 0;
+}
+
+/* Deterministic callback budget and mailbox cases (M9): mock time advances
+ * only by the cost a callback declares, so each duration is exact. */
+static void budget_tests(void)
+{
+    runtime_mode = 0;
+    memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
+    value_count = 0;
+    roundie_elf_budget_t boot_before;
+    roundie_elf_budget(NULL, &boot_before);
+    mock_step = 0;
+    roundie_elf_set_allowed(true);
+    assert(roundie_elf_prepare());
+    uint32_t generation = status.instance;
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING);
+    roundie_elf_budget_t counters = budget_now();
+    assert(counters.instance == generation && counters.dropped == 0 && counters.discarded == 0);
+    for (unsigned i = 1; i < ROUNDIE_ELF_BUDGET_BUCKETS; i++) {
+        assert(counters.buckets[i] == 0);
+    }
+
+    /* 1-3: in budget, at the near threshold and at the limit, over by 1 us. */
+    const uint32_t costs[] = {500, 5000, 79999, 80000, 100000, 100001};
+    const unsigned expected[] = {0, 1, 2, 3, 3, 4};
+    for (unsigned i = 0; i < sizeof(costs) / sizeof(costs[0]); i++) {
+        roundie_elf_budget_t previous = budget_now();
+        budget_dispatch(generation, i, costs[i]);
+        counters = budget_now();
+        assert(counters.buckets[expected[i]] == previous.buckets[expected[i]] + 1);
+        for (unsigned bucket = 1; bucket < ROUNDIE_ELF_BUDGET_BUCKETS; bucket++) {
+            if (bucket != expected[i]) {
+                assert(counters.buckets[bucket] == previous.buckets[bucket]);
+            }
+        }
+        assert(status.over_budget == (costs[i] > ROUNDIE_ELF_CALLBACK_BUDGET_US));
+        assert(status.state == ROUNDIE_ELF_RUNNING);
+    }
+    assert(counters.callback_max_us == 100001 && status.callback_max_us == 100001);
+
+    /* 4: a series of expensive callbacks is counted; the budget is soft and
+     * the application keeps running (a native callback cannot be preempted). */
+    for (uint32_t i = 0; i < 5; i++) {
+        budget_dispatch(generation, 10 + i, 90000);
+    }
+    for (uint32_t i = 0; i < 3; i++) {
+        budget_dispatch(generation, 20 + i, 150000);
+    }
+    counters = budget_now();
+    assert(counters.buckets[3] == 2 + 5 && counters.buckets[4] == 1 + 3);
+    assert(counters.callback_max_us == 150000 && status.state == ROUNDIE_ELF_RUNNING);
+    assert(counters.callbacks == status.callbacks);
+
+    /* Drain a due timer with time frozen, so nothing else enters the queue. */
+    for (unsigned i = 0; i < 4; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    assert(mailbox.count == 0);
+
+    /* 5: overflow refuses the newest event and keeps the queued ones. */
+    value_count = 0;
+    for (uint32_t i = 0; i < ROUNDIE_ELF_EVENT_CAPACITY; i++) {
+        assert(roundie_elf_post(generation, 100 + i) == ESP_OK);
+    }
+    assert(roundie_elf_post(generation, 199) == ESP_ERR_NO_MEM);
+    counters = budget_now();
+    assert(counters.queue_peak == ROUNDIE_ELF_EVENT_CAPACITY && counters.dropped == 1);
+
+    /* 6: backpressure clears after one dispatch; the queue keeps FIFO order. */
+    roundie_elf_step(esp_timer_get_time());
+    assert(value_count == 1 && values[0] == 100);
+    assert(roundie_elf_post(generation, 108) == ESP_OK);
+    assert(roundie_elf_post(generation, 199) == ESP_ERR_NO_MEM);
+    for (unsigned i = 0; i < ROUNDIE_ELF_EVENT_CAPACITY && mailbox.count != 0; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    assert(mailbox.count == 0 && value_count == ROUNDIE_ELF_EVENT_CAPACITY + 1);
+    for (unsigned i = 0; i < value_count; i++) {
+        assert(values[i] == 100 + i);
+    }
+    counters = budget_now();
+    assert(counters.dropped == 2 && counters.queue_peak == ROUNDIE_ELF_EVENT_CAPACITY);
+
+    /* Latency: the third of three queued 30 ms events waits for two. */
+    value_count = 0;
+    event_cost_us = 30000;
+    for (uint32_t i = 0; i < 3; i++) {
+        assert(roundie_elf_post(generation, i) == ESP_OK);
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        roundie_elf_step(esp_timer_get_time());
+    }
+    event_cost_us = 0;
+    assert(value_count == 3 && budget_now().latency_max_us >= 60000);
+
+    /* 7: an event for a previous instance is rejected as stale. */
+    uint32_t rejected = budget_now().rejected;
+    assert(roundie_elf_post(generation - 1, 0) == ESP_ERR_INVALID_STATE);
+    assert(budget_now().rejected == rejected + 1);
+
+    /* 8: stop with pending events discards them without a callback. */
+    uint32_t event_callbacks = runtime_callbacks[2];
+    for (uint32_t i = 0; i < 3; i++) {
+        assert(roundie_elf_post(generation, 200 + i) == ESP_OK);
+    }
+    control_step(ROUNDIE_ELF_STOP);
+    assert(status.state == ROUNDIE_ELF_STOPPED && runtime_callbacks[2] == event_callbacks);
+    counters = budget_now();
+    assert(counters.discarded == 3);
+    /* Refused: the post from runtime_stop and this one after stop. */
+    assert(roundie_elf_post(generation, 1) == ESP_ERR_INVALID_STATE);
+    assert(budget_now().rejected == rejected + 3);
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0 && allocations_live == 0);
+    assert(budget_now().discarded == 3);
+
+    /* Boot totals accumulate across instances; the next instance resets. */
+    roundie_elf_budget_t boot;
+    roundie_elf_budget(&counters, &boot);
+    assert(boot.callbacks >= boot_before.callbacks + counters.callbacks);
+    assert(boot.dropped == boot_before.dropped + 2 && boot.discarded == boot_before.discarded + 3);
+    assert(boot.callback_max_us >= 150000);
+    mock_step = 1000;
+    value_count = 0;
+    puts("Executor budget/mailbox PASS: 8 deterministic cases with exact boundaries; soft budget");
+}
+
 static void runtime_tests(const char *path)
 {
     FILE *source = fopen(path, "rb");
@@ -542,6 +692,7 @@ static void runtime_tests(const char *path)
     assert(fclose(source) == 0);
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_ARG);
     clock_leak_tests();
+    budget_tests();
     for (runtime_mode = 0; runtime_mode <= 11; runtime_mode++) {
         memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
         value_count = 0;

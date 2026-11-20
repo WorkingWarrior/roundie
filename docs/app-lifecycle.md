@@ -61,6 +61,18 @@ exceeding the existing 100 ms soft budget sets a sticky diagnostic and warning.
 A timeout does not mean instructions stopped. Non-returning native code is
 left to the configured watchdog/BootGuard; no task deletion or forced unload.
 
+Budget counters (M9, `roundie_elf_budget()`), kept per instance (reset on
+prepare) and per boot: callback durations in five buckets (< 1 ms, < 10 ms,
+< 80 ms, 80–100 ms near, > 100 ms over; exactly 100 ms is within the budget),
+the longest callback, the longest post-to-dispatch latency, the mailbox peak,
+and events dropped (queue full, `ESP_ERR_NO_MEM` to the poster), coalesced,
+rejected (stale instance or not admitted) and discarded (queued, then cleared
+by stop or suspend without a callback). They are measured after the callback
+returns, so they describe overruns and do not prevent them. Deterministic host
+tests in `tests/test_elf.c` (`budget_tests`) cover the boundaries, a series of
+expensive callbacks, overflow, backpressure, a stale event and stop with
+pending events.
+
 ## States and failure handling
 
 Numeric states retain ABI 1 diagnostics 0–5:

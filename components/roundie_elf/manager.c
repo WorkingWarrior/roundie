@@ -61,6 +61,9 @@ static struct {
     bool shutdown;
     bool admitting;
 } mailbox;
+/* Budget counters, under lock: this instance and every instance since boot. */
+static roundie_elf_budget_t budget;
+static roundie_elf_budget_t budget_boot;
 static struct {
     void *pointer;
     uint32_t bytes;
@@ -131,6 +134,9 @@ bool roundie_elf_prepare(void)
     uint32_t completed = status.completed;
     memset(&status, 0, sizeof(status));
     memset(&mailbox, 0, sizeof(mailbox));
+    memset(&budget, 0, sizeof(budget));
+    budget.instance = instance;
+    budget_boot.instance = instance;
     status.instance = instance;
     status.completed = completed;
     status.state = ROUNDIE_ELF_LOADING;
@@ -642,6 +648,51 @@ static uintptr_t resolver(const char *name)
     return strcmp(name, "rep_abi_v3") == 0 && status.abi_version == 3 ? (uintptr_t)rep_abi_v3 : 0;
 }
 
+static unsigned budget_bucket(uint32_t elapsed_us)
+{
+    if (elapsed_us < 1000U) {
+        return 0;
+    }
+    if (elapsed_us < 10000U) {
+        return 1;
+    }
+    if (elapsed_us < ROUNDIE_ELF_CALLBACK_NEAR_US) {
+        return 2;
+    }
+    if (elapsed_us <= ROUNDIE_ELF_CALLBACK_BUDGET_US) {
+        return 3;
+    }
+    return 4;
+}
+
+static void budget_callback(roundie_elf_budget_t *counters, uint32_t elapsed_us)
+{
+    counters->callbacks++;
+    counters->buckets[budget_bucket(elapsed_us)]++;
+    if (elapsed_us > counters->callback_max_us) {
+        counters->callback_max_us = elapsed_us;
+    }
+}
+
+static void budget_latency(roundie_elf_budget_t *counters, uint32_t latency_us)
+{
+    if (latency_us > counters->latency_max_us) {
+        counters->latency_max_us = latency_us;
+    }
+}
+
+void roundie_elf_budget(roundie_elf_budget_t *instance, roundie_elf_budget_t *boot)
+{
+    roundie_lock(&lock);
+    if (instance != NULL) {
+        *instance = budget;
+    }
+    if (boot != NULL) {
+        *boot = budget_boot;
+    }
+    roundie_unlock(&lock);
+}
+
 static void callback_finished(int64_t started)
 {
     uint32_t elapsed = (uint32_t)(roundie_time_us() - started);
@@ -650,10 +701,14 @@ static void callback_finished(int64_t started)
     if (elapsed > status.callback_max_us) {
         status.callback_max_us = elapsed;
     }
-    if (elapsed > 100000) {
+    if (elapsed > ROUNDIE_ELF_CALLBACK_BUDGET_US) {
         status.over_budget = true;
         ESP_LOGW("elf", "Callback exceeded 100 ms: %" PRIu32 " us", elapsed);
     }
+    roundie_lock(&lock);
+    budget_callback(&budget, elapsed);
+    budget_callback(&budget_boot, elapsed);
+    roundie_unlock(&lock);
     callback_active = false;
 }
 
@@ -674,6 +729,8 @@ static void clear_events(void)
 {
     roundie_lock(&lock);
     mailbox.admitting = false;
+    budget.discarded += mailbox.count;
+    budget_boot.discarded += mailbox.count;
     mailbox.released += mailbox.count;
     mailbox.count = 0;
     mailbox.head = 0;
@@ -802,6 +859,8 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
     if (!atomic_load(&allowed) || !mailbox.admitting || instance != snapshot.instance ||
         snapshot.abi_version < 2 || snapshot.state != ROUNDIE_ELF_RUNNING) {
         mailbox.rejected++;
+        budget.rejected++;
+        budget_boot.rejected++;
         result = ESP_ERR_INVALID_STATE;
     } else {
         bool duplicate = false;
@@ -824,14 +883,24 @@ static esp_err_t post_with_origin(uint32_t instance, uint32_t type, uint32_t val
         }
         if (duplicate) {
             mailbox.coalesced++;
+            budget.coalesced++;
+            budget_boot.coalesced++;
         } else if (mailbox.count == ROUNDIE_ELF_EVENT_CAPACITY) {
             mailbox.dropped++;
+            budget.dropped++;
+            budget_boot.dropped++;
             result = ESP_ERR_NO_MEM;
         } else {
             mailbox.events[(mailbox.head + mailbox.count) % ROUNDIE_ELF_EVENT_CAPACITY] =
                 (rep_event_v2_t){type, sizeof(rep_event_v2_t), value, origin, (uint64_t)posted_us};
             mailbox.count++;
             mailbox.acquired++;
+            if (mailbox.count > budget.queue_peak) {
+                budget.queue_peak = mailbox.count;
+            }
+            if (mailbox.count > budget_boot.queue_peak) {
+                budget_boot.queue_peak = mailbox.count;
+            }
         }
     }
     roundie_unlock(&lock);
@@ -976,6 +1045,8 @@ void roundie_elf_step(int64_t now_us)
         if (ui_event && !roundie_ui_event_valid(status.instance, event.type, event.value, event.reserved)) {
             roundie_lock(&lock);
             mailbox.rejected++;
+            budget.rejected++;
+            budget_boot.rejected++;
             roundie_unlock(&lock);
             return;
         }
@@ -985,6 +1056,10 @@ void roundie_elf_step(int64_t now_us)
         if (latency > status.latency_max_us) {
             status.latency_max_us = latency;
         }
+        roundie_lock(&lock);
+        budget_latency(&budget, latency);
+        budget_latency(&budget_boot, latency);
+        roundie_unlock(&lock);
         callback_active = true;
         result = lifecycle.on_event(&context, &event);
         callback_finished(started);
