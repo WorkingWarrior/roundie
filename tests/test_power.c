@@ -134,6 +134,23 @@ static void sleep_and_wake(void)
     assert(power.state == ROUNDIE_POWER_SCREEN_OFF);
     assert(!roundie_power_touch(&power, now + 10 * MS, true));
     assert(roundie_power_tick(&power, now + 20 * MS, false, false) == ROUNDIE_POWER_TURN_SCREEN_ON);
+    /* M8-B regression (found in the VHL): after a timer wake, with BOOT
+     * released, the first BOOT press turns the screen on; before the fix it
+     * only armed the button and a second press was needed. */
+    roundie_power_sleep_entered(&power);
+    roundie_power_woke(&power, now, false);
+    assert(power.state == ROUNDIE_POWER_SCREEN_OFF);
+    assert(hold_button(&power, &now, false) == ROUNDIE_POWER_NO_ACTION);
+    assert(hold_button(&power, &now, true) == ROUNDIE_POWER_TURN_SCREEN_ON);
+    assert(hold_button(&power, &now, false) == ROUNDIE_POWER_NO_ACTION);
+    /* The same when the GUI parked before it saw BOOT's release: the press
+     * that turned the screen on was still the debounced level at sleep. */
+    assert(hold_button(&power, &now, true) == ROUNDIE_POWER_TOGGLE_MENU);
+    roundie_power_sleep_entered(&power);
+    roundie_power_woke(&power, now, false);
+    assert(hold_button(&power, &now, false) == ROUNDIE_POWER_NO_ACTION);
+    assert(hold_button(&power, &now, true) == ROUNDIE_POWER_TURN_SCREEN_ON);
+    assert(hold_button(&power, &now, false) == ROUNDIE_POWER_NO_ACTION);
     puts("sleep and wake: PASS");
 }
 

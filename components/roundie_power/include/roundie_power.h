@@ -27,6 +27,9 @@ typedef enum {
     ROUNDIE_POWER_REFUSED_OTA,
     ROUNDIE_POWER_REFUSED_APP,
     ROUNDIE_POWER_REFUSED_WAKE_SOURCE,
+    ROUNDIE_POWER_REFUSED_INHIBITED,   /* an inhibitor (roundie_power_inhibit.h) is held */
+    ROUNDIE_POWER_REFUSED_BUSY,        /* another suspend or resume is in progress */
+    ROUNDIE_POWER_REFUSED_UNSUPPORTED, /* deep sleep: not validated on this board (M8-B) */
 } roundie_power_refusal_t;
 
 /* System conditions sampled by the worker immediately before sleeping. */
@@ -36,6 +39,7 @@ typedef struct {
     bool ota_idle;
     bool runtime_busy;
     bool wake_source_active;
+    bool inhibited; /* a CPU_AWAKE inhibitor is held */
 } roundie_power_conditions_t;
 
 #define ROUNDIE_POWER_DEBOUNCE_US 30000

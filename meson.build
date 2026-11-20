@@ -56,6 +56,8 @@ core_sources = files(
   'main/display_scale.c',
   'main/power_gui.c',
   'components/roundie_power/power.c',
+  'components/roundie_power/inhibit.c',
+  'components/roundie_power/lifecycle.c',
   'components/roundie_time/wall_clock.c',
   'components/roundie_time/local_time.c',
   'components/roundie_time/clock_retention.c',
