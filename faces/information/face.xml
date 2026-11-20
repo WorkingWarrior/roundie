@@ -1,0 +1,15 @@
+<!-- Information: time, date, zone, UTC and battery; only data the watch has. -->
+<face id="org.roundie.face.info" name="Informacje" version="1.0.0" background="#05070a">
+  <resource name="battery" src="battery.pgm" preview="true"/>
+  <arc x="14" y="14" size="332" width="6" bind="battery" color="#3fb950" track="#14202a" when="battery-valid"/>
+  <label x="0" y="62" w="360" align="center" font="20" color="#9aa7b4" text="{WEEKDAY}, {D} {MON}"/>
+  <label x="0" y="110" w="360" align="center" font="48" color="#ffffff" text="{HH}:{MM}"/>
+  <label x="0" y="170" w="360" align="center" font="28" color="#8a96a3" text="{SS}"/>
+  <rect x="60" y="210" w="240" h="60" radius="14" color="#0e141b">
+    <label x="0" y="6" w="240" align="center" font="14" color="#9aa7b4" text="UTC {UTC} • {OFF}"/>
+    <label x="0" y="30" w="240" align="center" font="14" color="#5a6573" text="{TZ}"/>
+  </rect>
+  <image resource="battery" x="110" y="262" color="#3fb950" when="battery-valid"/>
+  <label x="160" y="276" w="90" font="20" color="#e8edf2" text="{BAT}%" when="battery-valid"/>
+  <label x="0" y="300" w="360" align="center" font="14" color="#d29922" text="{CHG}" when="charging"/>
+</face>
