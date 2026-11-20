@@ -600,6 +600,52 @@ int main(int argc, char **argv)
     assert(roundie_launcher_home() != ESP_OK && lv_obj_has_flag(chrome, LV_OBJ_FLAG_HIDDEN));
     roundie_launcher_set_home("", false);
     assert(roundie_launcher_home() != ESP_OK);
+    /* M10 face Home: Home is a launcher state showing the watch face, not a
+     * package. Autostart reaches HOME without any launch. */
+    unsigned face_launches = launches;
+    roundie_launcher_set_home_face(true);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_HOME && nav.home_face && launches == face_launches);
+    assert(roundie_launcher_home() != ESP_OK); /* already Home */
+    packages.revision++; /* a list refresh keeps Home */
+    poll(true, false);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_HOME && launches == face_launches);
+    assert(roundie_launcher_open_list() == ESP_OK);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && roundie_launcher_open_list() != ESP_OK);
+    assert(roundie_launcher_home() == ESP_OK);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_HOME);
+    /* Gestures: up from the bottom strip opens the list; right from the
+     * left edge returns Home. */
+    swipe(180, 345, 180, 150);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST);
+    swipe(6, 150, 140, 170);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_HOME && launches == face_launches);
+    /* An application started from the list returns to the face when it ends. */
+    assert(roundie_launcher_open_list() == ESP_OK);
+    poll(true, false);
+    select_id("org.roundie.other");
+    runtime.state = ROUNDIE_ELF_RUNNING;
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_ACTIVE && !nav.home_active);
+    assert(roundie_launcher_open_list() != ESP_OK);
+    runtime.state = ROUNDIE_ELF_UNLOADED;
+    finish();
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_HOME && launches == face_launches + 1);
+    /* Without autostart (trial boot) the list stays until Home is asked for. */
+    roundie_launcher_set_home_face(false);
+    assert(roundie_launcher_open_list() == ESP_OK);
+    poll(true, false);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST);
+    roundie_launcher_set_home("", false);
+    roundie_launcher_status(&nav);
+    assert(!nav.home_face);
     /* Full capacity and malformed/duplicate publication fail closed. */
     packages.count = ROUNDIE_PACKAGES_MAX;
     for (unsigned i = 3; i < ROUNDIE_PACKAGES_MAX; i++) {

@@ -46,6 +46,7 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "include"), "-I" + str(ROOT / "components/roundie_elf/include"),
                             "-I" + str(ROOT / "components/roundie_ota/include"),
                             "-I" + str(ROOT / "components/roundie_packages/include"),
+                            "-I" + str(ROOT / "components/roundie_watchface/include"),
                             "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),
                             "-I" + str(ROOT / "components/roundie_storage_mode/include"),

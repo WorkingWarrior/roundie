@@ -10,3 +10,6 @@ bool roundie_app_runtime_packages_ready(void); /* A package transaction would be
 bool roundie_app_runtime_upload_busy(void);
 bool roundie_app_runtime_admit(void);
 void roundie_app_runtime_poll(int64_t now_us);
+/* Once, before the first poll: the watch face store. fallback_only keeps
+ * every installed face unused for this boot (the system face is shown). */
+void roundie_app_runtime_faces_init(bool fallback_only);

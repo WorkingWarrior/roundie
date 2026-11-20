@@ -27,6 +27,7 @@
 #include "roundie_launcher.h"
 #include "roundie_packages.h"
 #include "roundie_platform.h"
+#include "roundie_watchface.h"
 #include "board.h"
 #include "desktop_input.h"
 #include "power_manager.h"
@@ -108,6 +109,8 @@ static atomic_bool quit_requested;
 static char *caller_directory; /* script paths are relative to it */
 static char *installs[INSTALLS_MAX];
 static uint32_t install_count;
+static char *face_installs[INSTALLS_MAX]; /* --install-face, as --install */
+static uint32_t face_install_count;
 static atomic_bool install_failed;
 /* GUI thread: Roundie Core runs; false while the virtual board is off or its bring-up stopped. */
 static bool core_running;
@@ -429,6 +432,44 @@ static bool install_package(const char *path)
     return true;
 }
 
+/* ---- Watch faces (docs/watch-face-platform.md) ------------------------------ */
+
+typedef enum {
+    FACE_NONE,
+    FACE_SELECT,
+    FACE_REMOVE,
+} face_kind_t;
+
+/* One request from the script to the system worker, which owns the face
+ * store as on the board (RF1 SELECT / REMOVE there). */
+typedef struct {
+    roundie_lock_t lock;
+    face_kind_t kind; /* pending request; FACE_NONE when free */
+    uint32_t done;    /* completed requests */
+    int32_t result;
+    char id[ROUNDIE_FACE_ID];
+} face_mailbox_t;
+
+static face_mailbox_t face_mailbox = {.lock = ROUNDIE_LOCK_INITIALIZER};
+
+static void face_worker_poll(void)
+{
+    roundie_lock(&face_mailbox.lock);
+    face_kind_t kind = face_mailbox.kind;
+    char id[ROUNDIE_FACE_ID];
+    memcpy(id, face_mailbox.id, sizeof(id));
+    roundie_unlock(&face_mailbox.lock);
+    if (kind == FACE_NONE) {
+        return;
+    }
+    esp_err_t result = kind == FACE_SELECT ? roundie_watchface_select(id) : roundie_watchface_remove(id);
+    roundie_lock(&face_mailbox.lock);
+    face_mailbox.result = result;
+    face_mailbox.kind = FACE_NONE;
+    face_mailbox.done++;
+    roundie_unlock(&face_mailbox.lock);
+}
+
 /* ---- Time: the firmware's wall clock on emulated hardware (M3) -------------- */
 
 /* The firmware's sensor period: RTC sample and wall-clock poll. */
@@ -609,6 +650,11 @@ static const roundie_launcher_quick_t quick_settings = {
     quick_battery, quick_brightness, roundie_power_gui_screen_off, roundie_power_gui_sleep,
 };
 
+/* WatchFaceHost data, as main/main.c's. */
+static const roundie_watchface_gui_platform_t face_gui = {
+    roundie_local_time_sample, roundie_local_time_zone, quick_battery,
+};
+
 static void time_worker_poll(int64_t now, int64_t *polled_us)
 {
     roundie_lock(&time_mailbox.lock);
@@ -650,14 +696,25 @@ static void *system_worker(void *argument)
             atomic_store(&install_failed, true);
         }
     }
-    /* As the board's trial after Safe Mode: no home start into a package that may have failed. */
+    /* As the board's trial after Safe Mode: Home shows the built-in face and
+     * the list stays, no start into anything that may have failed. */
     bool previous_failed = roundie_desktop_apps_startup();
-    roundie_launcher_set_home(ROUNDIE_LAUNCHER_HOME_PACKAGE, !previous_failed);
+    roundie_desktop_faces_init(previous_failed);
+    for (uint32_t i = 0; i < face_install_count; i++) {
+        if (roundie_watchface_install_file(face_installs[i]) != ESP_OK) {
+            roundie_watchface_status_t faces;
+            roundie_watchface_status(&faces);
+            fprintf(stderr, "roundie-desktop: install face %s: %s\n", face_installs[i], faces.error);
+            atomic_store(&install_failed, true);
+        }
+    }
+    roundie_launcher_set_home_face(!previous_failed);
     int64_t clock_polled_us = roundie_time_us();
     sample_battery();
     while (!atomic_load(&quit_requested)) {
         int64_t now = roundie_time_us();
         roundie_desktop_apps_poll(now);
+        face_worker_poll();
         roundie_packages_poll(now);
         roundie_launcher_poll(true, roundie_packages_busy());
         roundie_power_worker_poll(now);
@@ -671,7 +728,7 @@ static void *system_worker(void *argument)
 /* ---- Scripted runs --------------------------------------------------------- */
 
 static const char *const navigation_names[] = {
-    "WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT",
+    "WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT", "HOME",
 };
 
 static const char *const app_state_names[] = {
@@ -707,6 +764,8 @@ typedef struct {
     bool failed;
     bool time_waiting; /* rt1 or reset sent to the system worker */
     uint32_t time_done;
+    bool face_waiting; /* face-select or face-remove sent to the system worker */
+    uint32_t face_done;
     roundie_power_inhibit_handle_t inhibitor; /* last "inhibit" (M8-B) */
 } script_t;
 
@@ -873,6 +932,66 @@ static bool script_time_request(const char *command, const char *line, int64_t n
     script.time_waiting = false;
     script.deadline_us = 0;
     return true;
+}
+
+/* face-select / face-remove: through the system worker; prints the result. */
+static bool script_face_request(const char *command, const char *id, const char *line, int64_t now)
+{
+    if (!script.face_waiting) {
+        roundie_lock(&face_mailbox.lock);
+        bool free_slot = face_mailbox.kind == FACE_NONE;
+        if (free_slot) {
+            face_mailbox.kind = strcmp(command, "face-select") == 0 ? FACE_SELECT : FACE_REMOVE;
+            snprintf(face_mailbox.id, sizeof(face_mailbox.id), "%s", id);
+            script.face_done = face_mailbox.done;
+        }
+        roundie_unlock(&face_mailbox.lock);
+        if (free_slot) {
+            script.face_waiting = true;
+            script.deadline_us = now + 10000000;
+        }
+        return false;
+    }
+    roundie_lock(&face_mailbox.lock);
+    bool done = face_mailbox.done != script.face_done;
+    int32_t result = face_mailbox.result;
+    roundie_unlock(&face_mailbox.lock);
+    if (!done) {
+        if (now >= script.deadline_us) {
+            script_fail(line, "timed out");
+        }
+        return false;
+    }
+    script.face_waiting = false;
+    script.deadline_us = 0;
+    roundie_watchface_status_t *faces = allocate(sizeof(*faces));
+    roundie_watchface_status(faces);
+    printf("%s %s result=%d error=\"%s\"\n", command, id, (int)result, result == ESP_OK ? "" : faces->error);
+    fflush(stdout);
+    free(faces);
+    return true;
+}
+
+static void script_face_status(void)
+{
+    roundie_watchface_status_t *faces = allocate(sizeof(*faces));
+    roundie_watchface_status(faces);
+    printf("face active=%s preferred=%s failed=%s error=\"%s\" count=%u fallback_only=%d home=%d parked=%d"
+           " visible=%d gallery=%d creates=%u destroys=%u activations=%u deactivations=%u updates=%u"
+           " switches=%u failures=%u refused=%u resumes=%u objects=%u pool=%u bytes=%u activate_us=%u"
+           " activate_max_us=%u update_max_us=%u resume_us=%u load_us=%u loads=%u load_failures=%u\n",
+           faces->active, faces->preferred[0] != '\0' ? faces->preferred : "-",
+           faces->failed[0] != '\0' ? faces->failed : "-", faces->error, (unsigned)faces->count,
+           (int)faces->fallback_only, (int)faces->home, (int)faces->parked, (int)faces->visible,
+           (int)faces->gallery, (unsigned)faces->creates, (unsigned)faces->destroys,
+           (unsigned)faces->activations, (unsigned)faces->deactivations, (unsigned)faces->updates,
+           (unsigned)faces->switches, (unsigned)faces->failures, (unsigned)faces->refused,
+           (unsigned)faces->resumes, (unsigned)faces->objects, (unsigned)faces->pool_free,
+           (unsigned)faces->face_bytes, (unsigned)faces->activate_us, (unsigned)faces->activate_max_us,
+           (unsigned)faces->update_max_us, (unsigned)faces->resume_us, (unsigned)faces->load_us,
+           (unsigned)faces->loads, (unsigned)faces->load_failures);
+    fflush(stdout);
+    free(faces);
 }
 
 /* Wall-clock status and local time from the applications' clock source. */
@@ -1239,6 +1358,30 @@ static void script_step(void)
             if (!script_time_request(command, line, now)) {
                 return;
             }
+        } else if ((strcmp(command, "face-select") == 0 || strcmp(command, "face-remove") == 0) &&
+                   sscanf(line, "%*s %63s", word) == 1) {
+            if (!script_face_request(command, word, line, now)) {
+                return;
+            }
+        } else if (strcmp(command, "face-status") == 0) {
+            script_face_status();
+        } else if (strcmp(command, "wait-face") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2) {
+            /* The face is active on Home: shown, not parked, and on screen. */
+            roundie_watchface_status_t *faces = allocate(sizeof(*faces));
+            roundie_watchface_status(faces);
+            bool match = strcmp(faces->active, word) == 0 && faces->home && !faces->parked;
+            free(faces);
+            if (!match) {
+                if (script.deadline_us == 0) {
+                    script.deadline_us = now + (int64_t)a * 1000;
+                }
+                if (now >= script.deadline_us) {
+                    script_face_status();
+                    script_fail(line, "timed out");
+                }
+                return;
+            }
+            script.deadline_us = 0;
         } else if (strcmp(command, "clock") == 0) {
             script_clock();
         } else if (strcmp(command, "wait-clock") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2 &&
@@ -1278,6 +1421,7 @@ static void usage(void)
 {
     fputs("usage: roundie-desktop [--board 1.85b|1.75c] [--data DIR] [--zoom N]\n"
           "                       [--headless] [--script FILE] [--install FILE.rpk]...\n"
+          "                       [--install-face FILE.rwf]...\n"
           "                       [--native-apps]  (run linux-x64.rep1 apps: trusted code, no sandbox)\n"
           "                       [--virtual-time]  (time moves only while a script waits)\n"
           "                       [--lab-panel]  (virtual hardware control panel in a second window)\n"
@@ -1443,7 +1587,8 @@ static _Noreturn void restart_process(bool powered, roundie_desktop_reset_t rese
     int count = 0;
     arguments[count++] = saved_argv[0];
     for (int i = 1; i < saved_argc; i++) {
-        bool dropped = strcmp(saved_argv[i], "--install") == 0 || strcmp(saved_argv[i], "--resume") == 0;
+        bool dropped = strcmp(saved_argv[i], "--install") == 0 || strcmp(saved_argv[i], "--install-face") == 0 ||
+            strcmp(saved_argv[i], "--resume") == 0;
         if (dropped && i + 1 < saved_argc) {
             i++;
             continue;
@@ -1636,6 +1781,7 @@ static int run_core(SDL_Window *window, vk_present_t *present)
     roundie_ui_gui_bind();
     roundie_launcher_gui_bind();
     roundie_launcher_gui_set_quick_settings(&quick_settings);
+    roundie_watchface_gui_bind(&face_gui);
     gui.lit = true;
     roundie_power_gui_bind(gui.board, &brightness_percent, roundie_time_us());
     /* The firmware's time startup (main.c): zone, then wall clock, then the
@@ -1760,6 +1906,14 @@ int main(int argc, char **argv)
                 fail("install %s: %s", path, strerror(errno));
             }
             install_count++;
+        } else if (strcmp(argv[i], "--install-face") == 0 && i + 1 < argc &&
+                   face_install_count < INSTALLS_MAX) {
+            const char *path = argv[++i];
+            face_installs[face_install_count] = realpath(path, NULL);
+            if (face_installs[face_install_count] == NULL) {
+                fail("install face %s: %s", path, strerror(errno));
+            }
+            face_install_count++;
         } else if (strcmp(argv[i], "--headless") == 0) {
             headless = true;
         } else if (strcmp(argv[i], "--lab-panel") == 0) {
@@ -1901,6 +2055,9 @@ int main(int argc, char **argv)
     free(caller_directory);
     for (uint32_t i = 0; i < install_count; i++) {
         free(installs[i]);
+    }
+    for (uint32_t i = 0; i < face_install_count; i++) {
+        free(face_installs[i]);
     }
     return exit_code;
 }

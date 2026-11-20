@@ -8,7 +8,7 @@ import time
 from roundie_time import DeviceError, TransportError, open_serial, read_serial_reply, write_command
 from roundie_package import valid_id
 
-STATES = ("WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT")
+STATES = ("WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT", "HOME")
 TIMINGS = ("refresh", "copy", "enqueue_max", "admission", "started", "exit_admission",
            "return", "gui_create", "gui_latency_max")
 

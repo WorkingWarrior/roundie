@@ -7,6 +7,7 @@
 #include "esp_ota_ops.h"
 #include "roundie_boot_guard.h"
 #include "roundie_ota.h"
+#include "roundie_watchface.h"
 
 static roundie_ota_status_t ota;
 static roundie_boot_status_t boot;
@@ -46,6 +47,9 @@ bool roundie_storage_available(void) { return mounted; }
 bool roundie_storage_usage(size_t *total, size_t *used)
 { *total = 0; *used = 0; return false; }
 void roundie_packages_poll(int64_t now_us) { (void)now_us; }
+void roundie_watchface_poll(int64_t now_us) { (void)now_us; }
+void roundie_watchface_init(const roundie_watchface_store_platform_t *platform, bool fallback_only)
+{ (void)platform; (void)fallback_only; }
 void roundie_boot_app_loaded(const char *id) { (void)id; }
 bool roundie_elf_busy(void) { return app_busy; }
 void roundie_elf_set_allowed(bool value) { allow = value; }

@@ -21,7 +21,7 @@ class LauncherDiagnosticsTests(unittest.TestCase):
              patch.object(launcher, "write_command"), patch.object(launcher, "read_serial_reply") as read:
             read.return_value = self.response()
             self.assertEqual(launcher.request(None)["state"], "LIST")
-            for changes in (dict(nav=9), dict(count=9), dict(pending=[2, 0]), dict(us=[0]),
+            for changes in (dict(nav=10), dict(count=9), dict(pending=[2, 0]), dict(us=[0]),
                             dict(selected="../invalid"), dict(gui=[-1, 0]), dict(revision=True)):
                 read.return_value = self.response(**changes)
                 with self.assertRaises((launcher.DeviceError, launcher.TransportError)):

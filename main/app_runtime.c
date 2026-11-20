@@ -12,6 +12,7 @@
 #include "rep/rep_storage_v1.h"
 #include "roundie_packages.h"
 #include "roundie_storage_mode.h"
+#include "roundie_watchface.h"
 #include "storage_diagnostics.h"
 #if CONFIG_ROUNDIE_DEV_ELF
 #include "elf_diagnostics.h"
@@ -108,6 +109,7 @@ void roundie_app_runtime_poll(int64_t now_us)
 {
     reconcile(now_us);
     roundie_packages_poll(now_us);
+    roundie_watchface_poll(now_us);
     if (!roundie_elf_busy()) {
         roundie_boot_app_loaded("");
         persist_storage();
@@ -148,6 +150,18 @@ void *roundie_packages_allocate(size_t size)
 void roundie_packages_free(void *memory)
 {
     heap_caps_free(memory);
+}
+
+/* The watch face store shares the package store's admission, capacity and
+ * PSRAM buffers (docs/watch-face-platform.md). */
+static const roundie_watchface_store_platform_t face_store = {
+    roundie_packages_allowed, roundie_packages_capacity, roundie_packages_allocate, roundie_packages_free,
+    roundie_packages_clock,
+};
+
+void roundie_app_runtime_faces_init(bool fallback_only)
+{
+    roundie_watchface_init(&face_store, fallback_only);
 }
 
 int roundie_packages_execute(const char *id, uint8_t *bytes, size_t size, uint16_t abi)
