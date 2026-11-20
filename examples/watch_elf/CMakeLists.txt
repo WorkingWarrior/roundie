@@ -7,18 +7,18 @@ execute_process(COMMAND ${REP_CC} -dumpfullversion OUTPUT_VARIABLE REP_GCC
 if(NOT REP_GCC STREQUAL "15.2.0")
     message(FATAL_ERROR "Use Roundie's pinned IDF v6.1 GCC 15.2.0 toolchain")
 endif()
-add_custom_command(OUTPUT watch.app.elf
+add_custom_command(OUTPUT watch.app.elf watch.app.debug.elf
     COMMAND ${REP_CC} -std=c11 -Os -Wall -Wextra -Werror -mlongcalls
         -fPIC -fvisibility=hidden -ffunction-sections -fdata-sections
         -fno-builtin -fno-stack-protector -nostdlib -nostartfiles -shared
         -Wl,--gc-sections -Wl,-e,rep_app_entry_v3 -Wl,--undefined=rep_abi_metadata
         -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/../hello_elf/text-padding.ld
         -I${CMAKE_CURRENT_SOURCE_DIR}/../../include
-        ${CMAKE_CURRENT_SOURCE_DIR}/watch.c -o watch.app.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/watch.c -o watch.app.debug.elf
     COMMAND ${REP_STRIP} --strip-unneeded --remove-section=.comment
         --remove-section=.got.loc --remove-section=.dynamic
         --remove-section=.xt.lit --remove-section=.xt.prop
-        --remove-section=.xtensa.info watch.app.elf
+        --remove-section=.xtensa.info -o watch.app.elf watch.app.debug.elf
     DEPENDS watch.c ../hello_elf/text-padding.ld ../../include/rep/rep_app_v3.h
         ../../include/rep/rep_app_v2.h ../../include/rep/rep_storage_v1.h VERBATIM)
 add_custom_target(elf ALL DEPENDS watch.app.elf)

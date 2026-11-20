@@ -41,6 +41,7 @@
 #include "roundie_app_ui.h"
 #include "power_manager.h"
 #include "roundie_storage_mode.h"
+#include "roundie_elf_crash.h"
 #include "storage_mode_screen.h"
 #include "storage_import.h"
 #include "audio_diagnostics.h"
@@ -1100,6 +1101,16 @@ void app_main(void)
 {
     const esp_app_desc_t *description = esp_app_get_description();
     roundie_boot_begin(roundie_boot_reset_class(), description->app_elf_sha256);
+    roundie_elf_crash_boot();
+    roundie_elf_crash_report_t crash;
+    if (roundie_elf_crash_last(&crash) && crash.fault) {
+        uint32_t elf_pc = 0;
+        int section = crash.loaded ? roundie_elf_crash_locate(&crash.context, crash.details.pc, &elf_pc) : -1;
+        ESP_LOGW(TAG, "Previous panic: pc=0x%08" PRIx32 " cause=%" PRIu32 " vaddr=0x%08" PRIx32
+                 " application=%u instance=%" PRIu32 " elf_section=%d elf_pc=0x%08" PRIx32 " (RS1 CRASH)",
+                 crash.details.pc, crash.details.exccause, crash.details.excvaddr, crash.loaded,
+                 crash.context.instance, section, elf_pc);
+    }
     roundie_recovery_health_init();
     ESP_LOGI(TAG, "Firmware %s %s, built %s %s, IDF %s",
              description->project_name, description->version,

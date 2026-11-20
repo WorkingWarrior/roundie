@@ -8,9 +8,11 @@
 #include "private/elf_platform.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "roundie_elf_crash.h"
 #include "sdkconfig.h"
 
 static esp_elf_t image;
+static roundie_elf_crash_context_t crash_context;
 
 roundie_elf_memory_t roundie_elf_loader_memory(void)
 {
@@ -44,9 +46,13 @@ int roundie_elf_loader_init(void)
 
 int roundie_elf_loader_relocate(const uint8_t *bytes, size_t size, roundie_elf_resolver_t resolver)
 {
-    (void)size; /* validated by the caller; esp_elf reads the headers */
+    /* size was validated by the caller; esp_elf reads the headers */
     /* Permanent strict hook; never reset to upstream's broad default tables. */
     elf_set_symbol_resolver(resolver);
+    memset(&crash_context, 0, sizeof(crash_context));
+    if (!roundie_elf_crash_digest(bytes, size, crash_context.digest)) {
+        memset(crash_context.digest, 0, sizeof(crash_context.digest)); /* recorded as unknown */
+    }
     return esp_elf_relocate(&image, bytes);
 }
 
@@ -56,6 +62,17 @@ void roundie_elf_loader_describe(uint32_t instance, const roundie_elf_info_t *in
              " data_allocation=%" PRIu32 " relocations=%" PRIu32,
              instance, image.ptext, (void *)image.entry, image.pdata,
              info->code_bytes, info->data_bytes, info->relocations);
+    /* Retained for crash reports: identity and section map of this image. */
+    crash_context.instance = instance;
+    for (unsigned i = 0; i < ELF_SECS && i < ROUNDIE_ELF_CRASH_SECTIONS; i++) {
+        crash_context.sections[i] = (roundie_elf_crash_section_t){
+            (uint32_t)image.sec[i].v_addr, (uint32_t)image.sec[i].addr, (uint32_t)image.sec[i].size};
+    }
+    crash_context.text_exec = (uint32_t)image.sec[ELF_SEC_TEXT].addr;
+#if CONFIG_ELF_LOADER_CACHE_OFFSET
+    crash_context.text_exec = (uint32_t)elf_remap_text(&image, image.sec[ELF_SEC_TEXT].addr);
+#endif
+    roundie_elf_crash_loaded(&crash_context);
 }
 
 roundie_elf_entry_t roundie_elf_loader_entry(void)
@@ -94,6 +111,7 @@ bool roundie_elf_loader_contains(const void *pointer, uint32_t bytes, roundie_el
 
 void roundie_elf_loader_unload(void)
 {
+    roundie_elf_crash_unloaded();
     esp_elf_deinit(&image);
 }
 

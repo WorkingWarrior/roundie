@@ -15,6 +15,7 @@
 #include "esp_app_desc.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
+#include "roundie_elf_crash.h"
 #if CONFIG_ROUNDIE_APP_RUNTIME
 #include "app_runtime.h"
 #include "roundie_elf.h"
@@ -164,6 +165,53 @@ void roundie_recovery_poll(int64_t now_us)
 #endif
 }
 
+/* RS1 CRASH (M9, read-only): the retained native crash record found at boot,
+ * in its own frame so the STATUS/HEALTH frame keeps its margin. Addresses are
+ * run-time addresses; tools/roundie_crash.py maps them to the ELF. */
+static void crash_reply(const char *id)
+{
+    roundie_elf_crash_report_t report;
+    char response[768];
+    int length;
+    if (!roundie_elf_crash_last(&report)) {
+        length = snprintf(response, sizeof(response), "\n!RS1 %s 0 {\"crash\":{\"valid\":0}}\n", id);
+    } else {
+        const roundie_elf_crash_context_t *context = &report.context;
+        const roundie_elf_crash_fault_t *fault = &report.details;
+        char digest[65];
+        for (unsigned i = 0; i < 32; i++) {
+            snprintf(digest + i * 2, 3, "%02x", context->digest[i]);
+        }
+        length = snprintf(response, sizeof(response),
+            "\n!RS1 %s 0 {\"crash\":{\"valid\":1,\"loaded\":%u,\"fault\":%u,\"instance\":%lu,"
+            "\"digest\":\"%s\",\"text_exec\":%lu,\"sections\":[",
+            id, report.loaded, report.fault, (unsigned long)context->instance, digest,
+            (unsigned long)context->text_exec);
+        for (unsigned i = 0; i < ROUNDIE_ELF_CRASH_SECTIONS && length > 0 && (size_t)length < sizeof(response); i++) {
+            const roundie_elf_crash_section_t *section = &context->sections[i];
+            length += snprintf(response + length, sizeof(response) - (size_t)length, "%s[%lu,%lu,%lu]",
+                               i == 0 ? "" : ",", (unsigned long)section->vaddr,
+                               (unsigned long)section->addr, (unsigned long)section->size);
+        }
+        if (length > 0 && (size_t)length < sizeof(response)) {
+            length += snprintf(response + length, sizeof(response) - (size_t)length,
+                "],\"pc\":%lu,\"cause\":%lu,\"vaddr\":%lu,\"sp\":%lu,\"exception\":%lu,\"core\":%lu,\"frames\":[",
+                (unsigned long)fault->pc, (unsigned long)fault->exccause, (unsigned long)fault->excvaddr,
+                (unsigned long)fault->sp, (unsigned long)fault->exception, (unsigned long)fault->core);
+        }
+        for (unsigned i = 0; i < fault->depth && length > 0 && (size_t)length < sizeof(response); i++) {
+            length += snprintf(response + length, sizeof(response) - (size_t)length, "%s%lu",
+                               i == 0 ? "" : ",", (unsigned long)fault->frames[i]);
+        }
+        if (length > 0 && (size_t)length < sizeof(response)) {
+            length += snprintf(response + length, sizeof(response) - (size_t)length, "]}}\n");
+        }
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
 void roundie_recovery_command(char *line, bool discard)
 {
     char id[9] = "00000000";
@@ -193,6 +241,9 @@ void roundie_recovery_command(char *line, bool discard)
 #endif
                 if (strcmp(operation, "STATUS") == 0 || strcmp(operation, "SLOT STATUS") == 0) {
                     error = ESP_OK;
+                } else if (strcmp(operation, "CRASH") == 0) {
+                    crash_reply(id);
+                    return;
                 } else if (strcmp(operation, "HEALTH") == 0) {
                     /* Read-only: STATUS plus memory, task and stack figures. */
                     health = true;

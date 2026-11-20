@@ -7,7 +7,7 @@
 #define ELF_SEC_RODATA 3
 #define ELF_SEC_DRLRO 4
 #define ELF_SECS 5
-typedef struct {uintptr_t addr; size_t size;} esp_elf_sec_t;
+typedef struct {uintptr_t addr; size_t size; uintptr_t v_addr;} esp_elf_sec_t;
 typedef struct {
     void *ptext;
     void *pdata;

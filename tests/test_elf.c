@@ -10,6 +10,7 @@
 #include "../components/roundie_elf/manager.c"
 #include "../components/roundie_elf/executor.c"
 #include "../components/roundie_elf/idf/loader.c"
+#include "../components/roundie_elf/crash.c"
 
 /* rep_audio_v1 backend: roundie_audio's stream calls, mocked. The ring takes
  * up to ROUNDIE_AUDIO_RING_BYTES; tests empty it as playback would. */
@@ -140,6 +141,16 @@ static uint32_t values[32];
 static unsigned value_count;
 static uint32_t old_timer;
 static void *runtime_memory;
+
+static unsigned digests;
+bool roundie_elf_crash_digest(const uint8_t *bytes, size_t size, uint8_t digest[32])
+{
+    digests++;
+    for (unsigned i = 0; i < 32; i++) {
+        digest[i] = (uint8_t)(bytes[i % size] + i);
+    }
+    return true;
+}
 
 void mock_log(const char *tag, const char *format, ...)
 {
@@ -353,8 +364,8 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
 #endif
     uintptr_t first = (uintptr_t)entry < (uintptr_t)callback ? (uintptr_t)entry : (uintptr_t)callback;
     uintptr_t last = (uintptr_t)entry > (uintptr_t)callback ? (uintptr_t)entry : (uintptr_t)callback;
-    elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16};
-    elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&descriptor, sizeof(descriptor)};
+    elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16, 0};
+    elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&descriptor, sizeof(descriptor), 0};
     typedef const rep_app_descriptor_t *(*rep_entry_t)(const rep_api_t *);
     rep_entry_t address = entry;
     memcpy(&elf->entry, &address, sizeof(address));
@@ -372,8 +383,8 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes)
                 last = functions[i];
             }
         }
-        elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16};
-        elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&runtime_descriptor, sizeof(runtime_descriptor)};
+        elf->sec[ELF_SEC_TEXT] = (esp_elf_sec_t){first, last - first + 16, 0};
+        elf->sec[ELF_SEC_RODATA] = (esp_elf_sec_t){(uintptr_t)&runtime_descriptor, sizeof(runtime_descriptor), 0};
         typedef const rep_descriptor_v2_t *(*entry_v2_t)(const rep_api_v2_t *);
         entry_v2_t entry_v2 = runtime_entry;
         memcpy(&elf->entry, &entry_v2, sizeof(entry_v2));
@@ -684,6 +695,81 @@ static void budget_tests(void)
     puts("Executor budget/mailbox PASS: 8 deterministic cases with exact boundaries; soft budget");
 }
 
+/* Retained crash record (M9): load context, panic details, persistence across
+ * simulated restarts until the next load, torn records, address mapping. */
+static void crash_tests(void)
+{
+    memset(&crash_retained, 0xa5, sizeof(crash_retained)); /* power-on garbage */
+    roundie_elf_crash_boot();
+    roundie_elf_crash_report_t report;
+    assert(!roundie_elf_crash_last(&report) && crash_valid() && crash_retained.loaded == 0);
+
+    runtime_mode = 0;
+    memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
+    value_count = 0;
+    roundie_elf_set_allowed(true);
+    assert(roundie_elf_prepare());
+    uint32_t generation = status.instance;
+    unsigned digests_before = digests;
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(status.state == ROUNDIE_ELF_RUNNING && digests == digests_before + 1);
+    assert(crash_valid() && crash_retained.loaded == 1 && crash_retained.fault == 0);
+    const roundie_elf_crash_context_t *context = &crash_retained.context;
+    assert(context->instance == generation && context->digest[1] == (uint8_t)(fixture[1] + 1));
+    assert(context->sections[0].addr == (uint32_t)image.sec[ELF_SEC_TEXT].addr);
+    assert(context->sections[0].size == image.sec[ELF_SEC_TEXT].size && context->text_exec == context->sections[0].addr);
+
+    /* A panic inside application text, then a restart. */
+    roundie_elf_crash_fault_t fault = {.pc = context->sections[0].addr + 4, .exccause = 29, .excvaddr = 0x10,
+        .sp = 0x3fc90000, .exception = 4, .core = 1, .depth = 99,
+        .frames = {context->sections[0].addr + 4, 0x40380000}};
+    roundie_elf_crash_fault(&fault);
+    roundie_elf_crash_boot();
+    assert(roundie_elf_crash_last(&report) && report.loaded && report.fault);
+    assert(report.details.pc == fault.pc && report.details.exccause == 29 && report.details.excvaddr == 0x10);
+    assert(report.details.depth == ROUNDIE_ELF_CRASH_FRAMES && report.context.instance == generation);
+    uint32_t vaddr = 0;
+    assert(roundie_elf_crash_locate(&report.context, report.details.pc, &vaddr) == 0 && vaddr == 4);
+    assert(roundie_elf_crash_locate(&report.context, report.details.frames[1], &vaddr) == -1);
+    roundie_elf_crash_boot(); /* Safe Mode, then RS1 REBOOT: still reported. */
+    assert(roundie_elf_crash_last(&report) && report.fault && report.context.instance == generation);
+
+    /* Unload keeps the fault; the next load clears it. */
+    control_step(ROUNDIE_ELF_STOP);
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && crash_valid() && crash_retained.loaded == 0 &&
+           crash_retained.fault == 1);
+    assert(roundie_elf_prepare());
+    assert(roundie_elf_execute(fixture, fixture_size));
+    assert(crash_retained.loaded == 1 && crash_retained.fault == 0 &&
+           crash_retained.context.instance == status.instance);
+    control_step(ROUNDIE_ELF_STOP);
+    control_step(ROUNDIE_ELF_UNLOAD);
+    assert(status.state == ROUNDIE_ELF_UNLOADED && live_bytes == 0 && allocations_live == 0);
+
+    /* A torn record is absent; a panic on a torn record keeps only the details. */
+    crash_retained.context.text_exec ^= 1U;
+    roundie_elf_crash_boot();
+    assert(!roundie_elf_crash_last(&report) && crash_valid() && crash_retained.fault == 0);
+    crash_retained.context.instance = 77; /* torn, not resealed */
+    roundie_elf_crash_fault(&fault);
+    roundie_elf_crash_boot();
+    assert(roundie_elf_crash_last(&report) && report.fault && !report.loaded && report.context.instance == 0);
+
+    /* Text matches its data-bus and instruction-bus addresses; ends are exclusive. */
+    roundie_elf_crash_context_t map = {.text_exec = 0x42000000,
+        .sections = {{0x0, 0x3c000000, 0x100}, {0x300, 0x3fc80000, 0}, {0x280, 0x3fc80100, 0x40},
+                     {0x200, 0x3c100000, 0x20}}};
+    assert(roundie_elf_crash_locate(&map, 0x42000010, &vaddr) == 0 && vaddr == 0x10);
+    assert(roundie_elf_crash_locate(&map, 0x3c000010, &vaddr) == 0 && vaddr == 0x10);
+    assert(roundie_elf_crash_locate(&map, 0x3c100004, &vaddr) == 3 && vaddr == 0x204);
+    assert(roundie_elf_crash_locate(&map, 0x3fc8013f, &vaddr) == 2 && vaddr == 0x2bf);
+    assert(roundie_elf_crash_locate(&map, 0x42000100, &vaddr) == -1);
+    assert(roundie_elf_crash_locate(&map, 0x3fc80000, &vaddr) == -1); /* empty bss */
+    assert(roundie_elf_crash_locate(&map, 0, &vaddr) == -1);
+    puts("ELF crash record PASS: context, panic details, restart persistence, torn record, address map");
+}
+
 static void runtime_tests(const char *path)
 {
     FILE *source = fopen(path, "rb");
@@ -693,6 +779,7 @@ static void runtime_tests(const char *path)
     assert(roundie_elf_submit(fixture, fixture_size) == ESP_ERR_INVALID_ARG);
     clock_leak_tests();
     budget_tests();
+    crash_tests();
     for (runtime_mode = 0; runtime_mode <= 11; runtime_mode++) {
         memset(runtime_callbacks, 0, sizeof(runtime_callbacks));
         value_count = 0;
