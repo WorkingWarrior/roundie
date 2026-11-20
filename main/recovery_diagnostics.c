@@ -1,5 +1,6 @@
 #include "recovery_diagnostics.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
@@ -12,13 +13,87 @@
 #include "roundie_ota.h"
 #include "roundie_storage_mode.h"
 #include "esp_app_desc.h"
+#include "esp_timer.h"
 #include "sdkconfig.h"
 #if CONFIG_ROUNDIE_APP_RUNTIME
 #include "app_runtime.h"
 #include "roundie_elf.h"
-#include "esp_timer.h"
 static bool deferred_safe_restart;
 #endif
+
+/* HEALTH counters. The callback runs in the failing caller's context, so it
+ * only updates atomics. */
+static atomic_uint_least32_t failed_allocations;
+static atomic_uint_least32_t failed_allocation_size;
+static atomic_uint_least32_t failed_allocation_caps;
+
+/* Tasks reported by name: firmware tasks and the IDF system tasks. A name
+ * not found reports -1. */
+static const char *const HEALTH_TASKS[] = {
+    "main", "system_worker", "rep_executor", "audio", "esp_timer", "ipc0", "ipc1", "IDLE0", "IDLE1",
+};
+
+static void count_failed_allocation(size_t size, uint32_t caps, const char *function_name)
+{
+    (void)function_name;
+    atomic_fetch_add(&failed_allocations, 1);
+    atomic_store(&failed_allocation_size, (uint_least32_t)size);
+    atomic_store(&failed_allocation_caps, caps);
+}
+
+void roundie_recovery_health_init(void)
+{
+    esp_err_t error = heap_caps_register_failed_alloc_callback(count_failed_allocation);
+    if (error != ESP_OK) {
+        ESP_LOGW("recovery", "Failed-allocation counter not registered: %s", esp_err_to_name(error));
+    }
+}
+
+/* Appends the HEALTH fields to a status record that ends without its closing
+ * brace. Returns the new length, or -1 if they do not fit. */
+static int append_health(char *response, size_t capacity, int length)
+{
+    if (length < 0 || (size_t)length >= capacity) {
+        return -1;
+    }
+    int added = snprintf(response + length, capacity - (size_t)length,
+        ",\"uptime_us\":%lld,\"internal_min\":%zu,\"internal_largest\":%zu,"
+        "\"psram_free\":%zu,\"psram_min\":%zu,\"psram_largest\":%zu,"
+        "\"alloc_failed\":%lu,\"alloc_failed_size\":%lu,\"alloc_failed_caps\":%lu,"
+        "\"tasks\":%lu,\"stacks\":{",
+        (long long)esp_timer_get_time(),
+        heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+        (unsigned long)atomic_load(&failed_allocations),
+        (unsigned long)atomic_load(&failed_allocation_size),
+        (unsigned long)atomic_load(&failed_allocation_caps),
+        (unsigned long)uxTaskGetNumberOfTasks());
+    if (added < 0 || (size_t)added >= capacity - (size_t)length) {
+        return -1;
+    }
+    length += added;
+    for (size_t i = 0; i < sizeof(HEALTH_TASKS) / sizeof(HEALTH_TASKS[0]); i++) {
+        TaskHandle_t task = xTaskGetHandle(HEALTH_TASKS[i]);
+        long high_water = -1;
+        if (task != NULL) {
+            high_water = (long)uxTaskGetStackHighWaterMark(task);
+        }
+        added = snprintf(response + length, capacity - (size_t)length, "%s\"%s\":%ld",
+                         i == 0 ? "" : ",", HEALTH_TASKS[i], high_water);
+        if (added < 0 || (size_t)added >= capacity - (size_t)length) {
+            return -1;
+        }
+        length += added;
+    }
+    added = snprintf(response + length, capacity - (size_t)length, "}");
+    if (added < 0 || (size_t)added >= capacity - (size_t)length) {
+        return -1;
+    }
+    return length + added;
+}
 
 bool roundie_recovery_active(void)
 {
@@ -96,6 +171,7 @@ void roundie_recovery_command(char *line, bool discard)
     bool restart = false;
     bool fault = false;
     bool hang = false;
+    bool health = false;
     size_t length = strlen(line);
     if (length >= 14 && memcmp(line, "!RS1 ", 5) == 0 && line[13] == ' ') {
         bool valid_id = true;
@@ -116,6 +192,10 @@ void roundie_recovery_command(char *line, bool discard)
                 app_idle = !roundie_app_runtime_busy();
 #endif
                 if (strcmp(operation, "STATUS") == 0 || strcmp(operation, "SLOT STATUS") == 0) {
+                    error = ESP_OK;
+                } else if (strcmp(operation, "HEALTH") == 0) {
+                    /* Read-only: STATUS plus memory, task and stack figures. */
+                    health = true;
                     error = ESP_OK;
                 } else if (strcmp(operation, "REQUEST") == 0 && idle_valid) {
                     roundie_boot_enter_safe(ROUNDIE_SAFE_REQUEST);
@@ -209,7 +289,7 @@ void roundie_recovery_command(char *line, bool discard)
         "\"retained\":%u,\"persistence\":%u,\"skip_gui\":%u,\"trial\":%u,\"fault_remaining\":%lu,"
         "\"test_build\":%u,\"version\":\"%s\",\"running\":\"%s\",\"ota_state\":\"%s\",\"elf\":\"%s\","
         "\"other\":\"%s\",\"other_state\":\"%s\",\"other_image\":%u,\"other_compatible\":%u,"
-        "\"other_elf\":\"%s\",\"internal_free\":%zu,\"restart\":%u,\"fault_app\":\"%s\",\"storage\":%u}\n",
+        "\"other_elf\":\"%s\",\"internal_free\":%zu,\"restart\":%u,\"fault_app\":\"%s\",\"storage\":%u",
         id, (int)error, status.safe, roundie_boot_reason_name(status.reason),
         (unsigned long)status.latch, (unsigned long)status.failures, (unsigned long)status.reset,
         (int)esp_reset_reason(), (unsigned long)status.stage, (unsigned long)status.previous_stage,
@@ -224,6 +304,17 @@ void roundie_recovery_command(char *line, bool discard)
         ota.other.label, roundie_ota_image_state_name(ota.other.state), ota.other.image_valid,
         ota.other.compatible, ota.other.elf, heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         restart || fault || hang, status.fault_app, roundie_storage_mode_active());
+    if (health) {
+        length_out = append_health(response, sizeof(response), length_out);
+    }
+    if (length_out >= 0 && (size_t)length_out + 2 < sizeof(response)) {
+        response[length_out] = '}';
+        response[length_out + 1] = '\n';
+        response[length_out + 2] = '\0';
+        length_out += 2;
+    } else {
+        length_out = -1;
+    }
     int written = -1;
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         written = usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));

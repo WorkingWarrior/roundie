@@ -52,6 +52,7 @@ and may exclude RTC writes/uploads without losing recovery status/control.
 !RS1 <id> CLEAR
 !RS1 <id> REBOOT
 !RS1 <id> SLOT STATUS
+!RS1 <id> HEALTH
 !RS1 <id> SELECT ota_0|ota_1 <exact-64-hex-target-ELF>
 !RS1 <id> <decimal-esp_err> <bounded-JSON-status>
 ```
@@ -65,6 +66,22 @@ test remainder/build, firmware version/ELF, running/alternate OTA state,
 alternate image/compatibility/ELF and internal free memory. `retained` means
 BootGuard's RTC RAM record, not PCF85063 calendar validity. Existing RT1 GET
 and RO1 STATUS remain separate calendar and full OTA/session diagnostics.
+
+HEALTH is read-only. It returns the STATUS fields and appends:
+
+- `uptime_us`;
+- `internal_min` and `internal_largest`: the minimum-ever free internal heap
+  and the largest free internal block;
+- `psram_free`, `psram_min` and `psram_largest`;
+- `alloc_failed`, with the size and caps of the last failed allocation, counted
+  by a `heap_caps_register_failed_alloc_callback` hook registered at boot;
+- `tasks`: the FreeRTOS task count;
+- `stacks`: the stack high-water mark (ESP-IDF stack units, bytes) for a fixed list of task names,
+  or −1 when no task has that name (for example `rep_executor` before the
+  first application).
+
+It needs no FreeRTOS trace facility. Added in 0.3.55 for the M8.1 endurance
+runs.
 
 `reset` class values are 0 unknown, 1 power, 2 software, 3 sleep, 4 watchdog,
 5 panic, 6 brownout and 7 external; `raw_reset` is the pinned IDF

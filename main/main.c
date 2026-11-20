@@ -1100,6 +1100,7 @@ void app_main(void)
 {
     const esp_app_desc_t *description = esp_app_get_description();
     roundie_boot_begin(roundie_boot_reset_class(), description->app_elf_sha256);
+    roundie_recovery_health_init();
     ESP_LOGI(TAG, "Firmware %s %s, built %s %s, IDF %s",
              description->project_name, description->version,
              description->date, description->time, description->idf_ver);
