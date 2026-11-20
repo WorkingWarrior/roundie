@@ -315,3 +315,46 @@ bool roundie_elf_stack_arm(void)
     roundie_elf_crash_executor(&layout);
     return true;
 }
+
+bool roundie_elf_stack_recheck(uint32_t *lost)
+{
+    uint32_t mask = 0;
+    uint32_t physical = 0;
+    mmu_target_t target;
+    if (layout.stack_high == 0U || layout.armed == 0U || xTaskGetCurrentTaskHandle() != executor_task) {
+        *lost = ROUNDIE_ELF_GUARD_LOST_NOT_ARMED;
+        return false;
+    }
+    if (mmu_hal_vaddr_to_paddr(0, layout.guard_low, &physical, &target)) {
+        mask |= ROUNDIE_ELF_GUARD_LOST_MMU_GUARD;
+    }
+    if (!mmu_hal_vaddr_to_paddr(0, layout.stack_low, &physical, &target)) {
+        mask |= ROUNDIE_ELF_GUARD_LOST_MMU_STACK;
+    }
+    if (REG_READ(ASSIST_DEBUG_CORE_1_SP_MIN_REG) != layout.limit) {
+        mask |= ROUNDIE_ELF_GUARD_LOST_SP_MIN;
+    }
+    if (REG_READ(ASSIST_DEBUG_CORE_1_SP_MAX_REG) != UINT32_MAX) {
+        mask |= ROUNDIE_ELF_GUARD_LOST_SP_MAX;
+    }
+    if ((REG_READ(ASSIST_DEBUG_CORE_1_INTERRUPT_ENA_REG) & ASSIST_DEBUG_CORE_1_SP_SPILL_MIN_ENA) == 0U) {
+        mask |= ROUNDIE_ELF_GUARD_LOST_ENABLE;
+    }
+    if ((REG_READ(ASSIST_DEBUG_CORE_1_INTERRUPT_RLS_REG) & ASSIST_DEBUG_CORE_1_SP_SPILL_MIN_RLS) == 0U) {
+        mask |= ROUNDIE_ELF_GUARD_LOST_RELEASE;
+    }
+    if (REG_READ(ASSIST_DEBUG_CORE_1_SP_UNSTABLE_REG) != MONITOR_SP_UNSTABLE) {
+        mask |= ROUNDIE_ELF_GUARD_LOST_UNSTABLE;
+    }
+    *lost = mask;
+    ESP_LOGI(TAG, "recheck after sleep: lost=%02" PRIx32, mask);
+    bool armed = (mask & (ROUNDIE_ELF_GUARD_LOST_MMU_GUARD | ROUNDIE_ELF_GUARD_LOST_MMU_STACK)) == 0U &&
+        roundie_elf_stack_arm();
+    if (!armed) {
+        monitor_disable();
+        layout.armed = 0;
+        roundie_elf_crash_executor(&layout);
+        ESP_LOGE(TAG, "recheck failed: native applications stay disabled until restart");
+    }
+    return armed;
+}

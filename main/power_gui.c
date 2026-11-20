@@ -69,6 +69,9 @@ static void apply_screen(bool on)
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Screen %s: %s", on ? "on" : "off", esp_err_to_name(error));
     }
+    roundie_lock(&roundie_power_shared.lock);
+    roundie_pm_screen(&roundie_power_shared.pm, on, roundie_time_us());
+    roundie_unlock(&roundie_power_shared.lock);
 }
 
 static void close_menu(void)
@@ -86,7 +89,8 @@ static bool request_sleep(void)
 {
     bool accepted = false;
     roundie_lock(&roundie_power_shared.lock);
-    if (roundie_power_shared.phase == SLEEP_IDLE) {
+    if (roundie_power_shared.phase == SLEEP_IDLE &&
+        roundie_pm_request_light_sleep(&roundie_power_shared.pm, roundie_time_us()) == ROUNDIE_POWER_ALLOWED) {
         roundie_power_shared.phase = SLEEP_REQUESTED;
         roundie_power_shared.sleep_limit_s = CONFIG_ROUNDIE_POWER_SLEEP_SAFETY_SECONDS;
         accepted = true;
@@ -185,6 +189,8 @@ void roundie_power_gui_bind(roundie_board_t *board, const uint8_t *brightness_pe
     gui_brightness = brightness_percent;
     roundie_power_init(&policy, CONFIG_ROUNDIE_POWER_SCREEN_TIMEOUT_SECONDS * 1000U, now_us);
     roundie_lock(&roundie_power_shared.lock);
+    roundie_pm_init(&roundie_power_shared.pm, now_us);
+    roundie_power_inhibit_init(&roundie_power_shared.inhibitors);
     roundie_power_shared.board = board;
     roundie_power_shared.state = policy.state;
     roundie_unlock(&roundie_power_shared.lock);
@@ -223,6 +229,8 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
         return true;
     }
     roundie_lock(&roundie_power_shared.lock);
+    uint32_t expired = roundie_power_inhibit_expire(&roundie_power_shared.inhibitors, now_us);
+    uint32_t inhibited = roundie_power_inhibit_active(&roundie_power_shared.inhibitors);
     sleep_phase_t phase = roundie_power_shared.phase;
     bool user_wake = roundie_power_shared.user_wake;
     screen_request_t screen_request = roundie_power_shared.screen_request;
@@ -231,6 +239,10 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
     char message[sizeof(roundie_power_shared.message)];
     memcpy(message, roundie_power_shared.message, sizeof(message));
     roundie_unlock(&roundie_power_shared.lock);
+    if (expired != 0U) {
+        ESP_LOGW(TAG, "%u sleep inhibitor(s) expired (leak)", (unsigned)expired);
+    }
+    keep_display = keep_display || (inhibited & ROUNDIE_POWER_INHIBIT_DISPLAY_AWAKE) != 0U;
 
     if (phase == SLEEP_PARKED) {
         return false;
@@ -261,6 +273,11 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
         roundie_lock(&roundie_power_shared.lock);
         roundie_power_shared.phase = SLEEP_IDLE;
         roundie_power_shared.state = policy.state;
+        /* A sleep aborted before it started was cancelled by the worker. */
+        if (roundie_power_shared.pm.state == ROUNDIE_PM_RESUMING) {
+            roundie_pm_screen(&roundie_power_shared.pm, policy.state == ROUNDIE_POWER_ACTIVE, now_us);
+            roundie_pm_resumed(&roundie_power_shared.pm, now_us);
+        }
         roundie_unlock(&roundie_power_shared.lock);
         return true;
     }

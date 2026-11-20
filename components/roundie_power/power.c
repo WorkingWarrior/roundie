@@ -125,7 +125,15 @@ void roundie_power_woke(roundie_power_t *power, int64_t now_us, bool user_wake)
     power->touch_held = user_wake;
     power->touch_seen = false;
     power->touch_hold_until_us = now_us + ROUNDIE_POWER_WAKE_TOUCH_WINDOW_US;
-    power->button_armed = false;
+    /* A user wake may be the BOOT press itself: its release arms the button.
+     * A timer wake had no press. The debounced level is stale (the GUI does
+     * not sample while parked, possibly since before a release), so start
+     * from released and armed, or the first press would only arm it (M8-B). */
+    power->button_armed = !user_wake;
+    if (!user_wake) {
+        power->button_low = false;
+        power->button_sample = false;
+    }
 }
 
 roundie_power_refusal_t roundie_power_sleep_refusal(const roundie_power_conditions_t *conditions)
@@ -138,6 +146,9 @@ roundie_power_refusal_t roundie_power_sleep_refusal(const roundie_power_conditio
     }
     if (!conditions->ota_idle) {
         return ROUNDIE_POWER_REFUSED_OTA;
+    }
+    if (conditions->inhibited) {
+        return ROUNDIE_POWER_REFUSED_INHIBITED;
     }
     if (conditions->runtime_busy) {
         return ROUNDIE_POWER_REFUSED_APP;
@@ -167,6 +178,9 @@ const char *roundie_power_refusal_name(roundie_power_refusal_t refusal)
     case ROUNDIE_POWER_REFUSED_OTA: return "ota";
     case ROUNDIE_POWER_REFUSED_APP: return "app";
     case ROUNDIE_POWER_REFUSED_WAKE_SOURCE: return "wake_source";
+    case ROUNDIE_POWER_REFUSED_INHIBITED: return "inhibited";
+    case ROUNDIE_POWER_REFUSED_BUSY: return "busy";
+    case ROUNDIE_POWER_REFUSED_UNSUPPORTED: return "unsupported";
     }
     return "unknown";
 }

@@ -556,16 +556,24 @@ int main(int argc, char **argv)
     finish();
     poll(true, false);
     assert(launches == parked_launches + 1);
-    /* Any other application is not unloaded for sleep. */
+    /* M8-B: any other application also ends through its lifecycle for
+     * sleep; home starts after the wake, not after that unload. */
     select_id("org.roundie.other");
     runtime.state = ROUNDIE_ELF_RUNNING;
     poll(true, false);
-    assert(roundie_launcher_park_home() != ESP_OK && nav.state == ROUNDIE_NAV_ACTIVE);
-    assert(roundie_launcher_exit(runtime.instance) == ESP_OK);
+    assert(!nav.home_active && nav.state == ROUNDIE_NAV_ACTIVE);
+    assert(roundie_launcher_park_home() == ESP_OK);
     poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_EXITING);
     runtime.state = ROUNDIE_ELF_UNLOADED;
     finish();
+    unsigned other_parked = launches;
+    poll(true, false);
+    poll(true, false);
+    assert(nav.state == ROUNDIE_NAV_LIST && launches == other_parked);
+    roundie_launcher_resume_home();
     poll(true, false); /* back home */
+    assert(launches == other_parked + 1 && nav.home_active);
     runtime.state = ROUNDIE_ELF_RUNNING;
     poll(true, false);
     assert(nav.home_active && roundie_launcher_exit(runtime.instance) == ESP_OK);

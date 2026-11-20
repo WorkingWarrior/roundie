@@ -86,6 +86,27 @@ esp_err_t roundie_elf_control(uint32_t instance, roundie_elf_control_t operation
 esp_err_t roundie_elf_post(uint32_t instance, uint32_t value);
 bool roundie_elf_busy(void);
 
+/* Executor stack guard across light sleep (M8-B; internal Core API, not REP
+ * ABI). The power manager calls recheck before every light sleep; the
+ * executor then rechecks and re-arms the guard before native code runs again.
+ * A failed recheck disables native applications until restart (fail closed). */
+typedef enum {
+    ROUNDIE_ELF_GUARD_PENDING, /* executor not created yet: armed at creation */
+    ROUNDIE_ELF_GUARD_ARMED,
+    ROUNDIE_ELF_GUARD_FAILED,
+} roundie_elf_guard_state_t;
+
+typedef struct {
+    roundie_elf_guard_state_t state;
+    bool recheck_pending; /* a sleep happened; no native code has run since */
+    uint32_t checks;
+    uint32_t failures;
+    uint32_t lost; /* ROUNDIE_ELF_GUARD_LOST_* bits of the last recheck */
+} roundie_elf_guard_status_t;
+
+void roundie_elf_guard_recheck(void);
+void roundie_elf_guard_status(roundie_elf_guard_status_t *out);
+
 /* App storage (rep_storage_v1), worker only, while roundie_elf_busy() is false.
  * set gives the next submitted instance its stored blob; it fails while a
  * written blob has not been taken. clear withdraws it after a failed
