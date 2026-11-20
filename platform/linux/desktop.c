@@ -707,6 +707,7 @@ typedef struct {
     bool failed;
     bool time_waiting; /* rt1 or reset sent to the system worker */
     uint32_t time_done;
+    roundie_power_inhibit_handle_t inhibitor; /* last "inhibit" (M8-B) */
 } script_t;
 
 static script_t script;
@@ -1158,6 +1159,50 @@ static void script_step(void)
             roundie_unlock(&roundie_power_shared.lock);
             printf("power state=%s lit=%d sleeps=%u screen_offs=%u message=\"%s\"\n", roundie_power_state_name(state),
                    (int)roundie_desktop_board_lit(gui.board), (unsigned)sleeps, (unsigned)screen_offs, message);
+            fflush(stdout);
+        } else if (strcmp(command, "pm") == 0) {
+            /* M8-B state model, inhibitors and counters (as RW1 STATUS). */
+            roundie_lock(&roundie_power_shared.lock);
+            roundie_pm_t pm = roundie_power_shared.pm;
+            uint32_t held = roundie_power_inhibit_held(&roundie_power_shared.inhibitors, NULL);
+            uint32_t kinds = roundie_power_inhibit_active(&roundie_power_shared.inhibitors);
+            roundie_power_inhibitors_t inhibitors = roundie_power_shared.inhibitors;
+            roundie_unlock(&roundie_power_shared.lock);
+            printf("pm state=%s from=%s transitions=%u rejected=%u attempts=%u refused=%u last_refusal=%s "
+                   "light_sleeps=%u user_wakes=%u timer_wakes=%u inhibitors=%u kinds=%u stale=%u expired=%u "
+                   "acquired=%u released=%u\n",
+                   roundie_pm_state_name(pm.state), roundie_pm_state_name(pm.last_from), (unsigned)pm.transitions,
+                   (unsigned)pm.rejected, (unsigned)pm.attempts, (unsigned)pm.refused,
+                   roundie_power_refusal_name(pm.last_refusal), (unsigned)pm.light_sleeps, (unsigned)pm.user_wakes,
+                   (unsigned)pm.timer_wakes, (unsigned)held, (unsigned)kinds, (unsigned)inhibitors.stale_releases,
+                   (unsigned)inhibitors.expired, (unsigned)inhibitors.acquired, (unsigned)inhibitors.released);
+            fflush(stdout);
+        } else if (strcmp(command, "power-sleep") == 0 && sscanf(line, "%*s %d", &a) == 1) {
+            /* As RW1 SLEEP <seconds>: a light sleep with a safety timer. */
+            roundie_lock(&roundie_power_shared.lock);
+            bool accepted = roundie_power_shared.phase == SLEEP_IDLE &&
+                roundie_pm_request_light_sleep(&roundie_power_shared.pm, now) == ROUNDIE_POWER_ALLOWED;
+            if (accepted) {
+                roundie_power_shared.phase = SLEEP_REQUESTED;
+                roundie_power_shared.sleep_limit_s = (uint32_t)a;
+            }
+            roundie_unlock(&roundie_power_shared.lock);
+            printf("power-sleep %s\n", accepted ? "accepted" : "refused");
+            fflush(stdout);
+        } else if (strcmp(command, "inhibit") == 0 && sscanf(line, "%*s %d %d", &a, &b) == 2) {
+            roundie_lock(&roundie_power_shared.lock);
+            roundie_power_inhibit_result_t result = roundie_power_inhibit_acquire(&roundie_power_shared.inhibitors,
+                ROUNDIE_POWER_OWNER_DIAGNOSTICS, (uint32_t)a, now, (int64_t)b * 1000, &script.inhibitor);
+            roundie_unlock(&roundie_power_shared.lock);
+            printf("inhibit result=%d\n", (int)result);
+            fflush(stdout);
+        } else if (strcmp(command, "release") == 0) {
+            /* The last inhibitor; a second release reports it stale. */
+            roundie_lock(&roundie_power_shared.lock);
+            roundie_power_inhibit_result_t result = roundie_power_inhibit_release(&roundie_power_shared.inhibitors,
+                script.inhibitor, now);
+            roundie_unlock(&roundie_power_shared.lock);
+            printf("release result=%d\n", (int)result);
             fflush(stdout);
         } else if (strcmp(command, "wait-power") == 0 && sscanf(line, "%*s %63s %d", word, &a) == 2) {
             /* No LVGL refresh here: the GUI may be parked for light sleep. */

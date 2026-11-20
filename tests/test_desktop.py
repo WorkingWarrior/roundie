@@ -1105,6 +1105,54 @@ echo "exit $?" >> app.log
         for name in ("woke.png", "lost.png", "restored.png"):
             self.assertEqual(shot(name), shot("on.png"), name)
 
+    def test_lab_power_lifecycle(self):
+        """M8-B on the emulated board, in virtual time and run twice: the state
+        model through screen-off, a timer wake (screen stays off), BOOT and
+        touch wakes, refusal by an inhibitor, a double release, an expired
+        (leaked) inhibitor and a refused second request. VHL model, not
+        hardware evidence (docs/power-management-m8-b.md)."""
+        script = (
+            "wait-nav LIST 5000\npm\n"
+            # 1: screen off and on.
+            "key boot\nwait 300\ntap 180 116\nwait-power screen_off 2000\npm\nkey boot\nwait-power active 2000\n"
+            # 2, 12: a timed light sleep; the pure timer wake keeps the screen off.
+            "power-sleep 2\npower-sleep 2\nwait-power light_sleep 3000\npm\nwait-power screen_off 5000\npm\n"
+            "key boot\nwait-power active 2000\n"
+            # 3, 19: an inhibitor refuses sleep; a second release is stale.
+            "inhibit 1 60000\npower-sleep 2\nwait 1500\npm\nrelease\nrelease\n"
+            # 14: BOOT wakes.
+            "power-sleep 30\nwait-power light_sleep 3000\nwait 500\nkey boot\nwait-power active 3000\n"
+            # 13: touch wakes.
+            "power-sleep 30\nwait-power light_sleep 3000\nwait 500\ntap 180 180\nwait-power active 3000\npm\n"
+            # 19: a leaked inhibitor expires.
+            "inhibit 2 500\nwait 1000\npm\nquit\n")
+        result, _, _ = self.run_lab(script, install=False)
+        pms = [dict(field.split("=", 1) for field in line.split()[1:])
+               for line in result.stdout.splitlines() if line.startswith("pm ")]
+        self.assertEqual(len(pms), 7)
+        self.assertEqual(pms[0]["state"], "ACTIVE")
+        self.assertEqual((pms[1]["state"], pms[1]["from"]), ("SCREEN_OFF", "ACTIVE"))
+        # 5: the second request is refused while the first is pending.
+        self.assertEqual(re.findall(r"^power-sleep (\w+)", result.stdout, re.M),
+                         ["accepted", "refused", "accepted", "accepted", "accepted"])
+        self.assertEqual(pms[2]["state"], "LIGHT_SLEEP_PENDING")
+        # 12: timer wake, screen stays off, resumed through RESUMING.
+        self.assertEqual((pms[3]["state"], pms[3]["from"], pms[3]["timer_wakes"]), ("SCREEN_OFF", "RESUMING", "1"))
+        # 3: the inhibitor cancels the request; nothing slept.
+        self.assertEqual((pms[4]["state"], pms[4]["from"], pms[4]["last_refusal"]),
+                         ("ACTIVE", "LIGHT_SLEEP_PENDING", "inhibited"))
+        self.assertEqual((pms[4]["light_sleeps"], pms[4]["inhibitors"]), ("1", "1"))
+        self.assertIn("sleep refused: inhibited", result.stderr)
+        # 19: double release is stale (3), not applied.
+        self.assertEqual(re.findall(r"^release result=(\d)", result.stdout, re.M), ["0", "3"])
+        # 13, 14: BOOT and touch wakes, screen on.
+        self.assertEqual(result.stderr.count("woke after 500 ms by BOOT or touch"), 2)
+        self.assertEqual((pms[5]["state"], pms[5]["user_wakes"], pms[5]["light_sleeps"]), ("ACTIVE", "2", "3"))
+        self.assertEqual((pms[5]["stale"], pms[5]["inhibitors"], pms[5]["rejected"]), ("1", "0", "0"))
+        # 19: a leaked inhibitor expires and is counted.
+        self.assertEqual((pms[6]["expired"], pms[6]["inhibitors"], pms[6]["acquired"]), ("1", "0", "2"))
+        self.assertIn("sleep inhibitor(s) expired (leak)", result.stderr)
+
     def test_lab_rtc_failure_and_restore(self):
         """The PCF85063 missing, then back; a power cut keeps its time on the
         backup cell and loses it without one."""

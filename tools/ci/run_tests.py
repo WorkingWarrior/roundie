@@ -73,6 +73,7 @@ LAB = [
     "test_lab_battery_discharge_and_charge",
     "test_lab_pmic_battery_on_the_1_75c",
     "test_lab_screen_off_and_wake",
+    "test_lab_power_lifecycle",
     "test_lab_rtc_failure_and_restore",
     "test_lab_unresponsive_peripherals",
     "test_lab_storage_faults",

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Bounded RW1 power diagnostics: status, screen off/on and timed light sleep."""
+"""Bounded RW1 power diagnostics: status, screen off/on, timed light sleep and,
+since M8-B, diagnostics inhibitors and the (refused) deep-sleep request."""
 import argparse
 import json
 import re
@@ -11,7 +12,17 @@ from roundie_time import DeviceError, TransportError, open_serial, read_serial_r
 
 STATES = ("active", "screen_off", "light_sleep")
 PHASES = ("idle", "requested", "park", "parked", "resumed")
-REFUSALS = ("none", "safe_mode", "not_stable", "ota", "app", "wake_source")
+REFUSALS = ("none", "safe_mode", "not_stable", "ota", "app", "wake_source", "inhibited", "busy", "unsupported")
+PM_STATES = ("ACTIVE", "SCREEN_OFF", "LIGHT_SLEEP_PENDING", "LIGHT_SLEEP", "RESUMING", "DEEP_SLEEP_PENDING",
+             "DEEP_SLEEP")
+GUARDS = ("pending", "armed", "failed")
+FRAME = 1024
+# M8-B fields; a reply without them comes from older firmware.
+COUNTERS = ("pm_age_ms", "transitions", "rejected", "attempts", "refused", "light_sleeps", "user_wakes",
+            "timer_wakes", "sleep_errors", "t_active_ms", "t_screen_off_ms", "t_light_sleep_ms", "t_pending_ms",
+            "t_resuming_ms", "suspend_ms", "suspend_max_ms", "resume_ms", "resume_max_ms", "inhibitors",
+            "inhibit_kinds", "inhibit_owners", "inhibit_stale", "inhibit_expired", "inhibit_full", "guard_pending",
+            "guard_checks", "guard_failures", "guard_lost")
 
 
 def parse_reply(line, request_id):
@@ -19,7 +30,7 @@ def parse_reply(line, request_id):
     if not line.startswith(prefix):
         return None
     try:
-        if not line.endswith(b"\n") or len(line) > 384:
+        if not line.endswith(b"\n") or len(line) > FRAME:
             raise ValueError("length/framing")
         code_text, payload = line[len(prefix):].split(b" ", 1)
         code = int(code_text)
@@ -31,6 +42,16 @@ def parse_reply(line, request_id):
         for key in ("sleeps", "last_sleep_ms", "wake_causes", "screen_offs", "timeout_s", "safety_s"):
             if type(status[key]) is not int or status[key] < 0:
                 raise ValueError(f"invalid {key}")
+        if "pm" in status:
+            if status["pm"] not in PM_STATES or status["pm_from"] not in PM_STATES:
+                raise ValueError("invalid pm state")
+            if status["last_refusal"] not in REFUSALS or status["admission"] not in REFUSALS:
+                raise ValueError("invalid pm refusal")
+            if status["guard"] not in GUARDS or re.fullmatch(r"[0-9a-f]{8}", status["handle"]) is None:
+                raise ValueError("invalid guard or handle")
+            for key in COUNTERS:
+                if type(status[key]) is not int or status[key] < 0:
+                    raise ValueError(f"invalid {key}")
     except (ValueError, KeyError, TypeError) as error:
         raise TransportError(f"malformed power response: {error}") from error
     if code != 0:
@@ -44,8 +65,19 @@ def request(port, operation, timeout=4.0):
     request_id = secrets.token_hex(4)
     deadline = time.monotonic() + timeout
     write_command(port, f"!RW1 {request_id} {operation}")
-    line = read_serial_reply(port, f"!RW1 {request_id} ".encode(), deadline, 384)
+    line = read_serial_reply(port, f"!RW1 {request_id} ".encode(), deadline, FRAME)
     return parse_reply(line, request_id)
+
+
+def request_any(port, operation, timeout=4.0):
+    """As request(), but returns (code, status) for an expected refusal."""
+    try:
+        return 0, request(port, operation, timeout)
+    except DeviceError as error:
+        match = re.match(r"power command rejected \((-?\d+)\): (.*)$", str(error))
+        if match is None:
+            raise
+        return int(match.group(1)), None
 
 
 def status_after_wake(port_name, timeout):
@@ -72,6 +104,12 @@ def main(argv=None):
     commands.add_parser("screen-off")
     commands.add_parser("screen-on")
     commands.add_parser("storage", help="restart into USB storage mode, as the power menu item does")
+    commands.add_parser("deep-sleep", help="M8-B: recorded and refused (unsupported), never executed")
+    inhibit = commands.add_parser("inhibit", help="diagnostics inhibitor: KINDS 1..7, SECONDS 1..600")
+    inhibit.add_argument("kinds", type=int)
+    inhibit.add_argument("seconds", type=int)
+    release = commands.add_parser("release", help="release a diagnostics inhibitor by its handle")
+    release.add_argument("handle")
     sleep = commands.add_parser("sleep", help="timed light sleep; the board returns over USB after wake")
     sleep.add_argument("seconds", type=int)
     args = parser.parse_args(argv)
@@ -90,7 +128,15 @@ def main(argv=None):
                 print(f"Sleep was not entered: refusal={after['refusal']}", file=sys.stderr)
                 return 1
             return 0
-        operation = {"status": "STATUS", "screen-off": "SCREEN OFF", "screen-on": "SCREEN ON", "storage": "STORAGE"}[args.command]
+        if args.command == "inhibit":
+            operation = f"INHIBIT {args.kinds} {args.seconds}"
+        elif args.command == "release":
+            if re.fullmatch(r"[0-9a-f]{8}", args.handle) is None:
+                raise DeviceError("handle: 8 lowercase hex digits")
+            operation = f"RELEASE {args.handle.upper()}"
+        else:
+            operation = {"status": "STATUS", "screen-off": "SCREEN OFF", "screen-on": "SCREEN ON",
+                         "storage": "STORAGE", "deep-sleep": "DEEPSLEEP"}[args.command]
         with open_serial(args.port) as port:
             print(json.dumps(request(port, operation), indent=2))
         return 0

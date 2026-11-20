@@ -77,15 +77,25 @@ void roundie_power_worker_poll(int64_t now_us)
     if (phase == SLEEP_REQUESTED) {
         /* The desktop runtime never runs an application (D6), so no
          * condition of the board's admission check can refuse. */
+        roundie_lock(&roundie_power_shared.lock);
+        uint32_t inhibited = roundie_power_inhibit_active(&roundie_power_shared.inhibitors);
+        roundie_unlock(&roundie_power_shared.lock);
         const roundie_power_conditions_t conditions = {
             .stable = true,
             .ota_idle = true,
+            .inhibited = (inhibited & ROUNDIE_POWER_INHIBIT_CPU_AWAKE) != 0U,
         };
         roundie_power_refusal_t refusal = roundie_power_sleep_refusal(&conditions);
         roundie_lock(&roundie_power_shared.lock);
         roundie_power_shared.refusal = refusal;
         roundie_power_shared.phase = refusal == ROUNDIE_POWER_ALLOWED ? SLEEP_PARK : SLEEP_IDLE;
+        if (refusal != ROUNDIE_POWER_ALLOWED) {
+            roundie_pm_cancel(&roundie_power_shared.pm, refusal, now_us);
+        }
         roundie_unlock(&roundie_power_shared.lock);
+        if (refusal != ROUNDIE_POWER_ALLOWED) {
+            fprintf(stderr, "roundie-desktop: sleep refused: %s\n", roundie_power_refusal_name(refusal));
+        }
         return;
     }
     if (phase != SLEEP_PARKED) {
@@ -96,14 +106,25 @@ void roundie_power_worker_poll(int64_t now_us)
         if (wake_source && now_us - parked_at_us < WAKE_SOURCE_WAIT_US) {
             return;
         }
-        if (wake_source) {
-            fprintf(stderr, "roundie-desktop: sleep aborted: %s\n",
-                    roundie_power_refusal_name(ROUNDIE_POWER_REFUSED_WAKE_SOURCE));
-            finish_sleep(true, ROUNDIE_POWER_REFUSED_WAKE_SOURCE, ESP_ERR_INVALID_STATE, 0);
+        roundie_lock(&roundie_power_shared.lock);
+        bool inhibited = (roundie_power_inhibit_active(&roundie_power_shared.inhibitors) &
+                          ROUNDIE_POWER_INHIBIT_CPU_AWAKE) != 0U;
+        roundie_unlock(&roundie_power_shared.lock);
+        if (wake_source || inhibited) {
+            roundie_power_refusal_t refusal = wake_source ? ROUNDIE_POWER_REFUSED_WAKE_SOURCE :
+                ROUNDIE_POWER_REFUSED_INHIBITED;
+            fprintf(stderr, "roundie-desktop: sleep aborted: %s\n", roundie_power_refusal_name(refusal));
+            roundie_lock(&roundie_power_shared.lock);
+            roundie_pm_cancel(&roundie_power_shared.pm, refusal, now_us);
+            roundie_unlock(&roundie_power_shared.lock);
+            finish_sleep(true, refusal, ESP_ERR_INVALID_STATE, 0);
             return;
         }
         sleeping = true;
         sleep_started_us = now_us;
+        roundie_lock(&roundie_power_shared.lock);
+        roundie_pm_entered(&roundie_power_shared.pm, now_us);
+        roundie_unlock(&roundie_power_shared.lock);
         roundie_desktop_clock_sleep_enter();
         vhw_set_sleeping(true, now_us);
         fprintf(stderr, "roundie-desktop: light sleep (emulated), safety timer %u s\n", (unsigned)limit_s);
@@ -119,5 +140,9 @@ void roundie_power_worker_poll(int64_t now_us)
     vhw_set_sleeping(false, now_us);
     fprintf(stderr, "roundie-desktop: woke after %lld ms by %s\n", (long long)(slept_us / 1000),
             wake_source ? "BOOT or touch" : "the safety timer");
+    roundie_lock(&roundie_power_shared.lock);
+    /* Cause bits as on the board: GPIO (BOOT or touch) or the timer. */
+    roundie_pm_woke(&roundie_power_shared.pm, wake_source ? 0x80U : 0x10U, wake_source, false, slept_us, now_us);
+    roundie_unlock(&roundie_power_shared.lock);
     finish_sleep(wake_source, ROUNDIE_POWER_ALLOWED, ESP_OK, slept_us);
 }

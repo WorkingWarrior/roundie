@@ -24,6 +24,7 @@
 #include "power_shared.h"
 #if CONFIG_ROUNDIE_APP_RUNTIME
 #include "app_runtime.h"
+#include "roundie_elf.h"
 #include "roundie_launcher.h"
 #endif
 #if CONFIG_ROUNDIE_DEV_POWER
@@ -82,12 +83,16 @@ static roundie_power_refusal_t sleep_refusal(roundie_board_t *board, bool check_
 {
     roundie_boot_status_t boot;
     roundie_boot_status(&boot);
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    uint32_t inhibited = roundie_power_inhibit_active(&roundie_power_shared.inhibitors);
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
     roundie_power_conditions_t conditions = {
         .safe = boot.safe,
         .stable = boot.stage == ROUNDIE_BOOT_STABLE,
         .ota_idle = ota_idle(),
         .runtime_busy = runtime_busy() || roundie_storage_mode_active() || audio_busy(), /* USB would drop; audio would cut */
         .wake_source_active = check_wake_source && roundie_board_wake_source_active(board),
+        .inhibited = (inhibited & ROUNDIE_POWER_INHIBIT_CPU_AWAKE) != 0U,
     };
     return roundie_power_sleep_refusal(&conditions);
 }
@@ -202,11 +207,19 @@ static void finish_sleep(bool user_wake, roundie_power_refusal_t refusal, esp_er
 static void light_sleep(roundie_board_t *board, uint32_t limit_s)
 {
     ESP_LOGI(TAG, "Entering light sleep; USB Serial/JTAG is unavailable until wake");
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    /* Before the sleep: the executor rechecks its stack guard before any
+     * native code runs after it (M9.1 fail closed, M8-B). */
+    roundie_elf_guard_recheck();
+#endif
     esp_err_t error = roundie_board_wake_arm(board);
     if (error == ESP_OK && limit_s > 0) {
         error = esp_sleep_enable_timer_wakeup((uint64_t)limit_s * 1000000U);
     }
     int64_t started_us = esp_timer_get_time();
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    roundie_pm_entered(&roundie_power_shared.pm, started_us);
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
     if (error == ESP_OK) {
         error = esp_light_sleep_start();
     }
@@ -225,6 +238,7 @@ static void light_sleep(roundie_board_t *board, uint32_t limit_s)
     if (error == ESP_OK) {
         roundie_power_shared.sleeps++;
     }
+    roundie_pm_woke(&roundie_power_shared.pm, causes, user_wake, error != ESP_OK, slept_us, esp_timer_get_time());
     portEXIT_CRITICAL(&roundie_power_shared.lock);
     finish_sleep(user_wake, ROUNDIE_POWER_ALLOWED, error);
     ESP_LOGI(TAG, "Light sleep %" PRId64 " ms, wake causes 0x%08" PRIx32 ", result %s",
@@ -279,6 +293,9 @@ void roundie_power_worker_poll(int64_t now_us)
         portENTER_CRITICAL(&roundie_power_shared.lock);
         roundie_power_shared.refusal = refusal;
         roundie_power_shared.phase = refusal == ROUNDIE_POWER_ALLOWED ? SLEEP_PARK : SLEEP_IDLE;
+        if (refusal != ROUNDIE_POWER_ALLOWED) {
+            roundie_pm_cancel(&roundie_power_shared.pm, refusal, now_us);
+        }
         portEXIT_CRITICAL(&roundie_power_shared.lock);
         if (refusal != ROUNDIE_POWER_ALLOWED) {
             char message[40];
@@ -297,6 +314,9 @@ void roundie_power_worker_poll(int64_t now_us)
     }
     if (refusal != ROUNDIE_POWER_ALLOWED) {
         ESP_LOGW(TAG, "Sleep aborted: %s", roundie_power_refusal_name(refusal));
+        portENTER_CRITICAL(&roundie_power_shared.lock);
+        roundie_pm_cancel(&roundie_power_shared.pm, refusal, now_us);
+        portEXIT_CRITICAL(&roundie_power_shared.lock);
         finish_sleep(true, refusal, ESP_ERR_INVALID_STATE);
         return;
     }
@@ -320,6 +340,7 @@ void roundie_power_command(char *line, bool discard)
 {
     char id[9] = "00000000";
     esp_err_t error = ESP_ERR_INVALID_ARG;
+    roundie_power_inhibit_handle_t handle = 0;
     size_t length = strlen(line);
     if (length >= 14 && memcmp(line, "!RW1 ", 5) == 0 && line[13] == ' ') {
         bool valid_id = true;
@@ -365,15 +386,81 @@ void roundie_power_command(char *line, bool discard)
                 error = ESP_ERR_INVALID_STATE;
             } else {
                 portENTER_CRITICAL(&roundie_power_shared.lock);
-                roundie_power_shared.phase = SLEEP_REQUESTED;
-                roundie_power_shared.sleep_limit_s = (uint32_t)seconds;
+                bool accepted = roundie_power_shared.phase == SLEEP_IDLE &&
+                    roundie_pm_request_light_sleep(&roundie_power_shared.pm, esp_timer_get_time()) ==
+                        ROUNDIE_POWER_ALLOWED;
+                if (accepted) {
+                    roundie_power_shared.phase = SLEEP_REQUESTED;
+                    roundie_power_shared.sleep_limit_s = (uint32_t)seconds;
+                }
                 portEXIT_CRITICAL(&roundie_power_shared.lock);
-                error = ESP_OK;
+                error = accepted ? ESP_OK : ESP_ERR_INVALID_STATE;
+            }
+        } else if (strcmp(operation, "DEEPSLEEP") == 0) {
+            /* M8-B: deep sleep is modelled but not validated on the 1.85B
+             * (no confirmed autonomous wake and USB recovery): the request
+             * is recorded and refused, never executed. */
+            portENTER_CRITICAL(&roundie_power_shared.lock);
+            int64_t now_us = esp_timer_get_time();
+            bool modelled = roundie_power_shared.phase == SLEEP_IDLE &&
+                roundie_pm_request_deep_sleep(&roundie_power_shared.pm, now_us) == ROUNDIE_POWER_ALLOWED;
+            if (modelled) {
+                roundie_pm_cancel(&roundie_power_shared.pm, ROUNDIE_POWER_REFUSED_UNSUPPORTED, now_us);
+            }
+            portEXIT_CRITICAL(&roundie_power_shared.lock);
+            error = modelled ? ESP_ERR_NOT_SUPPORTED : ESP_ERR_INVALID_STATE;
+        } else if (strncmp(operation, "INHIBIT ", 8) == 0) {
+            /* INHIBIT <kinds 1..7> <seconds 1..600>: a diagnostics-owned
+             * inhibitor, for tests of admission, release and expiry. */
+            char *end = NULL;
+            long kinds = strtol(operation + 8, &end, 10);
+            long seconds = 0;
+            if (end != NULL && *end == ' ') {
+                seconds = strtol(end + 1, &end, 10);
+            }
+            if (end == NULL || *end != '\0' || kinds < 1 || kinds > (long)ROUNDIE_POWER_INHIBIT_KINDS ||
+                seconds < 1 || seconds > 600) {
+                error = ESP_ERR_INVALID_ARG;
+            } else {
+                portENTER_CRITICAL(&roundie_power_shared.lock);
+                roundie_power_inhibit_result_t result = roundie_power_inhibit_acquire(
+                    &roundie_power_shared.inhibitors, ROUNDIE_POWER_OWNER_DIAGNOSTICS, (uint32_t)kinds,
+                    esp_timer_get_time(), (int64_t)seconds * 1000000, &handle);
+                portEXIT_CRITICAL(&roundie_power_shared.lock);
+                error = result == ROUNDIE_POWER_INHIBIT_OK ? ESP_OK : ESP_ERR_NO_MEM;
+            }
+        } else if (strncmp(operation, "RELEASE ", 8) == 0) {
+            char *end = NULL;
+            unsigned long value = strtoul(operation + 8, &end, 16);
+            if (end == NULL || *end != '\0' || value == 0UL || value > UINT32_MAX) {
+                error = ESP_ERR_INVALID_ARG;
+            } else {
+                portENTER_CRITICAL(&roundie_power_shared.lock);
+                roundie_power_inhibit_result_t result = roundie_power_inhibit_release(
+                    &roundie_power_shared.inhibitors, (roundie_power_inhibit_handle_t)value, esp_timer_get_time());
+                portEXIT_CRITICAL(&roundie_power_shared.lock);
+                handle = (roundie_power_inhibit_handle_t)value;
+                error = result == ROUNDIE_POWER_INHIBIT_OK ? ESP_OK : ESP_ERR_INVALID_STATE;
             }
         } else {
             error = ESP_ERR_INVALID_ARG;
         }
     }
+    /* Admission as a sleep request would see it now (wake source excluded). */
+    roundie_power_refusal_t admission = ROUNDIE_POWER_REFUSED_NOT_STABLE;
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    roundie_board_t *board = roundie_power_shared.board;
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+    if (board != NULL) {
+        admission = sleep_refusal(board, false);
+    }
+#if CONFIG_ROUNDIE_APP_RUNTIME
+    roundie_elf_guard_status_t guard;
+    roundie_elf_guard_status(&guard);
+#else
+    roundie_elf_guard_status_t guard = {0};
+#endif
+    int64_t now_us = esp_timer_get_time();
     portENTER_CRITICAL(&roundie_power_shared.lock);
     roundie_power_state_t state = roundie_power_shared.state;
     sleep_phase_t phase = roundie_power_shared.phase;
@@ -384,16 +471,47 @@ void roundie_power_command(char *line, bool discard)
     uint32_t wake_causes = roundie_power_shared.wake_causes;
     int64_t last_sleep_us = roundie_power_shared.last_sleep_us;
     bool bound = roundie_power_shared.board != NULL;
+    roundie_pm_t pm = roundie_power_shared.pm;
+    uint32_t owners = 0;
+    uint32_t held = roundie_power_inhibit_held(&roundie_power_shared.inhibitors, &owners);
+    uint32_t kinds = roundie_power_inhibit_active(&roundie_power_shared.inhibitors);
+    uint32_t stale = roundie_power_shared.inhibitors.stale_releases;
+    uint32_t expired = roundie_power_shared.inhibitors.expired;
+    uint32_t full = roundie_power_shared.inhibitors.full;
     portEXIT_CRITICAL(&roundie_power_shared.lock);
-    char response[384];
+    static const char *const guard_names[] = {"pending", "armed", "failed"};
+    char response[1024];
     int length_out = snprintf(response, sizeof(response),
         "\n!RW1 %s %d {\"bound\":%u,\"state\":\"%s\",\"phase\":\"%s\",\"refusal\":\"%s\","
         "\"sleep_error\":%d,\"sleeps\":%" PRIu32 ",\"last_sleep_ms\":%" PRId64 ",\"wake_causes\":%" PRIu32 ","
-        "\"screen_offs\":%" PRIu32 ",\"timeout_s\":%d,\"safety_s\":%d}\n",
+        "\"screen_offs\":%" PRIu32 ",\"timeout_s\":%d,\"safety_s\":%d,"
+        "\"pm\":\"%s\",\"pm_from\":\"%s\",\"pm_age_ms\":%" PRId64 ",\"transitions\":%" PRIu32 ","
+        "\"rejected\":%" PRIu32 ",\"attempts\":%" PRIu32 ",\"refused\":%" PRIu32 ",\"last_refusal\":\"%s\","
+        "\"admission\":\"%s\",\"light_sleeps\":%" PRIu32 ",\"user_wakes\":%" PRIu32 ",\"timer_wakes\":%" PRIu32 ","
+        "\"sleep_errors\":%" PRIu32 ",\"t_active_ms\":%" PRId64 ",\"t_screen_off_ms\":%" PRId64 ","
+        "\"t_light_sleep_ms\":%" PRId64 ",\"t_pending_ms\":%" PRId64 ",\"t_resuming_ms\":%" PRId64 ","
+        "\"suspend_ms\":%" PRId64 ",\"suspend_max_ms\":%" PRId64 ",\"resume_ms\":%" PRId64 ",\"resume_max_ms\":%" PRId64 ","
+        "\"inhibitors\":%" PRIu32 ",\"inhibit_kinds\":%" PRIu32 ",\"inhibit_owners\":%" PRIu32 ","
+        "\"inhibit_stale\":%" PRIu32 ",\"inhibit_expired\":%" PRIu32 ",\"inhibit_full\":%" PRIu32 ","
+        "\"handle\":\"%08" PRIx32 "\",\"guard\":\"%s\",\"guard_pending\":%u,\"guard_checks\":%" PRIu32 ","
+        "\"guard_failures\":%" PRIu32 ",\"guard_lost\":%" PRIu32 "}\n",
         id, (int)error, bound, roundie_power_state_name(state), phase_name(phase),
         roundie_power_refusal_name(refusal), (int)sleep_error, sleeps, last_sleep_us / 1000,
         wake_causes, screen_offs, CONFIG_ROUNDIE_POWER_SCREEN_TIMEOUT_SECONDS,
-        CONFIG_ROUNDIE_POWER_SLEEP_SAFETY_SECONDS);
+        CONFIG_ROUNDIE_POWER_SLEEP_SAFETY_SECONDS,
+        roundie_pm_state_name(pm.state), roundie_pm_state_name(pm.last_from),
+        (now_us - pm.last_transition_us) / 1000, pm.transitions, pm.rejected, pm.attempts, pm.refused,
+        roundie_power_refusal_name(pm.last_refusal), roundie_power_refusal_name(admission), pm.light_sleeps,
+        pm.user_wakes, pm.timer_wakes, pm.sleep_errors,
+        roundie_pm_time_in(&pm, ROUNDIE_PM_ACTIVE, now_us) / 1000,
+        roundie_pm_time_in(&pm, ROUNDIE_PM_SCREEN_OFF, now_us) / 1000,
+        roundie_pm_time_in(&pm, ROUNDIE_PM_LIGHT_SLEEP, now_us) / 1000,
+        roundie_pm_time_in(&pm, ROUNDIE_PM_LIGHT_SLEEP_PENDING, now_us) / 1000,
+        roundie_pm_time_in(&pm, ROUNDIE_PM_RESUMING, now_us) / 1000,
+        pm.last_suspend_us / 1000, pm.max_suspend_us / 1000, pm.last_resume_us / 1000, pm.max_resume_us / 1000,
+        held, kinds, owners, stale, expired, full, handle,
+        guard_names[guard.state <= ROUNDIE_ELF_GUARD_FAILED ? guard.state : 0], guard.recheck_pending,
+        guard.checks, guard.failures, guard.lost);
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));
     }

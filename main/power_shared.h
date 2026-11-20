@@ -5,6 +5,8 @@
 #include "roundie_board.h"
 #include "roundie_platform.h"
 #include "roundie_power.h"
+#include "roundie_power_inhibit.h"
+#include "roundie_power_lifecycle.h"
 
 /* State shared by the power manager's GUI half (power_gui.c, also built by
  * the desktop) and its system worker half (power_manager.c on the board, the
@@ -50,6 +52,8 @@ typedef struct {
     uint32_t screen_offs;
     uint32_t wake_causes;
     int64_t last_sleep_us;
+    roundie_pm_t pm;                     /* M8-B state model and its diagnostics */
+    roundie_power_inhibitors_t inhibitors;
 } roundie_power_shared_t;
 
 extern roundie_power_shared_t roundie_power_shared;
