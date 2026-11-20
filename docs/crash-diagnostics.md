@@ -132,5 +132,15 @@ Proposal for a later milestone, as a decision to take, not a decided change:
 
 ## Device status
 
-See the M9 report in `docs/m9-stabilization.md` for which parts were checked on
-the board.
+**Verified on the 1.85B board (0.3.56, 2026-11-20):** `fault_elf` `store`
+gave a valid record readable in Safe Mode and after RS1 REBOOT. The tool named
+the faulting instruction (`event+0x12`, a store through null, checked with
+objdump) and the firmware callers. With `stack`, the record named the loaded
+application by digest, while the PC was a firmware ISR on the other core.
+Details: [m9-stabilization.md](m9-stabilization.md) §4.
+
+**PENDING:**
+
+- a panic while an OTA confirmation is pending;
+- a torn record. Host-tested only: the record checksum is covered in
+  `tests/test_elf.c`.
