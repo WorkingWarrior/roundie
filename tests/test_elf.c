@@ -827,6 +827,16 @@ static void crash_classify_tests(void)
     roundie_elf_crash_phase(ROUNDIE_ELF_PHASE_IDLE);
     crash_monitor_pc = 0;
     crash_trigger_now = ROUNDIE_ELF_TRIGGER_EXCEPTION;
+    /* Out-of-range enums with a matching checksum are not a record either. */
+    crash_record_t saved = crash_retained;
+    crash_retained.details.trigger = ROUNDIE_ELF_TRIGGER_FOREIGN + 1U;
+    crash_retained.crc = crash_checksum(&crash_retained);
+    assert(!crash_valid());
+    crash_retained = saved;
+    crash_retained.details.phase = ROUNDIE_ELF_PHASE_UNLOAD + 1U;
+    crash_retained.crc = crash_checksum(&crash_retained);
+    assert(!crash_valid());
+    crash_retained = saved;
     crash_retained.version = 1U;
     crash_retained.crc = crash_checksum(&crash_retained);
     roundie_elf_crash_boot();
