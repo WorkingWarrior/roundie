@@ -963,8 +963,8 @@ with the USB flag 0 only):
 | Phase | Samples | Discharge current | Voltage | Temperature | RM |
 |---|---|---|---|---|---|
 | Hold (screen on, CPU awake) | 29 over 140 s | 105–107 mA, mean 106 | 4097 → 4073 mV | 25.7–25.9 °C | 577 → 573 |
-| After expiry, before screen-off | 7 | 106–107 mA | | | |
-| Screen off (normal M8-B) | 33 | 62–63 mA | 4087–4088 mV | 25.8–25.9 °C | 573 → 569 |
+| After expiry, before screen-off | 7 | 106–107 mA | 4073–4074 mV | 25.9 °C | 573 → 572 |
+| Screen off (normal M8-B) | 33 | 62–63 mA | 4085–4088 mV | 25.8–25.9 °C | 572 → 569 |
 
 VDQ set in the first battery sample (OperationStatus `0x00A4` → `0x00B4`,
 RM 577 ≥ FCC − Near Full = 400) without FC. The hold expired on time and
