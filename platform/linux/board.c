@@ -122,8 +122,9 @@ esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
 }
 
 esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
-                                           roundie_gauge_capacity_t *capacity)
+                                           uint16_t full_mah, roundie_gauge_capacity_t *capacity)
 {
     (void)capacity_mah;
+    (void)full_mah;
     return roundie_board_gauge_capacity_read(board, capacity);
 }
