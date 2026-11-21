@@ -32,6 +32,12 @@ typedef struct {
     uint16_t charging_voltage_mv; /* Charging Voltage 0x91FD */
     uint16_t taper_current_ma;    /* Taper Current 0x9201 */
     uint16_t near_full_mah;       /* Near Full 0x926B */
+    uint16_t battery_low_centi;   /* Battery Low % 0x9251, 0.01 % (EDV2 level) */
+    uint8_t learning_low_temp_deci_c; /* Learning Low Temp 0x925B, 0.1 degC */
+    uint8_t flag_config_b;        /* SOC Flag Config B 0x9281 */
+    uint16_t overload_ma;         /* OverLoad Current 0x9264 */
+    uint16_t reserve_mah;         /* Reserve Capacity 0x926D */
+    uint16_t flag_config_a;       /* SOC Flag Config A 0x927F */
     uint16_t battery_flags;
     uint16_t operation_flags;
     uint8_t step;

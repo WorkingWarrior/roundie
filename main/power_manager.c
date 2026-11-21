@@ -336,6 +336,32 @@ static const char *phase_name(sleep_phase_t phase)
     return "unknown";
 }
 
+#endif
+
+bool roundie_power_diagnostics_hold(uint32_t *handle, uint32_t kinds, uint32_t seconds)
+{
+    const int64_t now_us = esp_timer_get_time();
+    bool held = false;
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    if (*handle != 0) {
+        /* An expired handle is already released: STALE is expected then. */
+        (void)roundie_power_inhibit_release(&roundie_power_shared.inhibitors, *handle, now_us);
+        *handle = 0;
+    }
+    if (seconds > 0) {
+        roundie_power_inhibit_handle_t acquired = 0;
+        held = roundie_power_inhibit_acquire(&roundie_power_shared.inhibitors, ROUNDIE_POWER_OWNER_DIAGNOSTICS,
+                                             kinds, now_us, (int64_t)seconds * 1000000, &acquired) ==
+               ROUNDIE_POWER_INHIBIT_OK;
+        if (held) {
+            *handle = acquired;
+        }
+    }
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+    return held;
+}
+
+#if CONFIG_ROUNDIE_DEV_POWER
 void roundie_power_command(char *line, bool discard)
 {
     char id[9] = "00000000";

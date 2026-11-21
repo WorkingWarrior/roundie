@@ -39,14 +39,17 @@ typedef enum {
 roundie_bq27220_plan_t roundie_bq27220_plan(const roundie_gauge_capacity_t *state,
                                             uint16_t target_mah);
 
-/* Read only: flags, DesignCapacity() and three checksummed Data Memory
+/* Read only: flags, DesignCapacity() and four checksummed Data Memory
  * blocks. Sends no subcommand. */
 esp_err_t roundie_bq27220_read(const roundie_bq27220_io_t *io, roundie_gauge_capacity_t *state);
 
-/* Plans, then for INITIALIZE: ENTER_CFG_UPDATE, one write of FCC and Design
- * Capacity (0x929D, 4 bytes), readback, EXIT_CFG_UPDATE_REINIT, readback.
+/* Plans for target_mah, then for INITIALIZE: ENTER_CFG_UPDATE, one write of
+ * Full Charge Capacity = full_mah (the learned value to restore, or the
+ * target) and Design Capacity = target_mah (0x929D, 4 bytes), readback,
+ * EXIT_CFG_UPDATE_REINIT, readback. full_mah outside the capacity range is
+ * refused before any I/O.
  * KEEP returns ESP_OK without writing. On a failure after ENTER the gauge is
  * taken out of CFGUPDATE with EXIT_CFG_UPDATE (no reinitialization) if it
  * reports CFGUPDATE. About 7 s at most, in io->delay_ms. */
 esp_err_t roundie_bq27220_initialize(const roundie_bq27220_io_t *io, uint16_t target_mah,
-                                     roundie_gauge_capacity_t *state);
+                                     uint16_t full_mah, roundie_gauge_capacity_t *state);

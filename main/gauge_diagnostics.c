@@ -5,10 +5,63 @@
 #include <stdlib.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "gauge_learning_service.h"
 
 static const char *TAG = "gauge_diag";
+
+static void send(const char *response, int length)
+{
+    if (length > 0) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
+#if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH) && CONFIG_ROUNDIE_DEV_POWER
+/* LEARN, LEARN HOLD <minutes 1..1440>, LEARN STOP: reply with the learning
+ * report. Returns false when operation is not a LEARN command. */
+static bool learn_command(const char *id, const char *operation, bool board_ready)
+{
+    if (strcmp(operation, "LEARN") != 0 && strncmp(operation, "LEARN ", 6) != 0) {
+        return false;
+    }
+    const int64_t now_us = esp_timer_get_time();
+    esp_err_t error = ESP_OK;
+    if (!board_ready) {
+        error = ESP_ERR_INVALID_STATE;
+    } else if (strcmp(operation, "LEARN STOP") == 0) {
+        error = roundie_gauge_service_hold(0, now_us);
+    } else if (strncmp(operation, "LEARN HOLD ", 11) == 0) {
+        const char *digits = operation + 11;
+        char *end = NULL;
+        unsigned long minutes = strtoul(digits, &end, 10);
+        if (digits[0] < '1' || digits[0] > '9' || end == NULL || *end != '\0' || minutes > 1440) {
+            error = ESP_ERR_INVALID_ARG;
+        } else {
+            ESP_LOGW(TAG, "Learning load hold requested: %lu min", minutes);
+            error = roundie_gauge_service_hold((uint32_t)minutes, now_us);
+        }
+    } else if (strcmp(operation, "LEARN") != 0) {
+        error = ESP_ERR_INVALID_ARG;
+    }
+    /* Worst case about 830 bytes: needs the 2048-byte TX ring of RS1/RO1 builds. */
+    char response[1024];
+    int length = snprintf(response, sizeof(response), "\n!RG1 %s %d ", id, (int)error);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        int body = roundie_gauge_service_json(response + length, sizeof(response) - (size_t)length - 1, now_us);
+        if (body > 0 && (size_t)(length + body) < sizeof(response) - 1) {
+            length += body;
+            response[length++] = '\n';
+            send(response, length);
+            return true;
+        }
+    }
+    ESP_LOGE(TAG, "LEARN reply does not fit");
+    return true;
+}
+#endif
 
 void roundie_gauge_command(roundie_board_t *board, const char *line, bool discard)
 {
@@ -28,6 +81,10 @@ void roundie_gauge_command(roundie_board_t *board, const char *line, bool discar
         const char *operation = line + 14;
         if (!valid_id || discard || length >= 64) {
             error = ESP_ERR_INVALID_ARG;
+#if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH) && CONFIG_ROUNDIE_DEV_POWER
+        } else if (learn_command(id, operation, board != NULL)) {
+            return;
+#endif
         } else if (board == NULL) {
             error = ESP_ERR_INVALID_STATE;
         } else if (strcmp(operation, "STATUS") == 0) {
@@ -40,7 +97,7 @@ void roundie_gauge_command(roundie_board_t *board, const char *line, bool discar
                 error = ESP_ERR_INVALID_ARG;
             } else {
                 ESP_LOGW(TAG, "Gauge capacity request: %lu mAh", value);
-                error = roundie_board_gauge_capacity_set(board, (uint16_t)value, &capacity);
+                error = roundie_board_gauge_capacity_set(board, (uint16_t)value, (uint16_t)value, &capacity);
             }
         } else {
             error = ESP_ERR_INVALID_ARG;
@@ -53,18 +110,21 @@ void roundie_gauge_command(roundie_board_t *board, const char *line, bool discar
     }
     char response[768];
     int length_out = snprintf(response, sizeof(response),
-        "\n!RG1 %s %d {\"format\":2,\"step\":%u,\"written\":%u,\"design_mah\":%u,\"dm_full_mah\":%u,"
+        "\n!RG1 %s %d {\"format\":3,\"step\":%u,\"written\":%u,\"design_mah\":%u,\"dm_full_mah\":%u,"
         "\"dm_design_mah\":%u,\"gauging_config\":%u,\"design_voltage_mv\":%u,\"charging_voltage_mv\":%u,"
-        "\"taper_current_ma\":%u,\"near_full_mah\":%u,\"battery_flags\":%u,\"operation_flags\":%u,"
+        "\"taper_current_ma\":%u,\"near_full_mah\":%u,\"battery_low_centi\":%u,\"learning_low_temp\":%u,"
+        "\"overload_ma\":%u,\"reserve_mah\":%u,\"flag_config_a\":%u,\"flag_config_b\":%u,\"battery_flags\":%u,\"operation_flags\":%u,"
         "\"state\":%d,\"voltage_mv\":%u,\"soc\":%u,\"remaining_mah\":%u,\"full_mah\":%u,"
         "\"current_ma\":%d,\"initialized\":%u}\n",
         id, (int)error, capacity.step, capacity.written ? 1U : 0U, capacity.design_mah,
         capacity.dm_full_mah, capacity.dm_design_mah, capacity.gauging_config,
         capacity.design_voltage_mv, capacity.charging_voltage_mv, capacity.taper_current_ma,
-        capacity.near_full_mah, capacity.battery_flags, capacity.operation_flags,
+        capacity.near_full_mah, capacity.battery_low_centi, capacity.learning_low_temp_deci_c,
+        capacity.overload_ma, capacity.reserve_mah, capacity.flag_config_a, capacity.flag_config_b,
+        capacity.battery_flags, capacity.operation_flags,
         (int)battery.state, battery.voltage_mv, battery.soc_percent, battery.remaining_mah,
         battery.full_mah, battery.current_ma, battery.initialized ? 1U : 0U);
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
-        usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));
+        send(response, length_out);
     }
 }

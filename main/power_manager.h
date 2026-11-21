@@ -26,6 +26,12 @@ bool roundie_power_gui_sleep(void);
 
 /* Existing system worker loop. */
 void roundie_power_worker_poll(int64_t now_us);
+#if CONFIG_ROUNDIE_POWER
+/* System worker: a diagnostics-owned inhibitor its holder renews. Releases
+ * *handle (0 = none), then for seconds 1..600 acquires kinds, in one step
+ * under the power lock; seconds 0 only releases. Returns whether held. */
+bool roundie_power_diagnostics_hold(uint32_t *handle, uint32_t kinds, uint32_t seconds);
+#endif
 #if CONFIG_ROUNDIE_DEV_POWER
 /* Same bounded framer as RS1; replies before any sleep starts. */
 void roundie_power_command(char *line, bool discard);

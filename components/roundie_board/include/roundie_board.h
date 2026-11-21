@@ -178,8 +178,8 @@ void roundie_board_battery_read(roundie_board_t *board,
 
 /* Gauge capacity configuration (1.85B BQ27220 CEDV profile 1; types in
  * roundie_gauge.h). Read only reads flags and Data Memory; it sends no
- * subcommand. Set initializes Design Capacity and Full Charge Capacity to
- * capacity_mah once: it writes nothing when Design Capacity already equals
+ * subcommand. Set initializes Design Capacity to capacity_mah and Full Charge
+ * Capacity to full_mah (a stored learned value, or capacity_mah) once: it writes nothing when Design Capacity already equals
  * capacity_mah (the learned FCC is kept), and writes only over the gauge's
  * reset default of 3000 mAh. It needs an UNSEALED gauge (no access keys are
  * sent; the gauge is never sealed or reset), refuses a sealed gauge, a missing
@@ -192,4 +192,4 @@ void roundie_board_battery_read(roundie_board_t *board,
 esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
                                             roundie_gauge_capacity_t *capacity);
 esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
-                                           roundie_gauge_capacity_t *capacity);
+                                           uint16_t full_mah, roundie_gauge_capacity_t *capacity);

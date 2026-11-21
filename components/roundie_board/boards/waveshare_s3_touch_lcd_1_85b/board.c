@@ -1036,7 +1036,7 @@ esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
 }
 
 esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
-                                           roundie_gauge_capacity_t *capacity)
+                                           uint16_t full_mah, roundie_gauge_capacity_t *capacity)
 {
     if (board == NULL || capacity == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -1046,9 +1046,9 @@ esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capa
         return ESP_ERR_NOT_FOUND;
     }
     const roundie_bq27220_io_t io = gauge_io(board);
-    esp_err_t error = roundie_bq27220_initialize(&io, capacity_mah, capacity);
-    ESP_LOGW(TAG, "Gauge capacity %u mAh: %s, step %u, written %d, DC %u, DM FCC %u, op=0x%04x",
-             capacity_mah, esp_err_to_name(error), capacity->step, capacity->written,
+    esp_err_t error = roundie_bq27220_initialize(&io, capacity_mah, full_mah, capacity);
+    ESP_LOGW(TAG, "Gauge capacity %u mAh, FCC %u mAh: %s, step %u, written %d, DC %u, DM FCC %u, op=0x%04x",
+             capacity_mah, full_mah, esp_err_to_name(error), capacity->step, capacity->written,
              capacity->design_mah, capacity->dm_full_mah, capacity->operation_flags);
     return error;
 }

@@ -6,5 +6,9 @@
  *   !RG1 <8 hex id> STATUS          read-only gauge capacity configuration
  *   !RG1 <8 hex id> CAPACITY <mAh>  Design Capacity and Full Charge Capacity
  *                                   in the gauge's RAM (lost at gauge reset)
+ *   !RG1 <8 hex id> LEARN           capacity learning report (read-only)
+ *   !RG1 <8 hex id> LEARN HOLD <m>  hold the system load 1..1440 min for one
+ *                                   controlled cycle; ends by itself
+ *   !RG1 <8 hex id> LEARN STOP      end the hold
  * Reply: !RG1 <id> <esp_err> {json}. board may be NULL (not ready). */
 void roundie_gauge_command(roundie_board_t *board, const char *line, bool discard);

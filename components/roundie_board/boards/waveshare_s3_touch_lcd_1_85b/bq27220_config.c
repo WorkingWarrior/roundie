@@ -27,7 +27,8 @@
 
 /* Blocks read for the report; offsets are into the 32 bytes read there. */
 #define BLOCK_CHARGE 0x91fb   /* +2 Charging Voltage, +6 Taper Current */
-#define BLOCK_GAUGING 0x9268  /* +3 Near Full */
+#define BLOCK_LEARNING 0x9248 /* +9 Battery Low %, +0x13 Learning Low Temp, +0x1C OverLoad Current */
+#define BLOCK_GAUGING 0x9268  /* +3 Near Full, +5 Reserve Capacity, +0x17 Flag Config A, +0x19 Flag Config B */
 #define BLOCK_PROFILE 0x929b  /* +0 Gauging Configuration, +2 FCC, +4 Design Capacity, +8 Design Voltage */
 #define ADDRESS_FULL_CHARGE 0x929d /* FCC, then Design Capacity: one 4-byte write */
 
@@ -188,9 +189,20 @@ esp_err_t roundie_bq27220_read(const roundie_bq27220_io_t *io, roundie_gauge_cap
         }
     }
     if (error == ESP_OK) {
+        error = read_block(io, BLOCK_LEARNING, block);
+        if (error == ESP_OK) {
+            state->battery_low_centi = big_endian(&block[0x09]);
+            state->learning_low_temp_deci_c = block[0x13];
+            state->overload_ma = big_endian(&block[0x1c]);
+        }
+    }
+    if (error == ESP_OK) {
         error = read_block(io, BLOCK_GAUGING, block);
         if (error == ESP_OK) {
             state->near_full_mah = big_endian(&block[3]);
+            state->reserve_mah = big_endian(&block[5]);
+            state->flag_config_a = big_endian(&block[0x17]);
+            state->flag_config_b = block[0x19];
         }
     }
     if (error != ESP_OK) {
@@ -232,9 +244,13 @@ static esp_err_t fail_in_cfgupdate(const roundie_bq27220_io_t *io, roundie_gauge
 }
 
 esp_err_t roundie_bq27220_initialize(const roundie_bq27220_io_t *io, uint16_t target_mah,
-                                     roundie_gauge_capacity_t *state)
+                                     uint16_t full_mah, roundie_gauge_capacity_t *state)
 {
     memset(state, 0, sizeof(*state));
+    if (full_mah < ROUNDIE_BQ27220_CAPACITY_MIN_MAH || full_mah > ROUNDIE_BQ27220_CAPACITY_MAX_MAH) {
+        state->step = ROUNDIE_GAUGE_STEP_PRECHECK;
+        return ESP_ERR_INVALID_ARG;
+    }
     esp_err_t error = roundie_bq27220_read(io, state);
     if (error != ESP_OK) {
         return error;
@@ -269,11 +285,10 @@ esp_err_t roundie_bq27220_initialize(const roundie_bq27220_io_t *io, uint16_t ta
     /* One transaction from 0x3E: address (little-endian), then FCC and
      * Design Capacity (big-endian); the commit covers exactly these bytes. */
     state->step = ROUNDIE_GAUGE_STEP_WRITE;
-    const uint8_t value_high = (uint8_t)(target_mah >> 8);
-    const uint8_t value_low = (uint8_t)(target_mah & 0xff);
     const uint8_t staged[6] = {
         (uint8_t)(ADDRESS_FULL_CHARGE & 0xff), (uint8_t)(ADDRESS_FULL_CHARGE >> 8),
-        value_high, value_low, value_high, value_low,
+        (uint8_t)(full_mah >> 8), (uint8_t)(full_mah & 0xff),
+        (uint8_t)(target_mah >> 8), (uint8_t)(target_mah & 0xff),
     };
     error = io->write(io->context, CMD_MAC, staged, sizeof(staged));
     io->delay_ms(io->context, COMMAND_DELAY_MS);
@@ -294,7 +309,7 @@ esp_err_t roundie_bq27220_initialize(const roundie_bq27220_io_t *io, uint16_t ta
 
     state->step = ROUNDIE_GAUGE_STEP_VERIFY_CFG;
     error = read_profile(io, state);
-    if (error == ESP_OK && (state->dm_full_mah != target_mah || state->dm_design_mah != target_mah)) {
+    if (error == ESP_OK && (state->dm_full_mah != full_mah || state->dm_design_mah != target_mah)) {
         error = ESP_ERR_INVALID_RESPONSE;
     }
     if (error != ESP_OK) {
@@ -316,7 +331,7 @@ esp_err_t roundie_bq27220_initialize(const roundie_bq27220_io_t *io, uint16_t ta
     io->delay_ms(io->context, STATUS_POLL_MS);
     error = roundie_bq27220_read(io, state);
     if (error == ESP_OK && (state->design_mah != target_mah || state->dm_design_mah != target_mah ||
-                            state->dm_full_mah != target_mah)) {
+                            state->dm_full_mah != full_mah)) {
         error = ESP_ERR_INVALID_RESPONSE;
     }
     if (error != ESP_OK) {

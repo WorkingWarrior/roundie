@@ -1,0 +1,464 @@
+/* Capacity learning tracker, load hold and learned-FCC record
+ * (components/roundie_board/gauge_learning.c). Scenarios follow TI SLUUBD4A
+ * 1.1.3: a qualified discharge sets VDQ, EDV2 ends it, FCC is updated within
+ * 4 s; charge, low temperature, low current or a gauge reset disqualify. */
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "roundie_gauge_learning.h"
+
+#define VDQ ROUNDIE_GAUGE_OP_VDQ
+#define EDV2 ROUNDIE_GAUGE_OP_EDV2
+#define INIT ROUNDIE_GAUGE_OP_INITCOMP
+#define SECOND INT64_C(1000000)
+
+static const roundie_gauge_learning_config_t config = {.learning_low_temp_deci_c = 119, .overload_ma = 1500};
+
+typedef struct {
+    roundie_gauge_learning_t tracker;
+    roundie_gauge_hold_t hold;
+    roundie_gauge_learning_sample_t sample;
+    bool held;
+} rig_t;
+
+static void rig_init(rig_t *rig)
+{
+    memset(rig, 0, sizeof(*rig));
+    roundie_gauge_learning_init(&rig->tracker);
+    rig->sample.valid = true;
+    rig->sample.initialized = true;
+    rig->sample.operation_flags = INIT;
+    rig->sample.battery_flags = 0x0008;
+    rig->sample.voltage_mv = 4150;
+    rig->sample.current_ma = 0;
+    rig->sample.temperature_deci_c = 250;
+    rig->sample.remaining_mah = 590;
+    rig->sample.full_mah = 600;
+    rig->sample.design_mah = 600;
+}
+
+/* One sample 5 s after the previous one. */
+static roundie_gauge_learn_result_t step(rig_t *rig)
+{
+    rig->sample.time_us += 5 * SECOND;
+    roundie_gauge_learn_result_t result = roundie_gauge_learning_update(&rig->tracker, &config, &rig->sample);
+    rig->held = roundie_gauge_hold_update(&rig->hold, &rig->sample, result, rig->sample.time_us);
+    return result;
+}
+
+/* Charged and armed, then a qualified discharge down to EDV2. */
+static void discharge_to_edv2(rig_t *rig, int16_t current_ma)
+{
+    assert(step(rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(roundie_gauge_hold_arm(&rig->hold, rig->sample.time_us, 10 * 3600 * SECOND));
+    rig->sample.current_ma = current_ma;
+    rig->sample.operation_flags = INIT | VDQ;
+    assert(step(rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(rig->tracker.phase == ROUNDIE_GAUGE_LEARN_QUALIFIED && !rig->tracker.resumed);
+    assert(rig->tracker.start_remaining_mah == 590 && rig->tracker.qualified_count == 1);
+    for (int i = 0; i < 20; i++) {
+        rig->sample.voltage_mv = (uint16_t)(rig->sample.voltage_mv - 30);
+        rig->sample.remaining_mah = (uint16_t)(rig->sample.remaining_mah - 25);
+        assert(step(rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+        assert(rig->held);
+    }
+    rig->sample.voltage_mv = 3560;
+    rig->sample.remaining_mah = 42;
+    rig->sample.operation_flags = INIT | VDQ | EDV2;
+}
+
+static void test_min_current(void)
+{
+    /* 3C/32: 56.25 mA for 600 mAh, met from 57 mA; 281.25 for 3000. */
+    assert(roundie_gauge_learning_min_current_ma(600) == 57);
+    assert(roundie_gauge_learning_min_current_ma(3000) == 282);
+    assert(roundie_gauge_learning_min_current_ma(32) == 3);
+}
+
+static void test_learning_updates_fcc(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(rig.tracker.phase == ROUNDIE_GAUGE_LEARN_EDV2 && rig.tracker.edv2_qualified);
+    assert(rig.tracker.edv2_voltage_mv == 3560 && rig.tracker.edv2_current_ma == -90);
+    assert(rig.held);
+    rig.sample.full_mah = 572;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_UPDATED);
+    assert(rig.tracker.result_old_full_mah == 600 && rig.tracker.result_new_full_mah == 572);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_NONE && rig.tracker.updated_count == 1);
+    assert(rig.tracker.phase == ROUNDIE_GAUGE_LEARN_IDLE);
+    assert(!rig.held && rig.hold.state == ROUNDIE_GAUGE_HOLD_DONE);
+    /* VDQ still set afterwards does not start a new discharge. */
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(rig.tracker.phase == ROUNDIE_GAUGE_LEARN_IDLE && rig.tracker.qualified_count == 1);
+    /* Discharge statistics: 21 samples at -90 mA, the EDV2 ones included. */
+    assert(rig.tracker.discharge_samples >= 21);
+    assert(rig.tracker.discharge_smallest_ma == -90 && rig.tracker.discharge_largest_ma == -90);
+}
+
+static void test_charge_aborts(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    /* USB reconnected before EDV2: the gauge clears VDQ after 10 mAh. */
+    rig.sample.operation_flags = INIT;
+    rig.sample.current_ma = 250;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_CHARGE && rig.tracker.aborted_count == 1);
+    assert(!rig.held && rig.hold.state == ROUNDIE_GAUGE_HOLD_ABORTED);
+}
+
+static void test_low_temperature_aborts(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    rig.sample.operation_flags = INIT;
+    rig.sample.temperature_deci_c = 100;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_LOW_TEMP);
+}
+
+static void test_config_update_and_unknown(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    rig.sample.operation_flags = INIT | ROUNDIE_GAUGE_OP_CFGUPDATE;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_CONFIG_UPDATE);
+
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    rig.sample.operation_flags = INIT;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_UNKNOWN);
+}
+
+/* Screen off and light sleep: too little current at EDV2. */
+static void test_low_current_at_edv2(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -30);
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(rig.tracker.phase == ROUNDIE_GAUGE_LEARN_EDV2);
+    /* No FCC change within the window: unchanged, low current reported. */
+    for (int i = 0; i < 11; i++) {
+        assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    }
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_UNCHANGED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_LOW_CURRENT && rig.tracker.unchanged_count == 1);
+    assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_DONE);
+
+    /* VDQ already cleared when EDV2 is seen: aborted, same cause. */
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -30);
+    rig.sample.operation_flags = INIT | EDV2;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_LOW_CURRENT);
+
+    /* Overload at EDV2. */
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -1600);
+    rig.sample.operation_flags = INIT | EDV2;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_OVERLOAD);
+}
+
+static void test_charge_after_edv2(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    rig.sample.current_ma = 300;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_CHARGE);
+}
+
+/* Battery disconnected or gauge POR: INITCOMP lost or Design Capacity back
+ * at the OTP default. */
+static void test_gauge_reset_aborts(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    rig.sample.operation_flags = VDQ;
+    rig.sample.initialized = false;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_GAUGE_RESET);
+
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    rig.sample.design_mah = 3000;
+    rig.sample.full_mah = 3000;
+    rig.sample.operation_flags = INIT;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_GAUGE_RESET);
+    /* A reset is not a learned FCC. */
+    assert(rig.tracker.updated_count == 0);
+}
+
+/* MCU restart mid-discharge: the new tracker follows the gauge's VDQ; flags
+ * already set are not transitions. */
+static void test_mcu_restart(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    rig.sample.operation_flags = INIT | VDQ;
+    rig.sample.current_ma = -90;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(rig.tracker.phase == ROUNDIE_GAUGE_LEARN_QUALIFIED && rig.tracker.resumed);
+    rig.sample.operation_flags = INIT | VDQ | EDV2;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    rig.sample.full_mah = 580;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_UPDATED);
+
+    /* Restarted after EDV2 was already set: no transition, no result. */
+    rig_init(&rig);
+    rig.sample.operation_flags = INIT | VDQ | EDV2;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    rig.sample.full_mah = 580;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(!rig.tracker.edv2_seen && rig.tracker.updated_count == 0);
+}
+
+static void test_edv2_without_vdq(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    rig.sample.current_ma = -90;
+    rig.sample.operation_flags = INIT | EDV2;
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED);
+    assert(rig.tracker.cause == ROUNDIE_GAUGE_LEARN_CAUSE_NOT_QUALIFIED && !rig.tracker.edv2_qualified);
+}
+
+static void test_invalid_samples(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    discharge_to_edv2(&rig, -90);
+    rig.sample.valid = false;
+    rig.sample.operation_flags = 0;
+    for (int i = 0; i < ROUNDIE_GAUGE_HOLD_MAX_MISSED - 1; i++) {
+        assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+        assert(rig.held);
+    }
+    /* Tracking is unaffected by unreadable samples. */
+    assert(rig.tracker.phase == ROUNDIE_GAUGE_LEARN_QUALIFIED);
+    assert(step(&rig) == ROUNDIE_GAUGE_LEARN_RESULT_NONE);
+    assert(!rig.held && rig.hold.state == ROUNDIE_GAUGE_HOLD_NO_DATA);
+}
+
+static void test_hold_limits(void)
+{
+    rig_t rig;
+    roundie_gauge_hold_t idle = {0};
+    rig_init(&rig);
+    /* Never armed: no hold. */
+    assert(!roundie_gauge_hold_update(&idle, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE, 0));
+    assert(!roundie_gauge_hold_arm(&idle, 0, 0));
+    assert(!roundie_gauge_hold_arm(&idle, 0, ROUNDIE_GAUGE_HOLD_MAX_US + 1));
+    assert(idle.state == ROUNDIE_GAUGE_HOLD_OFF);
+
+    /* Low voltage counts only while discharging. */
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(&rig.hold, 0, 3600 * SECOND));
+    rig.sample.voltage_mv = 3250;
+    rig.sample.current_ma = 200;
+    step(&rig);
+    assert(rig.held);
+    rig.sample.current_ma = -90;
+    step(&rig);
+    assert(!rig.held && rig.hold.state == ROUNDIE_GAUGE_HOLD_LOW_VOLTAGE);
+    /* Ended stays ended. */
+    rig.sample.voltage_mv = 4000;
+    step(&rig);
+    assert(!rig.held);
+
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(&rig.hold, 0, 3600 * SECOND));
+    rig.sample.battery_flags |= ROUNDIE_GAUGE_BAT_SYSDWN;
+    step(&rig);
+    assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_SYSDOWN);
+
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(&rig.hold, 0, 3600 * SECOND));
+    rig.sample.battery_flags |= ROUNDIE_GAUGE_BAT_FD;
+    step(&rig);
+    assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_SYSDOWN);
+
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(&rig.hold, 0, 3600 * SECOND));
+    rig.sample.temperature_deci_c = ROUNDIE_GAUGE_HOLD_MAX_DECI_C;
+    step(&rig);
+    assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_HOT);
+
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(&rig.hold, 0, 12 * SECOND));
+    step(&rig);
+    assert(rig.held);
+    step(&rig);
+    assert(rig.held);
+    step(&rig);
+    assert(!rig.held && rig.hold.state == ROUNDIE_GAUGE_HOLD_EXPIRED);
+
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(&rig.hold, 0, 3600 * SECOND));
+    roundie_gauge_hold_cancel(&rig.hold);
+    step(&rig);
+    assert(!rig.held && rig.hold.state == ROUNDIE_GAUGE_HOLD_CANCELLED);
+    /* Cancelling an ended hold keeps its reason. */
+    rig.hold.state = ROUNDIE_GAUGE_HOLD_DONE;
+    roundie_gauge_hold_cancel(&rig.hold);
+    assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_DONE);
+}
+
+static roundie_gauge_capacity_t profile(void)
+{
+    roundie_gauge_capacity_t state;
+    memset(&state, 0, sizeof(state));
+    state.gauging_config = 0x102a;
+    state.design_voltage_mv = 3700;
+    state.charging_voltage_mv = 4200;
+    state.taper_current_ma = 100;
+    state.near_full_mah = 200;
+    state.battery_low_centi = 700;
+    state.learning_low_temp_deci_c = 119;
+    state.overload_ma = 1500;
+    state.reserve_mah = 0;
+    state.flag_config_a = 0x0c8c;
+    state.flag_config_b = 0x8c;
+    return state;
+}
+
+static void test_profile_id(void)
+{
+    roundie_gauge_capacity_t base = profile();
+    const uint32_t id = roundie_gauge_profile_id(&base);
+    /* Capacities, flags and progress are not part of the identity. */
+    roundie_gauge_capacity_t other = base;
+    other.design_mah = 600;
+    other.dm_full_mah = 560;
+    other.dm_design_mah = 600;
+    other.battery_flags = 0x5028;
+    other.operation_flags = 0x00a4;
+    other.step = 7;
+    other.written = true;
+    assert(roundie_gauge_profile_id(&other) == id);
+    /* Every learning parameter is. */
+    uint16_t *fields16[] = {&other.gauging_config, &other.design_voltage_mv, &other.charging_voltage_mv,
+                            &other.taper_current_ma, &other.near_full_mah, &other.battery_low_centi,
+                            &other.overload_ma, &other.reserve_mah, &other.flag_config_a};
+    for (size_t i = 0; i < sizeof(fields16) / sizeof(fields16[0]); i++) {
+        other = base;
+        *fields16[i] ^= 1;
+        assert(roundie_gauge_profile_id(&other) != id);
+    }
+    other = base;
+    other.flag_config_b ^= 1;
+    assert(roundie_gauge_profile_id(&other) != id);
+    other = base;
+    other.learning_low_temp_deci_c ^= 1;
+    assert(roundie_gauge_profile_id(&other) != id);
+}
+
+static void test_record(void)
+{
+    roundie_gauge_capacity_t state = profile();
+    const uint32_t id = roundie_gauge_profile_id(&state);
+    roundie_gauge_record_t record;
+    roundie_gauge_record_make(&record, 600, id, 572, 1);
+    assert(roundie_gauge_record_valid(&record, sizeof(record), 600, id));
+    assert(roundie_gauge_record_restore_full(&record, sizeof(record), 600, id) == 572);
+    /* Every corrupted byte is detected. */
+    for (size_t i = 0; i < sizeof(record); i++) {
+        roundie_gauge_record_t broken = record;
+        ((uint8_t *)&broken)[i] ^= 0x10;
+        assert(!roundie_gauge_record_valid(&broken, sizeof(broken), 600, id));
+        assert(roundie_gauge_record_restore_full(&broken, sizeof(broken), 600, id) == 600);
+    }
+    /* Size, design capacity and profile identity. */
+    assert(!roundie_gauge_record_valid(&record, sizeof(record) - 1, 600, id));
+    assert(!roundie_gauge_record_valid(&record, 0, 600, id));
+    assert(!roundie_gauge_record_valid(&record, sizeof(record), 650, id));
+    assert(!roundie_gauge_record_valid(&record, sizeof(record), 600, id ^ 1U));
+    assert(!roundie_gauge_record_valid(NULL, sizeof(record), 600, id));
+    assert(roundie_gauge_record_restore_full(NULL, 0, 600, id) == 600);
+    /* A well-formed record with an implausible capacity. */
+    roundie_gauge_record_make(&record, 600, id, 299, 1);
+    assert(!roundie_gauge_record_valid(&record, sizeof(record), 600, id));
+    roundie_gauge_record_make(&record, 600, id, 751, 1);
+    assert(!roundie_gauge_record_valid(&record, sizeof(record), 600, id));
+    /* Plausibility bounds: design/2 .. design*5/4. */
+    assert(roundie_gauge_full_acceptable(600, 300) && roundie_gauge_full_acceptable(600, 750));
+    assert(!roundie_gauge_full_acceptable(600, 299) && !roundie_gauge_full_acceptable(600, 751));
+    assert(!roundie_gauge_full_acceptable(0, 0));
+}
+
+static void test_save_policy(void)
+{
+    roundie_gauge_capacity_t state = profile();
+    const uint32_t id = roundie_gauge_profile_id(&state);
+    roundie_gauge_record_t stored;
+    roundie_gauge_record_make(&stored, 600, id, 572, 3);
+    /* No record, or a record that is not valid here: save. */
+    assert(roundie_gauge_record_save_due(NULL, 0, 600, id, 572, 0));
+    assert(roundie_gauge_record_save_due(&stored, sizeof(stored), 600, id ^ 1U, 572, 0));
+    /* Less than 1 % of design (6 mAh) from the stored value: no write. */
+    assert(!roundie_gauge_record_save_due(&stored, sizeof(stored), 600, id, 572, 0));
+    assert(!roundie_gauge_record_save_due(&stored, sizeof(stored), 600, id, 577, 0));
+    assert(!roundie_gauge_record_save_due(&stored, sizeof(stored), 600, id, 567, 0));
+    assert(roundie_gauge_record_save_due(&stored, sizeof(stored), 600, id, 578, 0));
+    assert(roundie_gauge_record_save_due(&stored, sizeof(stored), 600, id, 566, 0));
+    /* Implausible values are never stored. */
+    assert(!roundie_gauge_record_save_due(NULL, 0, 600, id, 200, 0));
+    /* Per-boot limit. */
+    assert(roundie_gauge_record_save_due(NULL, 0, 600, id, 572, ROUNDIE_GAUGE_RECORD_MAX_SAVES_PER_BOOT - 1));
+    assert(!roundie_gauge_record_save_due(NULL, 0, 600, id, 572, ROUNDIE_GAUGE_RECORD_MAX_SAVES_PER_BOOT));
+}
+
+static void test_names(void)
+{
+    for (int i = 0; i <= ROUNDIE_GAUGE_LEARN_CAUSE_UNKNOWN; i++) {
+        assert(strcmp(roundie_gauge_learn_cause_name((roundie_gauge_learn_cause_t)i), "?") != 0);
+    }
+    for (int i = 0; i <= ROUNDIE_GAUGE_HOLD_CANCELLED; i++) {
+        assert(strcmp(roundie_gauge_hold_state_name((roundie_gauge_hold_state_t)i), "?") != 0);
+    }
+    for (int i = 0; i <= ROUNDIE_GAUGE_LEARN_RESULT_ABORTED; i++) {
+        assert(strcmp(roundie_gauge_learn_result_name((roundie_gauge_learn_result_t)i), "?") != 0);
+    }
+    for (int i = 0; i <= ROUNDIE_GAUGE_LEARN_EDV2; i++) {
+        assert(strcmp(roundie_gauge_learn_phase_name((roundie_gauge_learn_phase_t)i), "?") != 0);
+    }
+}
+
+int main(void)
+{
+    test_min_current();
+    test_learning_updates_fcc();
+    test_charge_aborts();
+    test_low_temperature_aborts();
+    test_config_update_and_unknown();
+    test_low_current_at_edv2();
+    test_charge_after_edv2();
+    test_gauge_reset_aborts();
+    test_mcu_restart();
+    test_edv2_without_vdq();
+    test_invalid_samples();
+    test_hold_limits();
+    test_profile_id();
+    test_record();
+    test_save_policy();
+    test_names();
+    printf("gauge learning: OK\n");
+    return 0;
+}

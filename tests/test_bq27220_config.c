@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "bq27220_config.h"
+#include "roundie_gauge_learning.h"
 #include "sensor_codec.h"
 
 #define DM_BASE 0x9180
@@ -87,6 +88,12 @@ static void model_reset(gauge_model_t *gauge, uint16_t security)
     put_be(gauge, 0x91fd, 4200);
     put_be(gauge, 0x9201, 100);
     put_be(gauge, 0x926b, 200);
+    put_be(gauge, 0x9251, 700);
+    gauge->dm[0x925b - DM_BASE] = 119;
+    put_be(gauge, 0x9264, 1500);
+    put_be(gauge, 0x926d, 0);
+    put_be(gauge, 0x927f, 0x0c8c);
+    gauge->dm[0x9281 - DM_BASE] = 0x8c;
     gauge->battery_flags = 0x5028;
     gauge->security = security;
     gauge->initcomp = true;
@@ -299,7 +306,7 @@ static void test_initialize(uint16_t security)
     gauge_model_t before = gauge;
     roundie_bq27220_io_t io = io_for(&gauge);
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_OK);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_OK);
     assert(state.step == ROUNDIE_GAUGE_STEP_NONE && state.written);
     assert(state.design_mah == 600 && state.dm_design_mah == 600 && state.dm_full_mah == 600);
     assert(state.gauging_config == 0x102a && state.design_voltage_mv == 3700);
@@ -324,6 +331,9 @@ static void test_read_only(void)
     assert(roundie_bq27220_read(&io, &state) == ESP_OK);
     assert(state.design_mah == 3000 && state.dm_full_mah == 3000 && state.dm_design_mah == 3000);
     assert(state.operation_flags == 0x00a6 && state.battery_flags == 0x5028);
+    assert(state.battery_low_centi == 700 && state.learning_low_temp_deci_c == 119);
+    assert(state.overload_ma == 1500 && state.reserve_mah == 0);
+    assert(state.flag_config_a == 0x0c8c && state.flag_config_b == 0x8c);
     assert(gauge.command_count == 0 && gauge.commits == 0);
     assert_unchanged(&gauge, &before);
 }
@@ -333,7 +343,7 @@ static void expect_refusal(gauge_model_t *gauge, uint16_t target, esp_err_t expe
     gauge_model_t before = *gauge;
     roundie_bq27220_io_t io = io_for(gauge);
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, target, &state) == expected);
+    assert(roundie_bq27220_initialize(&io, target, 600, &state) == expected);
     assert(state.step == ROUNDIE_GAUGE_STEP_PRECHECK && !state.written);
     assert(gauge->command_count == 0 && gauge->commits == 0);
     assert_unchanged(gauge, &before);
@@ -381,7 +391,7 @@ static void test_keep_learned_capacity(void)
     gauge_model_t before = gauge;
     roundie_bq27220_io_t io = io_for(&gauge);
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_OK);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_OK);
     assert(state.step == ROUNDIE_GAUGE_STEP_NONE && !state.written);
     assert(state.dm_full_mah == 575 && state.dm_design_mah == 600);
     assert(gauge.command_count == 0 && gauge.commits == 0);
@@ -417,14 +427,14 @@ static void test_block_read_failures(void)
     roundie_bq27220_io_t io = io_for(&gauge);
     io.read = corrupt_sum_read;
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_ERR_INVALID_CRC);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_ERR_INVALID_CRC);
     assert(state.step == ROUNDIE_GAUGE_STEP_READ_BLOCK && gauge.command_count == 0);
     assert_unchanged(&gauge, &before);
 
     model_reset(&gauge, SECURITY_UNSEALED);
     io = io_for(&gauge);
     io.read = stale_echo_read;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_ERR_TIMEOUT);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_ERR_TIMEOUT);
     assert(state.step == ROUNDIE_GAUGE_STEP_READ_BLOCK && gauge.command_count == 0);
     assert_unchanged(&gauge, &before);
 }
@@ -437,7 +447,7 @@ static void test_enter_not_confirmed(void)
     gauge_model_t before = gauge;
     roundie_bq27220_io_t io = io_for(&gauge);
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_ERR_TIMEOUT);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_ERR_TIMEOUT);
     assert(state.step == ROUNDIE_GAUGE_STEP_ENTER && !state.written);
     assert(gauge.commits == 0 && !gauge.cfgupdate && gauge.command_count == 1);
     assert_unchanged(&gauge, &before);
@@ -448,7 +458,7 @@ static void test_enter_not_confirmed(void)
     model_reset(&gauge, SECURITY_UNSEALED);
     gauge.enter_delay_ms = 4200;
     io = io_for(&gauge);
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_ERR_TIMEOUT);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_ERR_TIMEOUT);
     assert(state.step == ROUNDIE_GAUGE_STEP_ENTER && !state.written && gauge.commits == 0);
     assert(command_sent(&gauge, 0x0092) && !command_sent(&gauge, 0x0091));
     assert(!gauge.cfgupdate && gauge.initcomp);
@@ -464,7 +474,7 @@ static void test_commit_not_applied(void)
     gauge_model_t before = gauge;
     roundie_bq27220_io_t io = io_for(&gauge);
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_ERR_INVALID_RESPONSE);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_ERR_INVALID_RESPONSE);
     assert(state.step == ROUNDIE_GAUGE_STEP_VERIFY_CFG && state.written);
     assert(command_sent(&gauge, 0x0092) && !command_sent(&gauge, 0x0091));
     assert(!gauge.cfgupdate && (state.operation_flags & 0x0400) == 0);
@@ -480,7 +490,7 @@ static void test_exit_not_confirmed(void)
     gauge.exit_never = true;
     roundie_bq27220_io_t io = io_for(&gauge);
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_ERR_TIMEOUT);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_ERR_TIMEOUT);
     assert(state.step == ROUNDIE_GAUGE_STEP_EXIT && state.written);
     /* Reported, not hidden: the gauge is still in CFGUPDATE (it leaves it by
      * itself after about 240 s, TRM 8.1.4). */
@@ -499,7 +509,7 @@ static void test_single_fault_everywhere(void)
     model_reset(&clean, SECURITY_UNSEALED);
     roundie_bq27220_io_t io = io_for(&clean);
     roundie_gauge_capacity_t state;
-    assert(roundie_bq27220_initialize(&io, 600, &state) == ESP_OK);
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_OK);
     int total = clean.transactions;
     assert(total > 20);
     for (int kind = FAULT_LOST; kind <= FAULT_APPLIED; kind++) {
@@ -510,7 +520,7 @@ static void test_single_fault_everywhere(void)
             gauge.fault_kind = (fault_kind_t)kind;
             gauge_model_t before = gauge;
             io = io_for(&gauge);
-            esp_err_t error = roundie_bq27220_initialize(&io, 600, &state);
+            esp_err_t error = roundie_bq27220_initialize(&io, 600, 600, &state);
             uint16_t full = get_be(&gauge, 0x929d);
             uint16_t design = get_be(&gauge, 0x929f);
             assert((full == 3000 && design == 3000) || (full == 600 && design == 600));
@@ -564,6 +574,72 @@ static void test_restore(void)
     assert(!roundie_gauge_restore_due(NULL, 600, true, true, true, 3000));
 }
 
+/* After a gauge reset, the learned FCC from the record is written with the
+ * design capacity; a later MCU start keeps it (no second write). */
+static void test_restore_learned_full(void)
+{
+    gauge_model_t gauge;
+    model_reset(&gauge, SECURITY_UNSEALED);
+    roundie_bq27220_io_t io = io_for(&gauge);
+    roundie_gauge_capacity_t state;
+
+    /* First configuration, then the profile identity the record keeps. */
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_OK);
+    const uint32_t configured_profile = roundie_gauge_profile_id(&state);
+    roundie_gauge_record_t record;
+    roundie_gauge_record_make(&record, 600, configured_profile, 560, 1);
+
+    /* Gauge power-on reset: OTP defaults again, the same profile id. */
+    model_reset(&gauge, SECURITY_UNSEALED);
+    gauge_model_t before = gauge;
+    memset(&state, 0, sizeof(state));
+    assert(roundie_bq27220_read(&io, &state) == ESP_OK);
+    assert(state.design_mah == 3000);
+    assert(roundie_gauge_profile_id(&state) == configured_profile);
+    uint16_t full = roundie_gauge_record_restore_full(&record, sizeof(record), 600, roundie_gauge_profile_id(&state));
+    assert(full == 560);
+    assert(roundie_bq27220_initialize(&io, 600, full, &state) == ESP_OK);
+    assert(get_be(&gauge, 0x929d) == 560 && get_be(&gauge, 0x929f) == 600);
+    assert(state.dm_full_mah == 560 && state.design_mah == 600);
+    assert_only_capacity_changed(&gauge, &before);
+
+    /* MCU restart: Design Capacity is the target, nothing is written even
+     * though the FCC differs from it (the learned FCC is not overwritten). */
+    gauge.command_count = 0;
+    gauge.commits = 0;
+    assert(roundie_bq27220_initialize(&io, 600, 600, &state) == ESP_OK);
+    assert(gauge.command_count == 0 && gauge.commits == 0);
+    assert(get_be(&gauge, 0x929d) == 560);
+
+    /* A corrupted record falls back to the design value. */
+    record.learned_full_mah ^= 1;
+    model_reset(&gauge, SECURITY_UNSEALED);
+    assert(roundie_bq27220_read(&io, &state) == ESP_OK);
+    assert(roundie_gauge_record_restore_full(&record, sizeof(record), 600, roundie_gauge_profile_id(&state)) == 600);
+
+    /* A changed gauge profile (other OTP defaults) discards the record. */
+    roundie_gauge_record_make(&record, 600, configured_profile, 560, 2);
+    model_reset(&gauge, SECURITY_UNSEALED);
+    put_be(&gauge, 0x926b, 40);
+    assert(roundie_bq27220_read(&io, &state) == ESP_OK);
+    assert(roundie_gauge_record_restore_full(&record, sizeof(record), 600, roundie_gauge_profile_id(&state)) == 600);
+}
+
+/* An FCC out of range is refused before any transaction. */
+static void test_full_out_of_range(void)
+{
+    gauge_model_t gauge;
+    model_reset(&gauge, SECURITY_UNSEALED);
+    gauge_model_t before = gauge;
+    roundie_bq27220_io_t io = io_for(&gauge);
+    roundie_gauge_capacity_t state;
+    assert(roundie_bq27220_initialize(&io, 600, 50, &state) == ESP_ERR_INVALID_ARG);
+    assert(roundie_bq27220_initialize(&io, 600, 7000, &state) == ESP_ERR_INVALID_ARG);
+    assert(state.step == ROUNDIE_GAUGE_STEP_PRECHECK && !state.written);
+    assert(gauge.command_count == 0 && gauge.commits == 0 && gauge.now_ms == 0);
+    assert_unchanged(&gauge, &before);
+}
+
 int main(void)
 {
     test_checksum_vector();
@@ -578,6 +654,8 @@ int main(void)
     test_exit_not_confirmed();
     test_single_fault_everywhere();
     test_restore();
+    test_restore_learned_full();
+    test_full_out_of_range();
     printf("bq27220: OK\n");
     return 0;
 }
