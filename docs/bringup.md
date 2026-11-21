@@ -1062,6 +1062,58 @@ safe 0, failures 0), OTA VALID, no gauge write, Design Capacity and FCC
 still 600, profile unchanged, NVS record absent and saves 0 (no FCC update
 occurred). Not measured: the current at lower voltage and at EDV2.
 
+**Development end-of-cycle trigger and battery window (0.3.79-dev).**
+`roundie_gauge.py learn-test end D` (RG1 `LEARN TEST`, development
+firmware only) arms a one-shot simulation of the end of a cycle under a
+running hold. From 0.3.79-dev arming does not start the countdown: it starts
+after two consecutive valid battery samples (no USB link, negative current),
+then the warning follows after `D` s, a simulated EDV2 60 s later and
+`test-end` (protective timed light sleeps) 120 s after that. A USB link or a
+charging current while the simulation is running ends it as `test-usb` and
+clears the protection; a later unplug does not resume it. Nothing simulated is
+written to the gauge, and the learning result is not credited or stored.
+`learn-window` reports the battery window from the start of the simulation
+to the first external power: start, protection and last points (age, RM,
+voltage, light-sleep count, time asleep, timer and other wakes, awake time
+and gaps between sleeps), min/max voltage and the wake causes seen; the tool
+derives the mean current from the RM slope with ±1 mAh bounds. Host tests
+cover arming on USB, the start condition, reconnection at four points, the
+one-shot rule, hold expiry while armed, restart and `learn-stop`.
+
+Device result (2026-11-21, 0.3.79-dev in `ota_0`, 0.3.78-dev VALID in
+`ota_1` as rollback, one board). On USB: arming with `D` = 30 s did not start
+the countdown within 50 s (`started` 0, window `none`); a restart cleared
+hold, test and window; a 1 min hold expiring while armed ended as `expired`
+without warning or protection. On battery (`learn-hold 60`,
+`learn-test end 120`, USB unplugged for about 15.5 min): the simulation
+started about 10 s after unplugging, the warning came 121 s later, the
+simulated EDV2 at +181 s and `test-end` at +301 s. Window:
+
+| Span | Duration | Light sleeps | Asleep | Awake between sleeps | RM | Mean current from RM | Voltage |
+|---|---|---|---|---|---|---|---|
+| Before protection (screen on, alert) | 300 s | 0 | 0 % | — | 593 → 586 | 84 mA (72–96) | 4120 → 4109 mV |
+| Protected (`test-end`) | 624 s | 10 (10 requested, 0 errors) | 579 s, 92.7 %, mean 57.9 s | 5.0 s mean (9 gaps) | 586 → 585 | 5.8 mA (0–11.5) | 4109 → 4130 mV |
+| Whole window | 925 s | 10 | 62.6 % | — | 593 → 585 | 31 mA (27–35) | 4099–4131 mV |
+
+Wake causes: 9 timer wakes and 1 GPIO wake (the last one; touch or BOOT,
+source not identified). The gauge's `Current()` in the first sample after each
+wake read 0 mA in all 10 samples, and `AverageCurrent()` 0–1 mA. These values
+are not the light-sleep current (gauge deadband and its own SLEEP mode). After
+reconnecting: protection off, alert none, hold `test-end`, charging at about
+275 mA, no MCU reset (safe 0, failures 0, BootGuard counters unchanged), OTA
+VALID, `written` 0, saves 0, stored 0.
+
+Conclusions: **GO** for the battery-start trigger and the protective
+light-sleep cycle (it repeats as designed and the mean current drops from
+about 62–106 mA to at most about 12 mA, an upper bound that includes the
+wakes). **PENDING:** the light-sleep current itself. One RM step over 10 min
+only bounds the protected mean to 0–11.5 mA. Narrowing it needs either an
+external current meter in the battery lead or a protected window of at least
+an hour (±1 mAh then gives about ±1 mA). **PENDING (host-tested only):**
+reconnecting USB while the simulation is running (`test-usb`) and the
+no-resume rule on the device; in this run USB was reconnected after
+`test-end`.
+
 ## Manual board checklist
 
 Run these only on an identified 1.85B unit after flashing is separately
