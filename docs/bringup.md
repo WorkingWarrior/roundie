@@ -852,27 +852,34 @@ and FC are bits of `op` and `flags`). The cause is an inference from 5 s
 samples: a short charge between samples, self-discharge accounting or EDV2
 voltage margin are reported as `unknown`. After an MCU restart a discharge
 already in progress is followed (`resumed` 1); one restarted after EDV2 is
-not reported.
+not reported. `learn-end` (RG1 `LEARN END`, RAM only, a separate reply
+because the `LEARN` reply is already about 830 bytes) reports the hold
+state, alert, `learned`, the result that ended the hold, `warned` and its
+age, the end age, the protective sleep counters, the EDV2 snapshot and the
+last `AverageCurrent()`.
 
 **Learning load hold (`learn-hold MINUTES`, `learn-stop`).** Holds a
 diagnostics power inhibitor (CPU awake, display awake) renewed every 60 s
 with a 120 s timeout, so it lapses within 2 min if the worker stops. It ends
-by itself, and stays ended, at: an FCC update or `unchanged` result; an
-abort; voltage below 3300 mV while discharging; BatteryStatus SYSDWN or FD;
-temperature ≥ 45.0 °C; 30 s without a valid sample; the armed time (at most
-24 h). Afterwards the normal screen timeout applies again (screen off after
-30 s, CPU active, about 62 mA measured). It does not switch the battery off:
-the device keeps drawing that current until USB is connected. The
+by itself, and stays ended, at: EDV2 while discharging (state `edv2`: load
+released at once, the FCC update awaited for 120 s, then `done` or
+`no-result`); an `updated` or `unchanged` result; an abort; voltage at or
+below 3300 mV while discharging; BatteryStatus SYSDWN or FD; temperature
+≥ 45.0 °C or < 10.0 °C; 30 s without a valid sample; the armed time (at most
+24 h). A safety stop wins over a learning result in the same sample. The
 `DISPLAY_AWAKE` kind only prevents the timeout; it does not turn on a screen
 that is already off, so the procedure sends `screen-on` (RW1) right before
-`learn-hold`.
+`learn-hold`. The end of the hold and its protection are described under
+"End of the cycle" below.
 
 **Battery-only telemetry (`learn-log`).** Every gauge sample (5 s while the
 worker is awake) also goes to a 128-entry RAM ring (about 10 min awake, lost
 on reset): time, voltage, current (`Current()` 0x0C, instantaneous),
 temperature, RM, FCC, OperationStatus, BatteryStatus, hold state, whether
-the hold held its inhibitor, and whether USB Serial/JTAG saw host SOF frames
-(`usb_serial_jtag_is_connected()`). `learn-log` reads it after USB is
+the hold held its inhibitor, whether USB Serial/JTAG saw host SOF frames
+(`usb_serial_jtag_is_connected()`), and, from 0.3.78-dev, `AverageCurrent()`
+(0x14, IIR filter with a time constant of about 14.5 s, TRM §4.9.9) as the
+last field. `learn-log` reads it after USB is
 reconnected (RG1 `LEARN LOG n`, 10 entries per reply) and summarizes the
 samples without a USB host, split by hold. The USB flag shows the host link,
 not VBUS: it is evidence of battery operation together with the physical
@@ -887,7 +894,8 @@ on a non-flammable surface, observed at the start and the end.
 
 **GO/NO-GO before unplugging USB (all must hold):**
 
-1. OTA image VALID, BootGuard safe 0, no unexpected reset.
+1. OTA image VALID with the end-of-cycle protection (0.3.78-dev or later),
+   BootGuard safe 0, no unexpected reset.
 2. `status` format 3: Design Capacity 600 in `0x3C` and Data Memory, FCC
    plausible (300–750), Gauging Configuration `0x102A`, Near Full 200,
    Battery Low 700, Learning Low Temp 119, OverLoad 1500, Reserve 0, SOC Flag
@@ -909,6 +917,17 @@ on a non-flammable surface, observed at the start and the end.
    NO-GO, the load has to be raised first (for example brightness 100 %, a
    test load screen) and measured again. Reconnecting USB disqualifies a
    running discharge (`charge`).
+6. Light-sleep current measured on battery (method under "End of the
+   cycle"), and the mean current with protection estimated from it. Without
+   the measurement: NO-GO for an unattended end; GO only with the attended
+   end below.
+7. Device check of the end path: the alert screen and its text, timed
+   sleeps accepted repeatedly (`sleep_ok` growing, Home reloaded each time,
+   no reset), protection cleared by a charging sample. Until a safe trigger
+   exists (separate decision), this is PENDING and the first real cycle is
+   its test: the end must then be attended.
+8. `learn-end` before the cycle: hold `off` or `cancelled`, alert `none`,
+   `protect` 0.
 
 **The key evidence that a discharge qualifies is VDQ itself**, not FC:
 after unplugging, `learn-log`/`learn` must show OperationStatus VDQ (`op`
@@ -923,26 +942,93 @@ VDQ not set within one minute of unplugging: stop, reconnect, NO-GO.
 **Cycle.** `roundie_power.py screen-on`, then `learn-hold 600` (10 h), check
 `hold` `running` and `inhibitor` 1, unplug USB. Expected duration: about
 5–5.5 h to EDV2 at the measured 105 mA (estimate; the current at lower
-voltage is not measured). Do not plug USB in until the screen turns dark by
-itself (hold ended) unless aborting.
+voltage is not measured). Be present from the `near-end` alert (about
+27 min before EDV2, estimate). Do not plug USB in before the "Koniec testu
+baterii" or "Test baterii przerwany" screen unless aborting; then connect
+USB within 15 min (attended end, until gates 6 and 7 are met).
 
 **Abort at any time** by connecting USB (the gauge disqualifies on charge; the
 hold ends with `aborted`/`charge`): heat, swelling, smell, temperature above
 45 °C, a reset or Safe Mode, or a hold running past 10 h.
 
-**Over-discharge protection.** The hold ends at the FCC update right after
-EDV2 (about 7 %, 42 mAh left by the gauge's estimate), at the latest at
-3300 mV, SYSDWN or FD; then the screen times out but the system keeps
-drawing about 62 mA (no automatic light sleep). No deep sleep or power-off
-is used. About 42 mAh left at EDV2 lasts roughly 40 min at that current, so
-the end of the cycle must be attended: connect USB within 15 min after the
-screen goes dark. The cell's own protection circuit is not verified and is
-not relied on.
+**End of the cycle (0.3.78-dev; host-tested, not run on the device).**
+The 0.3.77-dev short test showed the gap: after the hold the system kept
+drawing 62–63 mA with the screen off, because M8-B never light-sleeps on its
+own (verified, source and `attempts` 0). About 42 mAh left at EDV2 last about
+40 min at that current. The pure hold state machine
+(`roundie_gauge_hold_update`) and `main/gauge_learning_service.c` now end
+the cycle as follows:
 
-**After reconnecting USB:** `learn` and `status`. Success: result `updated`
-with cause `none`, new FCC within 300–750 and within the TRM's per-update
-limits; with the restore setting, `stored` 1 with that value. `unchanged` with
-cause `none` is a valid outcome (learned value equal). `unchanged` or
+1. *Early warning, independent of USB.* While discharging, the first sample
+   with RM ≤ 15 % of FCC or voltage ≤ 3550 mV sets `warned` and the alert
+   `near-end`: the screen turns on with "Test baterii: zbliża się koniec.
+   Przygotuj kabel USB." The load stays on. With a 600 mAh FCC this is
+   about 90 mAh, roughly 27 min before EDV2 at 106 mA (estimate).
+2. *EDV2.* The first discharging sample with OperationStatus EDV2 while the
+   hold runs stores a snapshot (voltage, `Current()`, `AverageCurrent()`,
+   temperature, RM, FCC, OperationStatus, BatteryStatus), releases the load
+   immediately and shows "Koniec testu baterii. Podłącz USB." The hold waits
+   up to 120 s (the gauge saves FCC within 4 s) for the tracker's result:
+   `updated` → `done` with `learned` 1; `unchanged` → `done`, `learned` 0;
+   none → `no-result`. No protective sleep runs during this wait, so the
+   result is not delayed by a sleep gap.
+3. *Safety stops.* Voltage ≤ 3300 mV while discharging, SYSDWN or FD,
+   temperature ≥ 45.0 °C or < 10.0 °C, six invalid samples in a row, or a
+   tracker abort end the hold with alert `stopped` ("Test baterii
+   przerwany. Podłącz USB."). `learned` stays 0 even if an FCC update
+   arrives later or in the same sample. A plain expiry far from the end, or
+   `learn-stop`, ends without an alert; an expiry after the warning counts as
+   a stop.
+4. *Protection after the end.* Every end with an alert sets `protect`. On
+   each following sample the service asks the PowerManager for a 60 s timed
+   light sleep (`roundie_power_request_timed_sleep`), through the normal
+   M8-B path: accepted only with the screen already off (the alert screen
+   times out after 30 s), no sleep or restart pending, then the worker's
+   admission (inhibitors, OTA, runtime parked) and the RTC timer wake. A
+   timer wake keeps the screen off (verified in M8-B), so the next sample
+   requests the next sleep. Touch or BOOT wakes the screen with the alert
+   still shown; a tap hides it. Protection ends only at a valid charging
+   sample (current > 0), which also removes the alert. Requests and
+   acceptances are counted (`learn-end`: `sleep_req`, `sleep_ok`).
+5. *MCU reset.* The hold, warning, alert and protection are RAM only. After
+   any reset the hold is `off`: no forced load, no alert, no protective
+   sleep; nothing resumes a forced discharge (host-tested). The tracker
+   follows a VDQ still set in the gauge (`resumed`) and may still see the
+   FCC update, but that is not a hold success. The system then runs the
+   normal M8-B policy (screen off after 30 s, about 62 mA). This is the
+   residual risk of a reset near the end: no automatic protection and no
+   alert.
+
+What this does not achieve, and what is not known:
+
+- It does not switch the battery off and uses no deep sleep (M8-B decision).
+  The device still draws current until USB is connected.
+- **Light-sleep current is not measured** (M8-B §9 PENDING). The effect of
+  the protection is therefore an estimate: with a sleep current `I` and about
+  7 s awake at 62 mA per 60 s sleep, the mean is (60·I + 7·62)/67 mA, for
+  example about 15 mA if `I` were 10 mA (hypothesis). Method for the next
+  authorized short battery test: RW1 `SLEEP 60` repeated for 10–30 min on
+  battery, then `learn-log`: `AverageCurrent()` in the first sample after
+  each wake mostly reflects the last 15 s of the sleep (the gauge runs during
+  MCU sleep), and the RM slope over the series gives the mean. Caveat: below
+  its Sleep Current the gauge enters its own SLEEP mode with 20 s updates,
+  which coarsens both values.
+- The alert screen, the repeated timed sleeps (each one reloads the Home
+  application) and the touch wake with the alert are not tested on the
+  device. A safe way to trigger an end without discharging is not
+  available: the warning needs RM ≤ 15 % or ≤ 3550 mV, EDV2 needs a real
+  discharge. Testing them needs either a separate decision on a
+  development-only trigger or the real cycle.
+- The cell's own protection circuit is not verified and is not relied on.
+
+**After reconnecting USB:** `learn-end`, `learn`, `learn-log` and `status`.
+Success only with `learn-end` hold `done` and `learned` 1 (no safety stop
+before the result), and `learn` result `updated` with cause `none`, new FCC
+within 300–750 and within the TRM's per-update limits; with the restore
+setting, `stored` 1 with that value. `unchanged` with cause `none` is a
+valid outcome (learned value equal). Any safety stop
+(`low-voltage`, `sysdown`, `hot`, `cold`, `no-data`, `no-result`) is not a
+success, whatever the FCC shows. `unchanged` or
 `aborted` with `low-current` means the load was too low: NO-GO for a repeat
 until the load is raised. Record the EDV2 voltage/current/temperature and the
 discharge current statistics.
