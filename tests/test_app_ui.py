@@ -31,6 +31,7 @@ class AppUiTests(unittest.TestCase):
             subprocess.run([str(build / "host/round_tests"), examples[3]], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests")], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests"), "low-memory"], check=True, timeout=20)
+            subprocess.run([str(build / "host/launcher_tests"), "face-boot"], check=True, timeout=20)
             subprocess.run([str(build / "host/display_tests")], check=True, timeout=20)
             # Watch faces (M10): the demo faces through the real store and GUI.
             faces = []

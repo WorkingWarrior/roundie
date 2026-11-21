@@ -24,6 +24,8 @@ static char home[ROUNDIE_PACKAGE_ID];
 static bool home_due; /* launch home once the list is shown */
 static bool home_parked; /* home unloaded for light sleep; relaunch on resume */
 static bool face_home; /* Home is the system watch face, not a package */
+/* Face Home shown before storage admission: scan once when admitted, keeping Home. */
+static bool home_scan_due;
 
 static void set_state(roundie_navigation_t state)
 {
@@ -113,6 +115,7 @@ void roundie_launcher_set_home(const char *id, bool autostart)
 {
     roundie_lock(&lock);
     face_home = false;
+    home_scan_due = false;
     status.home_face = false;
     if (id != NULL && roundie_package_id_valid(id)) {
         strcpy(home, id);
@@ -131,6 +134,7 @@ void roundie_launcher_set_home_face(bool autostart)
     status.home_face = true;
     home[0] = '\0';
     home_due = autostart;
+    home_scan_due = true;
     roundie_unlock(&lock);
 }
 
@@ -368,6 +372,7 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     status.stack_min = roundie_thread_stack_unused();
     bool ready = gui_ready;
     bool refresh = refresh_pending || status.state == ROUNDIE_NAV_WAITING;
+    bool home_scan = face_home && home_scan_due && !snapshot_valid && status.state == ROUNDIE_NAV_HOME;
     bool launch = status.launch_pending;
     bool exiting = status.exit_pending;
     bool result_pending = status.state == ROUNDIE_NAV_RESULT;
@@ -513,9 +518,12 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     if (result_pending) {
         return; /* A registry publication must not dismiss a result. */
     }
-    if (refresh) {
+    if (refresh || home_scan) {
         roundie_lock(&lock);
-        set_state(ROUNDIE_NAV_REFRESHING);
+        home_scan_due = false;
+        if (refresh) {
+            set_state(ROUNDIE_NAV_REFRESHING);
+        } /* else Home stays shown; publish() keeps HOME. */
         roundie_unlock(&lock);
         uint32_t before = ui.flushes;
         esp_err_t result = roundie_packages_scan();

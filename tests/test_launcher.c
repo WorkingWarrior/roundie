@@ -240,7 +240,6 @@ static void flush(lv_display_t *display, const lv_area_t *area, uint8_t *pixels)
 
 int main(int argc, char **argv)
 {
-    (void)argv;
     lv_init();
     lv_display_t *display = lv_display_create(360, 360);
     static uint8_t buffer[360 * 10 * 2];
@@ -252,6 +251,26 @@ int main(int argc, char **argv)
     performance_tests();
     roundie_launcher_gui_bind();
     roundie_launcher_gui_set_quick_settings(&quick_mock);
+    if (argc > 1 && strcmp(argv[1], "face-boot") == 0) {
+        /* M10 board boot: the face Home is shown before storage admission
+         * (BootGuard STABLE). Admission then scans once with Home kept, so
+         * the first swipe up shows the list, not the error view. */
+        roundie_launcher_set_home_face(true);
+        poll(false, false);
+        assert(nav.state == ROUNDIE_NAV_HOME && scans == 0);
+        packages.count = 1;
+        entry(0, "org.roundie.hello", 1, ROUNDIE_PACKAGE_OK);
+        poll(true, false);
+        assert(nav.state == ROUNDIE_NAV_HOME && scans == 1 && nav.count == 1);
+        poll(true, false);
+        assert(scans == 1); /* once */
+        assert(roundie_launcher_open_list() == ESP_OK);
+        poll(true, false);
+        assert(nav.state == ROUNDIE_NAV_LIST && nav.count == 1);
+        lv_deinit();
+        puts("launcher face boot: Home before admission, one scan, list on first open");
+        return 0;
+    }
     if (argc > 1) {
         lv_mem_monitor_t memory;
         lv_mem_monitor(&memory);
