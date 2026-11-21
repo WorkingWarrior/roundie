@@ -15,7 +15,11 @@ given time; at EDV2 it releases the load at once. Every end except a plain
 expiry or learn-stop shows an alert on the device and makes the firmware
 light-sleep between samples until the battery is seen charging. learn-stop
 ends it. learn-end reports that end (EDV2 snapshot, result, protection). An
-MCU reset leaves the hold off: nothing resumes. learn-log reads the RAM telemetry ring (one
+MCU reset leaves the hold off: nothing resumes. learn-test arms a simulated
+end on a running hold; its countdown starts only on battery (no USB link,
+discharging), and external power ends a started test for good. learn-window
+reports that battery window with the light-sleep counters and derived means.
+learn-log reads the RAM telemetry ring (one
 entry per 5 s gauge sample, including time without USB) after the cable is
 reconnected and summarizes the samples taken without a USB host. None of these
 writes the gauge."""
@@ -41,7 +45,7 @@ LEARN_NAMES = {
     "cause": ("none", "charge", "low-temp", "low-current", "overload", "gauge-reset", "config-update",
               "not-qualified", "unknown"),
     "hold": ("off", "running", "done", "aborted", "low-voltage", "sysdown", "hot", "no-data", "expired",
-             "cancelled", "edv2", "cold", "no-result", "test-end", "test-stop"),
+             "cancelled", "edv2", "cold", "no-result", "test-end", "test-stop", "test-usb"),
 }
 END_NAMES = {
     "hold": LEARN_NAMES["hold"],
@@ -57,7 +61,12 @@ LEARN_INTS = ("resumed", "old_full", "new_full", "result_s", "qualified", "updat
               "inhibitor", "stored", "stored_full", "stored_seq", "saves", "load", "low_temp", "overload", "op",
               "flags", "mv", "ma", "temp", "rm", "fcc", "dc")
 OPERATIONS = (r"STATUS|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP|LEARN LOG [0-9]{1,10}"
-              r"|LEARN END|LEARN TEST (END|STOP) [0-9]{1,4}")
+              r"|LEARN END|LEARN WINDOW|LEARN TEST (END|STOP) [0-9]{1,4}")
+WINDOW_STATES = ("none", "open", "closed")
+WINDOW_INTS = ("started", "samples", "vmin", "vmax", "causes", "protect")
+POINT_INTS = ("age_ms", "rm", "mv", "sleeps", "slept_ms", "timer", "other", "awake_ms", "gaps")
+# esp_sleep_source_t bits (ESP-IDF esp_sleep.h): names for the cause mask.
+WAKE_CAUSES = {2: "ext0", 3: "ext1", 4: "timer", 5: "touchpad", 6: "ulp", 7: "gpio", 8: "uart"}
 LOG_FIELDS = ("seq", "time_ms", "mv", "ma", "temp", "rm", "fcc", "op", "flags", "hold", "link", "avg_ma")
 LOG_VALID = 0x01
 LOG_USB = 0x02
@@ -82,6 +91,11 @@ def parse_reply(line, request_id):
             if code != 0:
                 raise DeviceError(f"gauge rejected log command ({code}): {status}")
             return parse_log(status)
+        if "window" in status:
+            parse_window(status)
+            if code != 0:
+                raise DeviceError(f"gauge rejected window command ({code}): {status}")
+            return status
         if "end" in status:
             parse_end(status)
             if code != 0:
@@ -136,6 +150,70 @@ def parse_end(status):
             raise ValueError(f"invalid {key}")
     if status["learned"] == 1 and (status["hold_result"] != "updated" or status["simulated"] != 0):
         raise ValueError("learned without a real updated result")
+
+
+def parse_window(status):
+    if status["window"] != 1 or status["state"] not in WINDOW_STATES or status["hold"] not in LEARN_NAMES["hold"]:
+        raise ValueError("invalid window format")
+    for key in WINDOW_INTS:
+        if type(status[key]) is not int or status[key] < 0:
+            raise ValueError(f"invalid {key}")
+    prefixes = []
+    if status["state"] != "none":
+        prefixes = ["s", "p", "l"] if status["protect"] else ["s", "l"]
+    for prefix in prefixes:
+        for key in POINT_INTS:
+            value = status.get(f"{prefix}_{key}")
+            if type(value) is not int or value < 0:
+                raise ValueError(f"invalid {prefix}_{key}")
+
+
+def _span(first, last):
+    """Differences between two window points (cumulative counters)."""
+    seconds = (first["age_ms"] - last["age_ms"]) / 1000.0
+    sleeps = last["sleeps"] - first["sleeps"]
+    slept_s = (last["slept_ms"] - first["slept_ms"]) / 1000.0
+    gaps = last["gaps"] - first["gaps"]
+    awake_ms = last["awake_ms"] - first["awake_ms"]
+    rm_drop = first["rm"] - last["rm"]
+    span = {
+        "seconds": round(seconds, 1),
+        "light_sleeps": sleeps,
+        "slept_s": round(slept_s, 1),
+        "mean_sleep_s": round(slept_s / sleeps, 2) if sleeps > 0 else None,
+        "sleep_share": round(slept_s / seconds, 3) if seconds > 0 else None,
+        "timer_wakes": last["timer"] - first["timer"],
+        "other_wakes": last["other"] - first["other"],
+        "mean_awake_between_s": round(awake_ms / gaps / 1000.0, 2) if gaps > 0 else None,
+        "rm_mah": [first["rm"], last["rm"]],
+        "rm_drop_mah": rm_drop,
+        "mv": [first["mv"], last["mv"]],
+    }
+    if seconds >= 60:
+        # RM has 1 mAh steps: the drop is known to +-1 mAh. Currents inside the
+        # gauge deadband are not integrated at all, so a very low mean may read 0.
+        hours = seconds / 3600.0
+        mean_v = (first["mv"] + last["mv"]) / 2000.0
+        span["mean_ma_from_rm"] = round(rm_drop / hours, 1)
+        span["mean_ma_bounds"] = [round(max(rm_drop - 1, 0) / hours, 1), round((rm_drop + 1) / hours, 1)]
+        span["mean_mw"] = round(rm_drop / hours * mean_v, 1)
+        span["energy_mwh"] = round(rm_drop * mean_v, 1)
+    return span
+
+
+def summarize_window(status):
+    if status["state"] == "none":
+        return {"state": "none"}
+    point = {prefix: {key: status[f"{prefix}_{key}"] for key in POINT_INTS}
+             for prefix in ("s", "p", "l") if f"{prefix}_rm" in status}
+    report = {"state": status["state"], "whole": _span(point["s"], point["l"]),
+              "wake_causes": [name for bit, name in WAKE_CAUSES.items() if status["causes"] & (1 << bit)],
+              "voltage_mv": [status["vmin"], status["vmax"]],
+              "note": "gauge currents sampled after a wake are not the light-sleep current"}
+    if "p" in point:
+        report["before_protection"] = _span(point["s"], point["p"])
+        report["protected"] = _span(point["p"], point["l"])
+    return report
 
 
 def parse_log(status):
@@ -237,8 +315,10 @@ def main(argv=None):
     commands.add_parser("learn-stop", help="end the load hold")
     commands.add_parser("learn-log", help="read the RAM telemetry ring and summarize battery-only samples")
     commands.add_parser("learn-end", help="end of the load hold: EDV2 snapshot, result, protection (read-only)")
-    test = commands.add_parser("learn-test", help="development: simulated warning after DELAY s, simulated end "
-                                                  "60 s later, on a running hold; never written, never learned")
+    commands.add_parser("learn-window", help="battery test window: light sleeps, wakes, RM and voltage (read-only)")
+    test = commands.add_parser("learn-test", help="development: arm a simulated end on a running hold; on battery "
+                                                  "a warning after DELAY s, the end 60 s later; never written, "
+                                                  "never learned")
     test.add_argument("kind", choices=("end", "stop"))
     test.add_argument("delay", type=int)
     args = parser.parse_args(argv)
@@ -253,6 +333,7 @@ def main(argv=None):
         "learn": "LEARN",
         "learn-stop": "LEARN STOP",
         "learn-end": "LEARN END",
+        "learn-window": "LEARN WINDOW",
     }.get(args.command)
     if args.command == "capacity":
         operation = f"CAPACITY {args.mah}"
@@ -268,7 +349,10 @@ def main(argv=None):
                                   "usb_monitor": status["usb_monitor"], "entries": entries,
                                   "summary": summarize_log(entries)}, indent=1))
                 return 0
-            print(json.dumps(request(port, operation), indent=2))
+            status = request(port, operation)
+            if args.command == "learn-window":
+                status = {"window": status, "summary": summarize_window(status)}
+            print(json.dumps(status, indent=2))
         return 0
     except TransportError as error:
         print(f"Transport error: {error}", file=sys.stderr)

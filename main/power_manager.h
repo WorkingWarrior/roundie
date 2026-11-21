@@ -41,6 +41,19 @@ bool roundie_power_request_timed_sleep(uint32_t limit_s);
 void roundie_power_battery_alert(uint8_t alert);
 /* Completed light sleeps since boot. */
 uint32_t roundie_power_light_sleeps(void);
+/* Completed light sleeps since boot: their total time, wakes by the timer
+ * alone or by anything else, the awake gaps between consecutive sleeps
+ * (each from a wake to the next sleep start) and the last cause mask. */
+typedef struct {
+    uint32_t sleeps;
+    int64_t slept_us;
+    uint32_t timer_wakes;
+    uint32_t other_wakes;
+    int64_t awake_us;
+    uint32_t awake_gaps;
+    uint32_t causes;
+} roundie_power_sleep_counters_t;
+void roundie_power_sleep_counters(roundie_power_sleep_counters_t *counters);
 #endif
 #if CONFIG_ROUNDIE_DEV_POWER
 /* Same bounded framer as RS1; replies before any sleep starts. */

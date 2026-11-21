@@ -113,7 +113,8 @@ class GaugeToolTests(unittest.TestCase):
         self.assertEqual(parsed["snap_mv"], 3560)
         # New hold states keep their log index after the old ones.
         self.assertEqual(tool.LEARN_NAMES["hold"].index("cancelled"), 9)
-        self.assertEqual(tool.LEARN_NAMES["hold"][10:], ("edv2", "cold", "no-result", "test-end", "test-stop"))
+        self.assertEqual(tool.LEARN_NAMES["hold"][10:], ("edv2", "cold", "no-result", "test-end", "test-stop",
+                                                          "test-usb"))
         for name in ("no-result", "cold"):
             self.assertEqual(tool.parse_reply(reply({**end, "hold": name, "alert": "stopped"}),
                                               "1234abcd")["hold"], name)
@@ -126,11 +127,50 @@ class GaugeToolTests(unittest.TestCase):
         with self.assertRaisesRegex(DeviceError, "end command"):
             tool.parse_reply(reply(end, code=258), "1234abcd")
 
+    def test_window_reply(self):
+        def point(age_ms, rm, mv, sleeps, slept_ms, timer, other, awake_ms, gaps):
+            return dict(zip(tool.POINT_INTS, (age_ms, rm, mv, sleeps, slept_ms, timer, other, awake_ms, gaps)))
+        window = {"window": 1, "state": "closed", "hold": "test-end", "started": 1, "samples": 90, "vmin": 4080,
+                  "vmax": 4110, "causes": (1 << 4) | (1 << 7), "protect": 1}
+        points = {"s": point(1_260_000, 590, 4110, 3, 180_000, 2, 1, 40_000, 2),
+                  "p": point(900_000, 584, 4095, 3, 180_000, 2, 1, 40_000, 2),
+                  "l": point(60_000, 582, 4090, 15, 900_000, 13, 2, 125_000, 14)}
+        for prefix, values in points.items():
+            window.update({f"{prefix}_{key}": value for key, value in values.items()})
+        parsed = tool.parse_reply(reply(window), "1234abcd")
+        summary = tool.summarize_window(parsed)
+        self.assertEqual(summary["wake_causes"], ["timer", "gpio"])
+        protected = summary["protected"]
+        self.assertEqual(protected["seconds"], 840.0)
+        self.assertEqual((protected["light_sleeps"], protected["slept_s"], protected["mean_sleep_s"]), (12, 720.0, 60.0))
+        self.assertEqual((protected["timer_wakes"], protected["other_wakes"]), (11, 1))
+        self.assertAlmostEqual(protected["mean_awake_between_s"], 85.0 / 12, places=2)
+        self.assertEqual(protected["rm_drop_mah"], 2)
+        self.assertAlmostEqual(protected["mean_ma_from_rm"], 2 / (840 / 3600), places=1)
+        self.assertEqual(protected["mean_ma_bounds"], [round(1 / (840 / 3600), 1), round(3 / (840 / 3600), 1)])
+        self.assertEqual(summary["whole"]["rm_drop_mah"], 8)
+        self.assertEqual(summary["before_protection"]["light_sleeps"], 0)
+        self.assertIsNone(summary["before_protection"]["mean_sleep_s"])
+        self.assertIn("not the light-sleep current", summary["note"])
+        # Without the protect point only start and last are required.
+        bare = {key: value for key, value in parsed.items() if not key.startswith("p_")}
+        bare["protect"] = 0
+        self.assertNotIn("protected", tool.summarize_window(tool.parse_reply(reply(bare), "1234abcd")))
+        self.assertEqual(tool.summarize_window(tool.parse_reply(reply({**window, "state": "none"}), "1234abcd")),
+                         {"state": "none"})
+        for bad in ({**window, "window": 2}, {**window, "state": "x"}, {**window, "hold": "?"},
+                    {**window, "l_rm": -1}, {**window, "samples": "1"}, {k: v for k, v in window.items() if k != "s_mv"}):
+            with self.assertRaises(TransportError, msg=bad):
+                tool.parse_reply(reply(bad), "1234abcd")
+        with self.assertRaisesRegex(DeviceError, "window command"):
+            tool.parse_reply(reply(window, code=258), "1234abcd")
+
     def test_only_bounded_operations_are_sent(self):
         for bad in ("CAPACITY", "CAPACITY 600 1", "CAPACITY -1", "capacity 600", "STATUS\n!RS1", "CAPACITY 123456",
                     "LEARN HOLD 0", "LEARN HOLD 12345", "LEARN HOLD", "LEARN GO", "learn", "LEARN LOG",
                     "LEARN LOG -1", "LEARN LOG 12345678901", "LEARN END 1", "LEARN ENDX", "LEARN TEST END",
-                    "LEARN TEST GO 5", "LEARN TEST END -1", "LEARN TEST END 12345", "LEARN TEST end 5"):
+                    "LEARN TEST GO 5", "LEARN TEST END -1", "LEARN TEST END 12345", "LEARN TEST end 5",
+                    "LEARN WINDOW 1", "LEARN WINDOWX"):
             with self.assertRaises(DeviceError):
                 tool.request(None, bad)
 

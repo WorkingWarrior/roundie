@@ -237,6 +237,17 @@ static void light_sleep(roundie_board_t *board, uint32_t limit_s)
     roundie_power_shared.last_sleep_us = slept_us;
     if (error == ESP_OK) {
         roundie_power_shared.sleeps++;
+        roundie_power_shared.slept_total_us += slept_us;
+        if (causes == (1U << ESP_SLEEP_WAKEUP_TIMER)) {
+            roundie_power_shared.timer_wakes++;
+        } else {
+            roundie_power_shared.other_wakes++;
+        }
+        if (roundie_power_shared.last_wake_us > 0) {
+            roundie_power_shared.awake_total_us += started_us - roundie_power_shared.last_wake_us;
+            roundie_power_shared.awake_gaps++;
+        }
+        roundie_power_shared.last_wake_us = started_us + slept_us;
     }
     roundie_pm_woke(&roundie_power_shared.pm, causes, user_wake, error != ESP_OK, slept_us, esp_timer_get_time());
     portEXIT_CRITICAL(&roundie_power_shared.lock);
@@ -386,6 +397,19 @@ uint32_t roundie_power_light_sleeps(void)
     uint32_t sleeps = roundie_power_shared.sleeps;
     portEXIT_CRITICAL(&roundie_power_shared.lock);
     return sleeps;
+}
+
+void roundie_power_sleep_counters(roundie_power_sleep_counters_t *counters)
+{
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    counters->sleeps = roundie_power_shared.sleeps;
+    counters->slept_us = roundie_power_shared.slept_total_us;
+    counters->timer_wakes = roundie_power_shared.timer_wakes;
+    counters->other_wakes = roundie_power_shared.other_wakes;
+    counters->awake_us = roundie_power_shared.awake_total_us;
+    counters->awake_gaps = roundie_power_shared.awake_gaps;
+    counters->causes = roundie_power_shared.wake_causes;
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
 }
 
 void roundie_power_battery_alert(uint8_t alert)

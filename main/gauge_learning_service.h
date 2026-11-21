@@ -30,9 +30,15 @@ int roundie_gauge_service_log_json(char *buffer, size_t size, uint32_t from);
 /* The RG1 LEARN END reply object: the end of the hold (warning, EDV2
  * snapshot, result, protection); returns snprintf's result. */
 int roundie_gauge_service_end_json(char *buffer, size_t size, int64_t now_us);
-/* Development test of the end path (LEARN TEST END|STOP <delay 0..3600>):
- * simulated warning after delay_s, simulated end 60 s later, on a running
- * hold. RAM only, never written to the gauge or NVS, gone after a reset. */
-esp_err_t roundie_gauge_service_test(roundie_gauge_test_t test, uint32_t delay_s, int64_t now_us);
+/* Development test of the end path (LEARN TEST END|STOP <delay 0..3600>),
+ * armed on a running hold: the countdown starts once the board runs on
+ * battery, then a simulated warning after delay_s and a simulated end 60 s
+ * later; external power ends a started test for good. RAM only, never
+ * written to the gauge or NVS, gone after a reset. Clears the window. */
+esp_err_t roundie_gauge_service_test(roundie_gauge_test_t test, uint32_t delay_s);
+/* The RG1 LEARN WINDOW reply object: the battery test window (start, first
+ * protective sleep, last battery sample, with the light-sleep counters);
+ * -1 when it does not fit. */
+int roundie_gauge_service_window_json(char *buffer, size_t size, int64_t now_us);
 #endif
 #endif

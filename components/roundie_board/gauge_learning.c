@@ -287,8 +287,7 @@ void roundie_gauge_hold_cancel(roundie_gauge_hold_t *hold)
     }
 }
 
-bool roundie_gauge_hold_test(roundie_gauge_hold_t *hold, roundie_gauge_test_t test, int64_t now_us,
-                             int64_t delay_us)
+bool roundie_gauge_hold_test(roundie_gauge_hold_t *hold, roundie_gauge_test_t test, int64_t delay_us)
 {
     if (hold->state != ROUNDIE_GAUGE_HOLD_RUNNING || hold->test != ROUNDIE_GAUGE_TEST_NONE) {
         return false;
@@ -298,9 +297,42 @@ bool roundie_gauge_hold_test(roundie_gauge_hold_t *hold, roundie_gauge_test_t te
         return false;
     }
     hold->test = test;
-    hold->test_warn_us = now_us + delay_us;
-    hold->test_end_us = hold->test_warn_us + ROUNDIE_GAUGE_TEST_GAP_US;
+    hold->test_delay_us = delay_us;
+    hold->test_started = false;
+    hold->test_battery = 0;
     return true;
+}
+
+void roundie_gauge_hold_supply(roundie_gauge_hold_t *hold, const roundie_gauge_learning_sample_t *sample,
+                               bool usb_link, int64_t now_us)
+{
+    const bool charging = sample->valid && sample->current_ma > 0;
+    const bool external = usb_link || charging;
+    const bool active = hold->state == ROUNDIE_GAUGE_HOLD_RUNNING || hold->state == ROUNDIE_GAUGE_HOLD_EDV2;
+    if (hold->test_started) {
+        if (external && active) {
+            hold->state = ROUNDIE_GAUGE_HOLD_TEST_USB;
+            hold->ended_us = now_us;
+            hold->protect = false;
+            hold->alert = ROUNDIE_GAUGE_ALERT_NONE;
+        }
+    } else if (hold->test != ROUNDIE_GAUGE_TEST_NONE && hold->state == ROUNDIE_GAUGE_HOLD_RUNNING) {
+        const bool battery = !usb_link && sample->valid && sample->current_ma < 0;
+        if (!battery) {
+            hold->test_battery = 0;
+        } else {
+            hold->test_battery++;
+            if (hold->test_battery >= ROUNDIE_GAUGE_TEST_BATTERY_SAMPLES) {
+                hold->test_started = true;
+                hold->test_started_us = now_us;
+                hold->test_warn_us = now_us + hold->test_delay_us;
+                hold->test_end_us = hold->test_warn_us + ROUNDIE_GAUGE_TEST_GAP_US;
+            }
+        }
+    }
+    if (usb_link) {
+        roundie_gauge_hold_external_power(hold);
+    }
 }
 
 static void hold_stop(roundie_gauge_hold_t *hold, roundie_gauge_hold_state_t state, int64_t now_us)
@@ -392,8 +424,7 @@ bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_l
         } else {
             hold_stop(hold, ROUNDIE_GAUGE_HOLD_NO_RESULT, now_us);
         }
-    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && hold->test != ROUNDIE_GAUGE_TEST_NONE &&
-               now_us >= hold->test_end_us) {
+    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && hold->test_started && now_us >= hold->test_end_us) {
         hold->simulated = true;
         if (hold->test == ROUNDIE_GAUGE_TEST_END) {
             hold_snapshot(hold, sample);
@@ -404,8 +435,8 @@ bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_l
         } else {
             hold_stop(hold, ROUNDIE_GAUGE_HOLD_TEST_STOP, now_us);
         }
-    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && hold->test != ROUNDIE_GAUGE_TEST_NONE &&
-               !hold->warned && now_us >= hold->test_warn_us) {
+    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && hold->test_started && !hold->warned &&
+               now_us >= hold->test_warn_us) {
         hold->simulated = true;
         hold->warned = true;
         hold->warned_us = now_us;
@@ -436,6 +467,7 @@ const char *roundie_gauge_hold_state_name(roundie_gauge_hold_state_t state)
     case ROUNDIE_GAUGE_HOLD_NO_RESULT: return "no-result";
     case ROUNDIE_GAUGE_HOLD_TEST_END: return "test-end";
     case ROUNDIE_GAUGE_HOLD_TEST_STOP: return "test-stop";
+    case ROUNDIE_GAUGE_HOLD_TEST_USB: return "test-usb";
     }
     return "?";
 }
@@ -450,6 +482,56 @@ void roundie_gauge_hold_external_power(roundie_gauge_hold_t *hold)
     if (hold->state != ROUNDIE_GAUGE_HOLD_RUNNING && hold->state != ROUNDIE_GAUGE_HOLD_EDV2) {
         hold->protect = false;
         hold->alert = ROUNDIE_GAUGE_ALERT_NONE;
+    }
+}
+
+static void window_point(roundie_gauge_window_point_t *point, const roundie_gauge_learning_sample_t *sample,
+                         const roundie_gauge_power_counters_t *power, int64_t now_us)
+{
+    point->time_us = now_us;
+    point->voltage_mv = sample->voltage_mv;
+    point->remaining_mah = sample->remaining_mah;
+    point->power = *power;
+}
+
+void roundie_gauge_window_update(roundie_gauge_window_t *window, const roundie_gauge_hold_t *hold,
+                                 const roundie_gauge_learning_sample_t *sample,
+                                 const roundie_gauge_power_counters_t *power, bool usb_link, int64_t now_us)
+{
+    if (window->state == ROUNDIE_GAUGE_WINDOW_CLOSED) {
+        return;
+    }
+    const bool external = usb_link || (sample->valid && sample->current_ma > 0);
+    if (window->state == ROUNDIE_GAUGE_WINDOW_OPEN && external) {
+        window->state = ROUNDIE_GAUGE_WINDOW_CLOSED; /* last stays the last battery sample */
+        return;
+    }
+    if (!sample->valid) {
+        return;
+    }
+    if (window->state == ROUNDIE_GAUGE_WINDOW_NONE) {
+        if (!hold->test_started || external) {
+            return;
+        }
+        window->state = ROUNDIE_GAUGE_WINDOW_OPEN;
+        window_point(&window->start, sample, power, now_us);
+        window->voltage_min_mv = sample->voltage_mv;
+        window->voltage_max_mv = sample->voltage_mv;
+    }
+    if (power->sleeps != window->last.power.sleeps && window->samples > 0) {
+        window->causes_seen |= power->causes;
+    }
+    window_point(&window->last, sample, power, now_us);
+    window->samples++;
+    if (sample->voltage_mv < window->voltage_min_mv) {
+        window->voltage_min_mv = sample->voltage_mv;
+    }
+    if (sample->voltage_mv > window->voltage_max_mv) {
+        window->voltage_max_mv = sample->voltage_mv;
+    }
+    if (!window->protect_seen && roundie_gauge_hold_sleep_wanted(hold)) {
+        window->protect_seen = true;
+        window_point(&window->protect, sample, power, now_us);
     }
 }
 

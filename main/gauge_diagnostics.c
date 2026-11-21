@@ -22,7 +22,8 @@ static void send(const char *response, int length)
 #if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH) && CONFIG_ROUNDIE_DEV_POWER
 /* LEARN, LEARN HOLD <minutes 1..1440>, LEARN STOP: reply with the learning
  * report. LEARN LOG <from> and LEARN END reply with RAM state only;
- * LEARN TEST END|STOP <s> schedules a simulated end and replies like END.
+ * LEARN TEST END|STOP <s> arms a simulated end and replies like END;
+ * LEARN WINDOW replies with the battery test window (RAM only).
  * Returns false when operation is not a LEARN command. */
 static bool learn_command(const char *id, const char *operation, bool board_ready)
 {
@@ -33,9 +34,12 @@ static bool learn_command(const char *id, const char *operation, bool board_read
     esp_err_t error = ESP_OK;
     bool log_reply = false;
     bool end_reply = false;
+    bool window_reply = false;
     unsigned long log_from = 0;
     if (strcmp(operation, "LEARN END") == 0) {
         end_reply = true;
+    } else if (strcmp(operation, "LEARN WINDOW") == 0) {
+        window_reply = true;
     } else if (strncmp(operation, "LEARN LOG ", 10) == 0) {
         const char *digits = operation + 10;
         char *end = NULL;
@@ -65,7 +69,7 @@ static bool learn_command(const char *id, const char *operation, bool board_read
             end - rest > 4 || delay_s > 3600) {
             error = ESP_ERR_INVALID_ARG;
         } else {
-            error = roundie_gauge_service_test(test, (uint32_t)delay_s, now_us);
+            error = roundie_gauge_service_test(test, (uint32_t)delay_s);
             end_reply = true;
         }
     } else if (strcmp(operation, "LEARN STOP") == 0) {
@@ -92,6 +96,9 @@ static bool learn_command(const char *id, const char *operation, bool board_read
             /* Answered without the board: the ring is RAM only. */
             body = roundie_gauge_service_log_json(response + length, sizeof(response) - (size_t)length - 1,
                                                   (uint32_t)log_from);
+        } else if (window_reply) {
+            body = roundie_gauge_service_window_json(response + length, sizeof(response) - (size_t)length - 1,
+                                                     now_us);
         } else if (end_reply) {
             body = roundie_gauge_service_end_json(response + length, sizeof(response) - (size_t)length - 1, now_us);
         } else {

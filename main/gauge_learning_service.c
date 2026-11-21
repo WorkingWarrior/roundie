@@ -50,6 +50,7 @@ static uint32_t protect_accepted;
 #define LOG_REPLY_ENTRIES 10U
 static roundie_gauge_log_t telemetry;
 static uint32_t sleeps_seen;
+static roundie_gauge_window_t window; /* battery test window, RAM only */
 #endif
 
 /* The stored record as loaded (read once, never erased) and saves since boot. */
@@ -282,12 +283,33 @@ void roundie_gauge_service_sample(roundie_board_t *board, const roundie_battery_
     const bool usb_connected = false;
     const bool after_wake = false;
 #endif
+    /* Supply first: a test starts on battery and ends on external power. */
+    roundie_gauge_hold_supply(&hold, &sample, usb_connected, now_us);
     apply_hold(roundie_gauge_hold_update(&hold, &sample, result, now_us), now_us);
     if (usb_connected) {
+        /* Again after the update: an end in this sample is not protected on USB. */
         roundie_gauge_hold_external_power(&hold);
     }
     protect_end(after_wake);
 #if CONFIG_ROUNDIE_DEV_POWER
+    roundie_power_sleep_counters_t counters;
+    roundie_power_sleep_counters(&counters);
+    const roundie_gauge_power_counters_t power = {
+        .sleeps = counters.sleeps,
+        .slept_us = counters.slept_us,
+        .timer_wakes = counters.timer_wakes,
+        .other_wakes = counters.other_wakes,
+        .awake_us = counters.awake_us,
+        .awake_gaps = counters.awake_gaps,
+        .causes = counters.causes,
+    };
+    const roundie_gauge_window_state_t window_before = window.state;
+    roundie_gauge_window_update(&window, &hold, &sample, &power, usb_connected, now_us);
+    if (window.state != window_before) {
+        ESP_LOGW(TAG, "Battery test window %s (RM %u mAh, %u mV, sleeps %" PRIu32 ")",
+                 window.state == ROUNDIE_GAUGE_WINDOW_OPEN ? "opened on battery" : "closed by external power",
+                 window.last.remaining_mah, window.last.voltage_mv, window.last.power.sleeps);
+    }
     sample.time_us = now_us;
     roundie_gauge_log_push(&telemetry, &sample, hold.state, usb_connected, inhibitor_held(), after_wake);
 #endif
@@ -326,14 +348,61 @@ esp_err_t roundie_gauge_service_hold(uint32_t minutes, int64_t now_us)
 #endif
 }
 
-esp_err_t roundie_gauge_service_test(roundie_gauge_test_t test, uint32_t delay_s, int64_t now_us)
+esp_err_t roundie_gauge_service_test(roundie_gauge_test_t test, uint32_t delay_s)
 {
-    if (!roundie_gauge_hold_test(&hold, test, now_us, (int64_t)delay_s * 1000000)) {
+#if !USB_MONITOR
+    /* The countdown starts on battery, which needs the USB link monitor. */
+    (void)test;
+    (void)delay_s;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!roundie_gauge_hold_test(&hold, test, (int64_t)delay_s * 1000000)) {
         return hold.state == ROUNDIE_GAUGE_HOLD_RUNNING ? ESP_ERR_INVALID_ARG : ESP_ERR_INVALID_STATE;
     }
-    ESP_LOGW(TAG, "Simulated end test %s in %" PRIu32 " s (warning), end 60 s later; nothing is written",
-             test == ROUNDIE_GAUGE_TEST_END ? "END" : "STOP", delay_s);
+    memset(&window, 0, sizeof(window));
+    ESP_LOGW(TAG, "Simulated end test %s armed: on battery, warning after %" PRIu32 " s, end 60 s later; "
+             "nothing is written", test == ROUNDIE_GAUGE_TEST_END ? "END" : "STOP", delay_s);
     return ESP_OK;
+#endif
+}
+
+static void window_point_json(char *buffer, size_t size, int *length, const char *prefix,
+                              const roundie_gauge_window_point_t *point, int64_t now_us)
+{
+    if (*length < 0 || (size_t)*length >= size) {
+        *length = -1;
+        return;
+    }
+    int written = snprintf(buffer + *length, size - (size_t)*length,
+        ",\"%s_age_ms\":%" PRId64 ",\"%s_rm\":%u,\"%s_mv\":%u,\"%s_sleeps\":%" PRIu32 ",\"%s_slept_ms\":%" PRId64
+        ",\"%s_timer\":%" PRIu32 ",\"%s_other\":%" PRIu32 ",\"%s_awake_ms\":%" PRId64 ",\"%s_gaps\":%" PRIu32,
+        prefix, (now_us - point->time_us) / 1000, prefix, point->remaining_mah, prefix, point->voltage_mv, prefix,
+        point->power.sleeps, prefix, point->power.slept_us / 1000, prefix, point->power.timer_wakes, prefix,
+        point->power.other_wakes, prefix, point->power.awake_us / 1000, prefix, point->power.awake_gaps);
+    *length = written < 0 || (size_t)written >= size - (size_t)*length ? -1 : *length + written;
+}
+
+int roundie_gauge_service_window_json(char *buffer, size_t size, int64_t now_us)
+{
+    static const char *const STATES[] = {"none", "open", "closed"};
+    int length = snprintf(buffer, size,
+        "{\"window\":1,\"state\":\"%s\",\"hold\":\"%s\",\"started\":%u,\"samples\":%" PRIu32
+        ",\"vmin\":%u,\"vmax\":%u,\"causes\":%" PRIu32 ",\"protect\":%u",
+        STATES[window.state], roundie_gauge_hold_state_name(hold.state), hold.test_started ? 1U : 0U, window.samples,
+        window.voltage_min_mv, window.voltage_max_mv, window.causes_seen, window.protect_seen ? 1U : 0U);
+    if (window.state != ROUNDIE_GAUGE_WINDOW_NONE) {
+        window_point_json(buffer, size, &length, "s", &window.start, now_us);
+        if (window.protect_seen) {
+            window_point_json(buffer, size, &length, "p", &window.protect, now_us);
+        }
+        window_point_json(buffer, size, &length, "l", &window.last, now_us);
+    }
+    if (length < 0 || (size_t)length + 1 >= size) {
+        return -1;
+    }
+    buffer[length++] = '}';
+    buffer[length] = '\0';
+    return length;
 }
 
 int roundie_gauge_service_json(char *buffer, size_t size, int64_t now_us)

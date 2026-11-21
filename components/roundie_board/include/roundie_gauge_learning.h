@@ -170,6 +170,7 @@ typedef enum {
     ROUNDIE_GAUGE_HOLD_NO_RESULT,   /* no learning result within the wait after EDV2 */
     ROUNDIE_GAUGE_HOLD_TEST_END,    /* simulated EDV2 end (development test), never learned */
     ROUNDIE_GAUGE_HOLD_TEST_STOP,   /* simulated safety stop (development test) */
+    ROUNDIE_GAUGE_HOLD_TEST_USB,    /* external power returned during a started test */
 } roundie_gauge_hold_state_t;
 
 /* Development test of the end path without discharging the cell. */
@@ -180,6 +181,8 @@ typedef enum {
 } roundie_gauge_test_t;
 #define ROUNDIE_GAUGE_TEST_GAP_US (INT64_C(60) * 1000000) /* warning to end */
 #define ROUNDIE_GAUGE_TEST_MAX_DELAY_US (INT64_C(3600) * 1000000)
+/* Consecutive battery samples (no USB link, discharging) that start a test. */
+#define ROUNDIE_GAUGE_TEST_BATTERY_SAMPLES 2U
 
 /* What the device should show; it does not depend on a USB host. */
 typedef enum {
@@ -203,7 +206,11 @@ typedef struct {
     roundie_gauge_learn_result_t result;  /* the learning result that ended the hold */
     bool learned;                         /* UPDATED before any safety stop, never simulated */
     int64_t ended_us;
-    roundie_gauge_test_t test; /* scheduled simulation, RAM only */
+    roundie_gauge_test_t test; /* armed simulation, RAM only */
+    int64_t test_delay_us;     /* battery start to the warning */
+    bool test_started;         /* the countdown runs; set once per arming */
+    int64_t test_started_us;
+    uint32_t test_battery;     /* consecutive battery samples while armed */
     int64_t test_warn_us;
     int64_t test_end_us;
     bool simulated; /* a simulated event changed this hold */
@@ -213,14 +220,24 @@ typedef struct {
  * Arming clears the previous end, alert and snapshot. */
 bool roundie_gauge_hold_arm(roundie_gauge_hold_t *hold, int64_t now_us, int64_t duration_us);
 void roundie_gauge_hold_cancel(roundie_gauge_hold_t *hold);
-/* Development only: on a RUNNING hold, schedule a simulated warning at
- * now + delay_us and the simulated end (test) ROUNDIE_GAUGE_TEST_GAP_US
- * later. Changes the hold only: no sample, tracker or gauge value is
- * altered, and a simulated end never sets learned. The EDV2 snapshot of a
- * simulated end is the real sample at that time. false: not RUNNING, a test
- * already scheduled, or arguments out of range. */
-bool roundie_gauge_hold_test(roundie_gauge_hold_t *hold, roundie_gauge_test_t test, int64_t now_us,
-                             int64_t delay_us);
+/* Development only: arm a simulation on a RUNNING hold. Nothing is timed
+ * yet: roundie_gauge_hold_supply() starts the countdown on battery power,
+ * then the simulated warning comes delay_us later and the simulated end
+ * (test) ROUNDIE_GAUGE_TEST_GAP_US after it. Changes the hold only: no
+ * sample, tracker or gauge value is altered, and a simulated end never sets
+ * learned. The EDV2 snapshot of a simulated end is the real sample at that
+ * time. false: not RUNNING, a test already armed, or arguments out of
+ * range. */
+bool roundie_gauge_hold_test(roundie_gauge_hold_t *hold, roundie_gauge_test_t test, int64_t delay_us);
+/* Call before roundie_gauge_hold_update() with each sample. usb_link: a USB
+ * host link was seen. An armed test starts after
+ * ROUNDIE_GAUGE_TEST_BATTERY_SAMPLES consecutive valid samples without a
+ * link and with a discharge current. External power (a link or a charging
+ * sample) during a started test ends it as TEST_USB; it never restarts.
+ * A link also ends the protection of an ended hold, as
+ * roundie_gauge_hold_external_power(). */
+void roundie_gauge_hold_supply(roundie_gauge_hold_t *hold, const roundie_gauge_learning_sample_t *sample,
+                               bool usb_link, int64_t now_us);
 /* Call after roundie_gauge_learning_update() with its return value. True
  * while the load is to be held. */
 bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_learning_sample_t *sample,
@@ -235,6 +252,55 @@ bool roundie_gauge_hold_sleep_wanted(const roundie_gauge_hold_t *hold);
  * battery shows no charging current. Ends the protection and alert of an
  * ended hold; a running hold or the EDV2 wait is not changed. */
 void roundie_gauge_hold_external_power(roundie_gauge_hold_t *hold);
+
+/* Battery test window (development telemetry): from the start of a test
+ * countdown on battery to the return of external power. Light-sleep
+ * counters come from the PowerManager and are cumulative since boot; the
+ * window keeps the values at its start, at the first protective sleep
+ * request and at the last battery sample. The gauge has 1 mAh RM
+ * resolution and does not integrate currents inside its deadband, so the
+ * mean current derived from RM is an estimate with that uncertainty. */
+typedef struct {
+    uint32_t sleeps;      /* completed light sleeps */
+    int64_t slept_us;     /* their total duration */
+    uint32_t timer_wakes; /* wakes by the timer alone */
+    uint32_t other_wakes; /* any other cause: touch, BOOT, error */
+    int64_t awake_us;     /* sum of the awake gaps between consecutive sleeps */
+    uint32_t awake_gaps;
+    uint32_t causes;      /* the last wake's esp_sleep cause mask */
+} roundie_gauge_power_counters_t;
+
+typedef struct {
+    int64_t time_us;
+    uint16_t voltage_mv;
+    uint16_t remaining_mah;
+    roundie_gauge_power_counters_t power;
+} roundie_gauge_window_point_t;
+
+typedef enum {
+    ROUNDIE_GAUGE_WINDOW_NONE,
+    ROUNDIE_GAUGE_WINDOW_OPEN,   /* on battery since the test started */
+    ROUNDIE_GAUGE_WINDOW_CLOSED, /* external power returned */
+} roundie_gauge_window_state_t;
+
+typedef struct {
+    roundie_gauge_window_state_t state;
+    roundie_gauge_window_point_t start;
+    bool protect_seen;
+    roundie_gauge_window_point_t protect; /* first sample that wanted a protective sleep */
+    roundie_gauge_window_point_t last;    /* last battery sample */
+    uint16_t voltage_min_mv;
+    uint16_t voltage_max_mv;
+    uint32_t causes_seen; /* union of the wake causes seen in the window */
+    uint32_t samples;
+} roundie_gauge_window_t;
+
+/* Call after roundie_gauge_hold_update(). Opens when the hold's test has
+ * started, closes on external power and never reopens; a new arming clears
+ * it (memset). Invalid samples only advance nothing. */
+void roundie_gauge_window_update(roundie_gauge_window_t *window, const roundie_gauge_hold_t *hold,
+                                 const roundie_gauge_learning_sample_t *sample,
+                                 const roundie_gauge_power_counters_t *power, bool usb_link, int64_t now_us);
 
 /* Learned Full Charge Capacity record (one NVS blob). The gauge cannot
  * identify the cell: the record is tied to the configured Design Capacity
