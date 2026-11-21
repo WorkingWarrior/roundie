@@ -65,16 +65,17 @@ class GaugeToolTests(unittest.TestCase):
             tool.parse_reply(reply(learn(), code=258), "1234abcd")
 
     def test_log_reply_and_summary(self):
-        # seq, time_ms, mv, ma, temp, rm, fcc, op, flags, hold, link
-        raw = [[0, 1000, 4100, 0, 250, 580, 600, 0x10, 0, 1, 0x07],      # USB, hold
-               [1, 6000, 4090, -90, 251, 579, 600, 0x10, 0, 1, 0x05],    # battery, hold
-               [2, 11000, 4085, -60, 252, 578, 600, 0x10, 0, 1, 0x05],
-               [3, 16000, 4080, -20, 252, 578, 600, 0x10, 0, 8, 0x01],   # battery, released
-               [4, 21000, 0, 0, 0, 0, 0, 0, 0, 8, 0x00]]                  # invalid sample
+        # seq, time_ms, mv, ma, temp, rm, fcc, op, flags, hold, link, avg_ma
+        raw = [[0, 1000, 4100, 0, 250, 580, 600, 0x10, 0, 1, 0x07, 0],      # USB, hold
+               [1, 6000, 4090, -90, 251, 579, 600, 0x10, 0, 1, 0x05, -88],  # battery, hold
+               [2, 11000, 4085, -60, 252, 578, 600, 0x10, 0, 1, 0x05, -80],
+               [3, 16000, 4080, -20, 252, 578, 600, 0x10, 0, 8, 0x01, -40], # battery, released
+               [4, 21000, 0, 0, 0, 0, 0, 0, 0, 8, 0x00, 0]]                  # invalid sample
         payload = {"log": 1, "usb_monitor": 1, "total": 5, "first": 0, "e": raw, "next": 5}
         parsed = tool.parse_reply(reply(payload), "1234abcd")
         self.assertEqual(parsed["e"][1]["ma"], -90)
         self.assertEqual(parsed["e"][3]["hold"], "expired")
+        self.assertEqual(parsed["e"][3]["avg_ma"], -40)
         summary = tool.summarize_log(parsed["e"])
         self.assertEqual(summary["battery_samples"], 3)
         self.assertEqual(summary["usb_samples"], 1)
@@ -86,17 +87,40 @@ class GaugeToolTests(unittest.TestCase):
         self.assertTrue(summary["vdq_seen"])
         self.assertFalse(summary["edv2_seen"])
         self.assertEqual(summary["gaps_ms_max"], 5000)
-        for bad in ({**payload, "log": 2}, {**payload, "e": [[1, 2]]}, {**payload, "e": [[0] * 10 + ["x"]]},
+        for bad in ({**payload, "log": 2}, {**payload, "e": [[1, 2]]}, {**payload, "e": [[0] * 11 + ["x"]]},
+                    {**payload, "e": [[0] * 11]},
                     {**payload, "total": -1}):
             with self.assertRaises(TransportError, msg=bad):
                 tool.parse_reply(reply(bad), "1234abcd")
         with self.assertRaisesRegex(DeviceError, "log command"):
             tool.parse_reply(reply(payload, code=258), "1234abcd")
 
+    def test_end_reply(self):
+        end = {"end": 1, "hold": "edv2", "alert": "finished", "hold_result": "none"}
+        for key in tool.END_INTS:
+            end[key] = 0
+        end.update(snap=1, snap_mv=3560, snap_ma=-105, snap_avg_ma=-104, protect=1)
+        parsed = tool.parse_reply(reply(end), "1234abcd")
+        self.assertEqual(parsed["snap_mv"], 3560)
+        # New hold states keep their log index after the old ones.
+        self.assertEqual(tool.LEARN_NAMES["hold"].index("cancelled"), 9)
+        self.assertEqual(tool.LEARN_NAMES["hold"][10:], ("edv2", "cold", "no-result"))
+        for name in ("no-result", "cold"):
+            self.assertEqual(tool.parse_reply(reply({**end, "hold": name, "alert": "stopped"}),
+                                              "1234abcd")["hold"], name)
+        done = {**end, "hold": "done", "hold_result": "updated", "learned": 1}
+        self.assertEqual(tool.parse_reply(reply(done), "1234abcd")["learned"], 1)
+        for bad in ({**end, "end": 2}, {**end, "alert": "x"}, {**end, "hold": "?"}, {**end, "snap_mv": "1"},
+                    {**end, "learned": 1}, {**done, "hold_result": "unchanged"}):
+            with self.assertRaises(TransportError, msg=bad):
+                tool.parse_reply(reply(bad), "1234abcd")
+        with self.assertRaisesRegex(DeviceError, "end command"):
+            tool.parse_reply(reply(end, code=258), "1234abcd")
+
     def test_only_bounded_operations_are_sent(self):
         for bad in ("CAPACITY", "CAPACITY 600 1", "CAPACITY -1", "capacity 600", "STATUS\n!RS1", "CAPACITY 123456",
                     "LEARN HOLD 0", "LEARN HOLD 12345", "LEARN HOLD", "LEARN GO", "learn", "LEARN LOG",
-                    "LEARN LOG -1", "LEARN LOG 12345678901"):
+                    "LEARN LOG -1", "LEARN LOG 12345678901", "LEARN END 1", "LEARN ENDX"):
             with self.assertRaises(DeviceError):
                 tool.request(None, bad)
 

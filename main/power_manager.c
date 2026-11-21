@@ -361,6 +361,36 @@ bool roundie_power_diagnostics_hold(uint32_t *handle, uint32_t kinds, uint32_t s
     return held;
 }
 
+bool roundie_power_request_timed_sleep(uint32_t limit_s)
+{
+    if (limit_s < 1 || limit_s > 3600) {
+        return false;
+    }
+    bool accepted = false;
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    if (roundie_power_shared.board != NULL && roundie_power_shared.phase == SLEEP_IDLE &&
+        roundie_power_shared.command == COMMAND_NONE && roundie_power_shared.state == ROUNDIE_POWER_SCREEN_OFF &&
+        roundie_power_shared.screen_request == SCREEN_REQUEST_NONE &&
+        roundie_pm_request_light_sleep(&roundie_power_shared.pm, esp_timer_get_time()) == ROUNDIE_POWER_ALLOWED) {
+        roundie_power_shared.phase = SLEEP_REQUESTED;
+        roundie_power_shared.sleep_limit_s = limit_s;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+    return accepted;
+}
+
+void roundie_power_battery_alert(uint8_t alert)
+{
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    roundie_power_shared.battery_alert = alert;
+    roundie_power_shared.battery_alert_serial++;
+    if (alert != 0 && roundie_power_shared.board != NULL) {
+        roundie_power_shared.screen_request = SCREEN_REQUEST_ON;
+    }
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+}
+
 #if CONFIG_ROUNDIE_DEV_POWER
 void roundie_power_command(char *line, bool discard)
 {

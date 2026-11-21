@@ -39,7 +39,8 @@ typedef struct {
     uint16_t operation_flags;
     uint16_t battery_flags;
     uint16_t voltage_mv;
-    int16_t current_ma; /* positive = charging */
+    int16_t current_ma;         /* Current(), positive = charging */
+    int16_t average_current_ma; /* AverageCurrent() (IIR, about 14.5 s); 0 when not read */
     int32_t temperature_deci_c;
     uint16_t remaining_mah;
     uint16_t full_mah;   /* FullChargeCapacity() */
@@ -126,14 +127,32 @@ const char *roundie_gauge_learn_phase_name(roundie_gauge_learn_phase_t phase);
 const char *roundie_gauge_learn_result_name(roundie_gauge_learn_result_t result);
 const char *roundie_gauge_learn_cause_name(roundie_gauge_learn_cause_t cause);
 
-/* Load hold for one controlled cycle. Without it the system turns the screen
- * off and light-sleeps, and its discharge current is expected to fall below
- * C/32, where the gauge detects no EDV (TRM 1.1.4). The hold ends by itself;
- * once ended it stays ended until armed again. */
-#define ROUNDIE_GAUGE_HOLD_FLOOR_MV 3300 /* release below: margin above SysDown 3150 mV */
-#define ROUNDIE_GAUGE_HOLD_MAX_DECI_C 450 /* release at or above 45.0 degC */
+/* Load hold for one controlled cycle, and the protection of its end. The
+ * hold keeps the screen and CPU awake (measured 105-107 mA on battery, the
+ * screen-off system 62-63 mA). It is armed only by an explicit command and
+ * lives in RAM: after an MCU reset it is OFF and nothing resumes.
+ *
+ * It ends by itself at EDV2 (load released, snapshot taken, the FCC update
+ * awaited), at a learning result, or at a safety stop: voltage at or below
+ * the floor while discharging, SYSDWN/FD, temperature outside the window,
+ * missing samples. Every end except EXPIRED (without a warning) and
+ * CANCELLED sets protect: the system should light-sleep between samples and
+ * show an alert until a charging sample is seen. learned is set only for an
+ * UPDATED result before any safety stop. Once ended it stays ended until
+ * armed again. */
+#define ROUNDIE_GAUGE_HOLD_FLOOR_MV 3300  /* stop at or below: margin above SysDown 3150 mV */
+#define ROUNDIE_GAUGE_HOLD_MAX_DECI_C 450 /* stop at or above 45.0 degC */
+#define ROUNDIE_GAUGE_HOLD_MIN_DECI_C 100 /* stop below 10.0 degC (Learning Low Temp 11.9) */
 #define ROUNDIE_GAUGE_HOLD_MAX_MISSED 6   /* consecutive invalid samples (30 s) */
 #define ROUNDIE_GAUGE_HOLD_MAX_US (INT64_C(24) * 3600 * 1000000)
+/* Early warning: RM at or below 15 % of FCC, or voltage at or below 3550 mV,
+ * while discharging (EDV2 is at Battery Low 7 %, about 27 min later at
+ * 106 mA for 600 mAh). */
+#define ROUNDIE_GAUGE_HOLD_WARN_PERCENT 15U
+#define ROUNDIE_GAUGE_HOLD_WARN_MV 3550
+/* After EDV2 the gauge saves FCC within 4 s (TRM 1.1.3); without a learning
+ * result within this time the hold ends as NO_RESULT. */
+#define ROUNDIE_GAUGE_HOLD_EDV2_WAIT_US (INT64_C(120) * 1000000)
 
 typedef enum {
     ROUNDIE_GAUGE_HOLD_OFF,         /* never armed */
@@ -146,15 +165,37 @@ typedef enum {
     ROUNDIE_GAUGE_HOLD_NO_DATA,     /* too many invalid samples */
     ROUNDIE_GAUGE_HOLD_EXPIRED,     /* the armed duration elapsed */
     ROUNDIE_GAUGE_HOLD_CANCELLED,   /* stopped by command */
+    ROUNDIE_GAUGE_HOLD_EDV2,        /* EDV2 seen: load released, learning result awaited */
+    ROUNDIE_GAUGE_HOLD_COLD,        /* temperature below the limit */
+    ROUNDIE_GAUGE_HOLD_NO_RESULT,   /* no learning result within the wait after EDV2 */
 } roundie_gauge_hold_state_t;
+
+/* What the device should show; it does not depend on a USB host. */
+typedef enum {
+    ROUNDIE_GAUGE_ALERT_NONE,
+    ROUNDIE_GAUGE_ALERT_NEAR_END, /* warning: the end of the test is near */
+    ROUNDIE_GAUGE_ALERT_FINISHED, /* EDV2 or a learning result: connect USB */
+    ROUNDIE_GAUGE_ALERT_STOPPED,  /* a safety stop or abort: connect USB */
+} roundie_gauge_alert_t;
 
 typedef struct {
     roundie_gauge_hold_state_t state;
     int64_t deadline_us;
+    int64_t edv2_deadline_us;
     uint32_t missed;
+    bool warned;
+    int64_t warned_us;
+    bool protect; /* light-sleep between samples until a charging sample */
+    roundie_gauge_alert_t alert;
+    bool edv2_seen;
+    roundie_gauge_learning_sample_t edv2; /* first EDV2 sample (or the result sample) */
+    roundie_gauge_learn_result_t result;  /* the learning result that ended the hold */
+    bool learned;                         /* UPDATED before any safety stop */
+    int64_t ended_us;
 } roundie_gauge_hold_t;
 
-/* duration_us: 1 .. ROUNDIE_GAUGE_HOLD_MAX_US; false otherwise (state kept). */
+/* duration_us: 1 .. ROUNDIE_GAUGE_HOLD_MAX_US; false otherwise (state kept).
+ * Arming clears the previous end, alert and snapshot. */
 bool roundie_gauge_hold_arm(roundie_gauge_hold_t *hold, int64_t now_us, int64_t duration_us);
 void roundie_gauge_hold_cancel(roundie_gauge_hold_t *hold);
 /* Call after roundie_gauge_learning_update() with its return value. True
@@ -162,6 +203,11 @@ void roundie_gauge_hold_cancel(roundie_gauge_hold_t *hold);
 bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_learning_sample_t *sample,
                                roundie_gauge_learn_result_t result, int64_t now_us);
 const char *roundie_gauge_hold_state_name(roundie_gauge_hold_state_t state);
+const char *roundie_gauge_alert_name(roundie_gauge_alert_t alert);
+/* Whether the system should light-sleep between samples: protect is set and
+ * the hold has ended (not while RUNNING, nor while the EDV2 result is
+ * awaited, so the result is sampled without a sleep gap). */
+bool roundie_gauge_hold_sleep_wanted(const roundie_gauge_hold_t *hold);
 
 /* Learned Full Charge Capacity record (one NVS blob). The gauge cannot
  * identify the cell: the record is tied to the configured Design Capacity
@@ -216,6 +262,7 @@ typedef struct {
     uint32_t time_ms; /* since boot */
     uint16_t voltage_mv;
     int16_t current_ma;
+    int16_t average_current_ma;
     int16_t temperature_deci_c;
     uint16_t remaining_mah;
     uint16_t full_mah;

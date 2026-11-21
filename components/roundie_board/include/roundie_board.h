@@ -80,6 +80,8 @@ typedef struct {
     uint16_t voltage_mv;
     uint16_t soc_percent;
     int16_t current_ma; /* positive = charging, negative = discharging */
+    bool average_current_valid;
+    int16_t average_current_ma; /* AverageCurrent(), where the board reads it */
     int32_t temperature_deci_c;
     uint16_t remaining_mah;
     uint16_t full_mah;

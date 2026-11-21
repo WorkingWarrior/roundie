@@ -31,6 +31,14 @@ void roundie_power_worker_poll(int64_t now_us);
  * *handle (0 = none), then for seconds 1..600 acquires kinds, in one step
  * under the power lock; seconds 0 only releases. Returns whether held. */
 bool roundie_power_diagnostics_hold(uint32_t *handle, uint32_t kinds, uint32_t seconds);
+/* System worker: request a light sleep of limit_s (1..3600) seconds through
+ * the normal admission path, only while the screen is already off, no sleep
+ * or command is pending. Returns whether the request was accepted (the
+ * worker may still refuse it at admission). */
+bool roundie_power_request_timed_sleep(uint32_t limit_s);
+/* System worker: show a battery alert (roundie_gauge_alert_t; 0 removes it).
+ * A non-zero alert also turns the screen on. */
+void roundie_power_battery_alert(uint8_t alert);
 #endif
 #if CONFIG_ROUNDIE_DEV_POWER
 /* Same bounded framer as RS1; replies before any sleep starts. */

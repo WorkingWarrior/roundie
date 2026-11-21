@@ -46,6 +46,8 @@ static lv_obj_t *menu;
 static lv_obj_t *menu_title;
 static uint32_t shown_message;
 static int64_t last_touch_us;
+static lv_obj_t *alert_box;
+static uint32_t shown_alert;
 
 /* GUI task only. After the screen was off, the board restores the panel once no
  * transfer is in flight (some controllers stay blank on display-on alone), then
@@ -85,6 +87,52 @@ static void close_menu(void)
     lv_obj_delete_async(menu);
     menu = NULL;
     menu_title = NULL;
+}
+
+static void alert_clicked(lv_event_t *event)
+{
+    (void)event;
+    if (alert_box != NULL) {
+        /* Called from the box's own click event: defer deletion. */
+        lv_obj_delete_async(alert_box);
+        alert_box = NULL;
+    }
+}
+
+/* The battery test alert (gauge_learning_service.c): a full-screen notice on
+ * the top layer, above the power menu; a tap hides it. The values follow
+ * roundie_gauge_alert_t. */
+static void show_alert(uint8_t alert)
+{
+    static const char *const texts[] = {
+        NULL,
+        "Test baterii:\nzbliża się koniec.\nPrzygotuj kabel USB.",
+        "Koniec testu baterii.\nPodłącz USB.",
+        "Test baterii przerwany.\nPodłącz USB.",
+    };
+    if (alert_box != NULL) {
+        lv_obj_delete(alert_box);
+        alert_box = NULL;
+    }
+    if (alert == 0 || alert >= sizeof(texts) / sizeof(texts[0])) {
+        return;
+    }
+    alert_box = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(alert_box, ROUNDIE_UI_WIDTH, ROUNDIE_UI_HEIGHT);
+    lv_obj_set_pos(alert_box, 0, 0);
+    lv_obj_set_style_radius(alert_box, 0, 0);
+    lv_obj_set_style_border_width(alert_box, 0, 0);
+    lv_obj_set_style_bg_color(alert_box, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(alert_box, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(alert_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(alert_box, alert_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label = lv_label_create(alert_box);
+    lv_label_set_text(label, texts[alert]);
+    /* 240 px wide in the middle stays well inside the round panel. */
+    lv_obj_set_width(label, 240);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(alert == 1 ? 0xffd040 : 0xff6040), 0);
+    lv_obj_center(label);
 }
 
 static bool request_sleep(void)
@@ -238,6 +286,8 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
     screen_request_t screen_request = roundie_power_shared.screen_request;
     roundie_power_shared.screen_request = SCREEN_REQUEST_NONE;
     uint32_t message_serial = roundie_power_shared.message_serial;
+    uint32_t alert_serial = roundie_power_shared.battery_alert_serial;
+    uint8_t alert = roundie_power_shared.battery_alert;
     char message[sizeof(roundie_power_shared.message)];
     memcpy(message, roundie_power_shared.message, sizeof(message));
     roundie_unlock(&roundie_power_shared.lock);
@@ -328,6 +378,10 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
         } else {
             open_menu();
         }
+    }
+    if (alert_serial != shown_alert) {
+        shown_alert = alert_serial;
+        show_alert(alert);
     }
     if (menu_title != NULL && message_serial != shown_message) {
         shown_message = message_serial;

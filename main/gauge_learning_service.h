@@ -26,5 +26,8 @@ int roundie_gauge_service_json(char *buffer, size_t size, int64_t now_us);
 /* The RG1 LEARN LOG reply object: up to 10 telemetry entries from sequence
  * from (or the oldest retained one); -1 when it does not fit. */
 int roundie_gauge_service_log_json(char *buffer, size_t size, uint32_t from);
+/* The RG1 LEARN END reply object: the end of the hold (warning, EDV2
+ * snapshot, result, protection); returns snprintf's result. */
+int roundie_gauge_service_end_json(char *buffer, size_t size, int64_t now_us);
 #endif
 #endif

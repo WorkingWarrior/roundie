@@ -21,7 +21,8 @@ static void send(const char *response, int length)
 
 #if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH) && CONFIG_ROUNDIE_DEV_POWER
 /* LEARN, LEARN HOLD <minutes 1..1440>, LEARN STOP: reply with the learning
- * report. Returns false when operation is not a LEARN command. */
+ * report. LEARN LOG <from> and LEARN END reply with RAM state only.
+ * Returns false when operation is not a LEARN command. */
 static bool learn_command(const char *id, const char *operation, bool board_ready)
 {
     if (strcmp(operation, "LEARN") != 0 && strncmp(operation, "LEARN ", 6) != 0) {
@@ -30,8 +31,11 @@ static bool learn_command(const char *id, const char *operation, bool board_read
     const int64_t now_us = esp_timer_get_time();
     esp_err_t error = ESP_OK;
     bool log_reply = false;
+    bool end_reply = false;
     unsigned long log_from = 0;
-    if (strncmp(operation, "LEARN LOG ", 10) == 0) {
+    if (strcmp(operation, "LEARN END") == 0) {
+        end_reply = true;
+    } else if (strncmp(operation, "LEARN LOG ", 10) == 0) {
         const char *digits = operation + 10;
         char *end = NULL;
         log_from = strtoul(digits, &end, 10);
@@ -67,6 +71,8 @@ static bool learn_command(const char *id, const char *operation, bool board_read
             /* Answered without the board: the ring is RAM only. */
             body = roundie_gauge_service_log_json(response + length, sizeof(response) - (size_t)length - 1,
                                                   (uint32_t)log_from);
+        } else if (end_reply) {
+            body = roundie_gauge_service_end_json(response + length, sizeof(response) - (size_t)length - 1, now_us);
         } else {
             body = roundie_gauge_service_json(response + length, sizeof(response) - (size_t)length - 1, now_us);
         }

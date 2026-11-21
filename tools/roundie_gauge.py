@@ -11,7 +11,11 @@ learn reads the capacity learning report (TRM 1.1.3: VDQ, EDV2, FCC update
 and the inferred abort cause). learn-hold keeps the system load on (screen
 and CPU awake) for one controlled cycle; it ends by itself at the FCC update,
 an abort, the voltage floor, SYSDWN/FD, temperature, missing data or the
-given time. learn-stop ends it. learn-log reads the RAM telemetry ring (one
+given time; at EDV2 it releases the load at once. Every end except a plain
+expiry or learn-stop shows an alert on the device and makes the firmware
+light-sleep between samples until the battery is seen charging. learn-stop
+ends it. learn-end reports that end (EDV2 snapshot, result, protection). An
+MCU reset leaves the hold off: nothing resumes. learn-log reads the RAM telemetry ring (one
 entry per 5 s gauge sample, including time without USB) after the cable is
 reconnected and summarizes the samples taken without a USB host. None of these
 writes the gauge."""
@@ -37,15 +41,24 @@ LEARN_NAMES = {
     "cause": ("none", "charge", "low-temp", "low-current", "overload", "gauge-reset", "config-update",
               "not-qualified", "unknown"),
     "hold": ("off", "running", "done", "aborted", "low-voltage", "sysdown", "hot", "no-data", "expired",
-             "cancelled"),
+             "cancelled", "edv2", "cold", "no-result"),
 }
+END_NAMES = {
+    "hold": LEARN_NAMES["hold"],
+    "alert": ("none", "near-end", "finished", "stopped"),
+    "hold_result": LEARN_NAMES["result"],
+}
+END_INTS = ("learned", "protect", "warned", "warned_s", "ended_s", "sleep_req", "sleep_ok", "snap", "snap_s",
+            "snap_mv", "snap_ma", "snap_avg_ma", "snap_temp", "snap_rm", "snap_fcc", "snap_op", "snap_flags",
+            "avg_ma")
 LEARN_INTS = ("resumed", "old_full", "new_full", "result_s", "qualified", "updated", "unchanged", "aborted",
               "start_rm", "start_full", "min_temp", "edv2", "edv2_qualified", "edv2_mv", "edv2_ma", "edv2_temp",
               "edv2_rm", "dsg_samples", "dsg_avg_ma", "dsg_small_ma", "dsg_large_ma", "need_ma", "hold_s",
               "inhibitor", "stored", "stored_full", "stored_seq", "saves", "load", "low_temp", "overload", "op",
               "flags", "mv", "ma", "temp", "rm", "fcc", "dc")
-OPERATIONS = r"STATUS|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP|LEARN LOG [0-9]{1,10}"
-LOG_FIELDS = ("seq", "time_ms", "mv", "ma", "temp", "rm", "fcc", "op", "flags", "hold", "link")
+OPERATIONS = (r"STATUS|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP|LEARN LOG [0-9]{1,10}"
+              r"|LEARN END")
+LOG_FIELDS = ("seq", "time_ms", "mv", "ma", "temp", "rm", "fcc", "op", "flags", "hold", "link", "avg_ma")
 LOG_VALID = 0x01
 LOG_USB = 0x02
 LOG_INHIBITOR = 0x04
@@ -68,6 +81,11 @@ def parse_reply(line, request_id):
             if code != 0:
                 raise DeviceError(f"gauge rejected log command ({code}): {status}")
             return parse_log(status)
+        if "end" in status:
+            parse_end(status)
+            if code != 0:
+                raise DeviceError(f"gauge rejected end command ({code}): {status}")
+            return status
         if "learn" in status:
             parse_learn(status)
             if code != 0:
@@ -104,6 +122,19 @@ def parse_learn(status):
     for key in LEARN_INTS:
         if type(status[key]) is not int:
             raise ValueError(f"invalid {key}")
+
+
+def parse_end(status):
+    if status["end"] != 1:
+        raise ValueError("invalid end format")
+    for key, names in END_NAMES.items():
+        if status[key] not in names:
+            raise ValueError(f"invalid {key}")
+    for key in END_INTS:
+        if type(status[key]) is not int:
+            raise ValueError(f"invalid {key}")
+    if status["learned"] == 1 and status["hold_result"] != "updated":
+        raise ValueError("learned without an updated result")
 
 
 def parse_log(status):
@@ -191,6 +222,7 @@ def main(argv=None):
     hold.add_argument("minutes", type=int)
     commands.add_parser("learn-stop", help="end the load hold")
     commands.add_parser("learn-log", help="read the RAM telemetry ring and summarize battery-only samples")
+    commands.add_parser("learn-end", help="end of the load hold: EDV2 snapshot, result, protection (read-only)")
     args = parser.parse_args(argv)
     if args.command == "capacity" and not 100 <= args.mah <= 6000:
         parser.error("capacity must be 100..6000 mAh")
@@ -200,6 +232,7 @@ def main(argv=None):
         "status": "STATUS",
         "learn": "LEARN",
         "learn-stop": "LEARN STOP",
+        "learn-end": "LEARN END",
     }.get(args.command)
     if args.command == "capacity":
         operation = f"CAPACITY {args.mah}"

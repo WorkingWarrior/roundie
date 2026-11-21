@@ -272,47 +272,108 @@ bool roundie_gauge_hold_arm(roundie_gauge_hold_t *hold, int64_t now_us, int64_t 
     if (duration_us <= 0 || duration_us > ROUNDIE_GAUGE_HOLD_MAX_US) {
         return false;
     }
+    memset(hold, 0, sizeof(*hold));
     hold->state = ROUNDIE_GAUGE_HOLD_RUNNING;
     hold->deadline_us = now_us + duration_us;
-    hold->missed = 0;
     return true;
 }
 
 void roundie_gauge_hold_cancel(roundie_gauge_hold_t *hold)
 {
-    if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING) {
+    if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING || hold->state == ROUNDIE_GAUGE_HOLD_EDV2) {
         hold->state = ROUNDIE_GAUGE_HOLD_CANCELLED;
+        hold->protect = false;
+        hold->alert = ROUNDIE_GAUGE_ALERT_NONE;
     }
+}
+
+static void hold_stop(roundie_gauge_hold_t *hold, roundie_gauge_hold_state_t state, int64_t now_us)
+{
+    hold->state = state;
+    hold->ended_us = now_us;
+    hold->protect = true;
+    hold->alert = ROUNDIE_GAUGE_ALERT_STOPPED;
+}
+
+static void hold_snapshot(roundie_gauge_hold_t *hold, const roundie_gauge_learning_sample_t *sample)
+{
+    if (!hold->edv2_seen) {
+        hold->edv2_seen = true;
+        hold->edv2 = *sample;
+    }
+}
+
+static bool hold_near_end(const roundie_gauge_learning_sample_t *sample)
+{
+    if (sample->current_ma >= 0) {
+        return false;
+    }
+    uint32_t remaining = (uint32_t)sample->remaining_mah * 100U;
+    uint32_t limit = (uint32_t)sample->full_mah * ROUNDIE_GAUGE_HOLD_WARN_PERCENT;
+    return remaining <= limit || sample->voltage_mv <= ROUNDIE_GAUGE_HOLD_WARN_MV;
 }
 
 bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_learning_sample_t *sample,
                                roundie_gauge_learn_result_t result, int64_t now_us)
 {
-    if (hold->state != ROUNDIE_GAUGE_HOLD_RUNNING) {
+    const bool active = hold->state == ROUNDIE_GAUGE_HOLD_RUNNING || hold->state == ROUNDIE_GAUGE_HOLD_EDV2;
+    if (!active) {
+        /* Ended: protection lasts until the battery is seen charging. */
+        if (hold->protect && sample->valid && sample->current_ma > 0) {
+            hold->protect = false;
+            hold->alert = ROUNDIE_GAUGE_ALERT_NONE;
+        }
         return false;
     }
-    if (now_us >= hold->deadline_us) {
+    if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && now_us >= hold->deadline_us) {
         hold->state = ROUNDIE_GAUGE_HOLD_EXPIRED;
+        hold->ended_us = now_us;
+        /* Near the end of the battery the expiry needs the same protection. */
+        hold->protect = hold->warned;
+        hold->alert = hold->warned ? ROUNDIE_GAUGE_ALERT_STOPPED : ROUNDIE_GAUGE_ALERT_NONE;
         return false;
     }
     if (!sample->valid) {
         hold->missed++;
         if (hold->missed >= ROUNDIE_GAUGE_HOLD_MAX_MISSED) {
-            hold->state = ROUNDIE_GAUGE_HOLD_NO_DATA;
+            hold_stop(hold, ROUNDIE_GAUGE_HOLD_NO_DATA, now_us);
         }
         return hold->state == ROUNDIE_GAUGE_HOLD_RUNNING;
     }
     hold->missed = 0;
-    if (result == ROUNDIE_GAUGE_LEARN_RESULT_UPDATED || result == ROUNDIE_GAUGE_LEARN_RESULT_UNCHANGED) {
-        hold->state = ROUNDIE_GAUGE_HOLD_DONE;
-    } else if (result == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED) {
-        hold->state = ROUNDIE_GAUGE_HOLD_ABORTED;
-    } else if ((sample->battery_flags & (ROUNDIE_GAUGE_BAT_SYSDWN | ROUNDIE_GAUGE_BAT_FD)) != 0) {
-        hold->state = ROUNDIE_GAUGE_HOLD_SYSDOWN;
-    } else if (sample->current_ma < 0 && sample->voltage_mv < ROUNDIE_GAUGE_HOLD_FLOOR_MV) {
-        hold->state = ROUNDIE_GAUGE_HOLD_LOW_VOLTAGE;
+    /* Safety stops first: a result in the same sample is not a success. */
+    if ((sample->battery_flags & (ROUNDIE_GAUGE_BAT_SYSDWN | ROUNDIE_GAUGE_BAT_FD)) != 0) {
+        hold_stop(hold, ROUNDIE_GAUGE_HOLD_SYSDOWN, now_us);
+    } else if (sample->current_ma < 0 && sample->voltage_mv <= ROUNDIE_GAUGE_HOLD_FLOOR_MV) {
+        hold_stop(hold, ROUNDIE_GAUGE_HOLD_LOW_VOLTAGE, now_us);
     } else if (sample->temperature_deci_c >= ROUNDIE_GAUGE_HOLD_MAX_DECI_C) {
-        hold->state = ROUNDIE_GAUGE_HOLD_HOT;
+        hold_stop(hold, ROUNDIE_GAUGE_HOLD_HOT, now_us);
+    } else if (sample->temperature_deci_c < ROUNDIE_GAUGE_HOLD_MIN_DECI_C) {
+        hold_stop(hold, ROUNDIE_GAUGE_HOLD_COLD, now_us);
+    } else if (result == ROUNDIE_GAUGE_LEARN_RESULT_UPDATED || result == ROUNDIE_GAUGE_LEARN_RESULT_UNCHANGED) {
+        hold_snapshot(hold, sample);
+        hold->state = ROUNDIE_GAUGE_HOLD_DONE;
+        hold->ended_us = now_us;
+        hold->result = result;
+        hold->learned = result == ROUNDIE_GAUGE_LEARN_RESULT_UPDATED;
+        hold->protect = true;
+        hold->alert = ROUNDIE_GAUGE_ALERT_FINISHED;
+    } else if (result == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED) {
+        hold->result = result;
+        hold_stop(hold, ROUNDIE_GAUGE_HOLD_ABORTED, now_us);
+    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING &&
+               (sample->operation_flags & ROUNDIE_GAUGE_OP_EDV2) != 0 && sample->current_ma < 0) {
+        hold_snapshot(hold, sample);
+        hold->state = ROUNDIE_GAUGE_HOLD_EDV2;
+        hold->edv2_deadline_us = now_us + ROUNDIE_GAUGE_HOLD_EDV2_WAIT_US;
+        hold->protect = true;
+        hold->alert = ROUNDIE_GAUGE_ALERT_FINISHED;
+    } else if (hold->state == ROUNDIE_GAUGE_HOLD_EDV2 && now_us >= hold->edv2_deadline_us) {
+        hold_stop(hold, ROUNDIE_GAUGE_HOLD_NO_RESULT, now_us);
+    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && !hold->warned && hold_near_end(sample)) {
+        hold->warned = true;
+        hold->warned_us = now_us;
+        hold->alert = ROUNDIE_GAUGE_ALERT_NEAR_END;
     }
     return hold->state == ROUNDIE_GAUGE_HOLD_RUNNING;
 }
@@ -330,6 +391,25 @@ const char *roundie_gauge_hold_state_name(roundie_gauge_hold_state_t state)
     case ROUNDIE_GAUGE_HOLD_NO_DATA: return "no-data";
     case ROUNDIE_GAUGE_HOLD_EXPIRED: return "expired";
     case ROUNDIE_GAUGE_HOLD_CANCELLED: return "cancelled";
+    case ROUNDIE_GAUGE_HOLD_EDV2: return "edv2";
+    case ROUNDIE_GAUGE_HOLD_COLD: return "cold";
+    case ROUNDIE_GAUGE_HOLD_NO_RESULT: return "no-result";
+    }
+    return "?";
+}
+
+bool roundie_gauge_hold_sleep_wanted(const roundie_gauge_hold_t *hold)
+{
+    return hold->protect && hold->state != ROUNDIE_GAUGE_HOLD_RUNNING && hold->state != ROUNDIE_GAUGE_HOLD_EDV2;
+}
+
+const char *roundie_gauge_alert_name(roundie_gauge_alert_t alert)
+{
+    switch (alert) {
+    case ROUNDIE_GAUGE_ALERT_NONE: return "none";
+    case ROUNDIE_GAUGE_ALERT_NEAR_END: return "near-end";
+    case ROUNDIE_GAUGE_ALERT_FINISHED: return "finished";
+    case ROUNDIE_GAUGE_ALERT_STOPPED: return "stopped";
     }
     return "?";
 }
@@ -445,6 +525,7 @@ void roundie_gauge_log_push(roundie_gauge_log_t *log, const roundie_gauge_learni
         entry.flags |= ROUNDIE_GAUGE_LOG_VALID;
         entry.voltage_mv = sample->voltage_mv;
         entry.current_ma = sample->current_ma;
+        entry.average_current_ma = sample->average_current_ma;
         int32_t temperature = sample->temperature_deci_c;
         if (temperature > INT16_MAX) {
             temperature = INT16_MAX;
