@@ -718,7 +718,9 @@ in progress and at least 60 s after boot. A failed attempt is not repeated
 until the gauge reported the target or the battery was absent; a gauge at the
 target is never written, so learned FCC survives firmware restarts. The
 procedure itself writes only over the 3000 mAh reset default. OTP is never
-programmed.
+programmed. The FCC written with Design Capacity is the learned value kept in
+NVS when its record is valid, otherwise the design value (see "Capacity
+learning" below).
 
 **Device result (2026-11-21, firmware 0.3.76, one board, battery on USB):**
 OTA to `ota_1` PASS (preflight PASS, unexpected resets 0); 0.3.75 stayed
@@ -744,6 +746,175 @@ accuracy is not verified: the chemistry and EDV values are TI's generic ones.
 **Pending:** enabling the restore setting at 600 and one battery
 reconnection; a charge/discharge cycle to check SoC, FC detection (Taper
 Current) and FCC learning. Each needs approval.
+
+#### Capacity learning (TRM §1.1.3)
+
+Source: TI SLUUBD4A §1.1.3–1.1.4, §1.1.10, §4.4.1, §4.9.12–4.9.14,
+§4.9.35–4.9.38. Firmware: `components/roundie_board/gauge_learning.c`
+(pure, host-tested in `tests/test_gauge_learning.c`),
+`main/gauge_learning_service.c` (NVS, load hold, RG1 `LEARN`).
+
+**How the gauge learns (TRM, verified text).** A qualified discharge starts
+with RemainingCapacity() within Near Full of FCC and sets
+OperationStatus()[VDQ]. The gauge counts the discharge (DCR, initialized to
+FCC − RM) down to EDV2 and then sets FCC = DCR + FCC × Battery Low %, saved
+within 4 s; one update may lower FCC by at most 256 mAh or raise it by 512.
+VDQ clears on any disqualifying condition: a charge of 10 mAh or more,
+temperature below Learning Low Temp, more than 256 mAh of self-discharge
+estimate, at EDV2 a voltage below EDV2 − 256 mV, a current below 3C/32, or an
+overload. EDV is not detected at all below C/32 or above OverLoad Current.
+
+**Audit of the 600 mAh configuration.** Values from `STATUS` on 0.3.76
+(verified) unless marked as TI defaults not yet read from this unit (the new
+`STATUS` format 3 reads them; check before the cycle):
+
+| Parameter | Value | Effect on learning with 600 mAh |
+|---|---|---|
+| Design Capacity / FCC | 600 / 600 (RAM) | learning starts from 600 (TRM §1.1.10) |
+| Gauging Configuration | `0x102A` | CSYNC 1 (RM = FCC at charge termination), EDV_CMP 1 (EDVs computed from TI's generic CEDV coefficients, not this cell's), FIXED_EDV0 1 (3031 mV), SME0 1, SC 0 (learning optimized for a smart charger), FCC_LIMIT 0, FC_FOR_VDQ 0 (FC not needed for VDQ), IGNORE_SD 0 |
+| Near Full | 200 mAh | qualification starts at RM ≥ 400 mAh (67 %): permissive. A start below full counts FCC − RM from the old FCC, so the cycle starts from charge termination |
+| Battery Low % | 700 (TI default) | EDV2 at 7 %, 42 mAh of 600 added to the count |
+| Learning Low Temp | 119 = 11.9 °C (TI default) | cycle at room temperature |
+| OverLoad Current | 1500 mA (TI default) | not reached by this device |
+| 3C/32, C/32 | 57 mA, 19 mA (computed) | discharge current at EDV2 must be ≥ 57 mA |
+| Taper Current | 100 mA | termination needs AverageCurrent() < 100 mA twice in 40 s with V > 4200 − Taper Voltage; FC/TCA set by SOC Flag Config A (TI default `0x0C8C`: FCSETVCT, TCSETVCT) |
+| Reserve Capacity | 0 (TI default) | FCC() = Learned FCC |
+| DOD at EDV2, Qmax, Cycle Count | not in the TRM's Data Memory table | cannot be read or restored by address; see below |
+
+**Findings.**
+
+1. *Load at EDV2 (pending, NO-GO until measured).* With the screen off the
+   system light-sleeps; its current is expected (hypothesis, not measured)
+   to be far below C/32 = 19 mA, so EDV2 is not even detected and the gauge
+   cannot learn. The cycle therefore keeps the screen and CPU awake with a
+   *learning load hold*. Whether the awake system draws ≥ 57 mA from the
+   battery is not known: the only recorded battery current is 0 mA on USB.
+   The tracker records the discharge current of every awake sample
+   (`dsg_avg_ma`, `dsg_small_ma`, `dsg_large_ma`) and the current at EDV2.
+2. *Compensated EDV with generic coefficients (assumption).* EDV2 comes from
+   TI's default CEDV coefficients. The learned FCC is relative to that EDV2
+   voltage; it can be off by the error of the generic model. Cell-specific
+   coefficients need TI's characterization flow (not available).
+3. *Near Full 200 mAh (proposal, not changed).* 40 mAh (the TI default ratio
+   200/3000 scaled) would require the discharge to start near full. Changing
+   it is a Data Memory write and needs its own decision; the procedure below
+   gets the same effect by starting at charge termination.
+4. *SC = 0 (open question).* The bit selects learning for a smart or an
+   independent charger. The board's charger is not identified; if it is an
+   independent charger, SC = 1 would apply. Not changed.
+5. *Taper Current 100 mA (pending).* Whether the charger ends below 100 mA,
+   and so whether FC/CSYNC happen, is a measurement (current during
+   termination, FC in BatteryStatus).
+
+**What must survive a battery disconnection.** The gauge keeps everything in
+RAM, restored from OTP at its power-on reset. MCU restarts do not touch it.
+Of the learned state, only Learned Full Charge Capacity (`0x929D`) has a
+documented Data Memory address and a documented role (it sets
+FullChargeCapacity(), TRM §4.9.36): it is kept. DOD at EDV2 (§4.9.37) only
+improves the initial RM estimate until the next EDV2 and returns to the
+firmware default consistent with Battery Low 7 %; Cycle Count (§4.9.38)
+scales impedance through Age Factor, which is 0 by default; Qmax (§4.9.35)
+is a configuration value, not learned by CEDV. None of the three has an
+address in the TRM table, and addresses are never guessed, so they are not
+stored.
+
+**Learned FCC record (NVS).** With `CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH`
+> 0, namespace `gauge`, key `learned`, one 24-byte blob: magic `RGL1`,
+version 1, design capacity, profile id (CRC-32 of the learning parameters:
+Gauging Configuration, Design and Charging Voltage, Taper Current, Near Full,
+Battery Low %, Learning Low Temp, OverLoad Current, Reserve Capacity, SOC
+Flag Config A/B), learned FCC, sequence and CRC-32. A record is used only
+when all of these match and the value lies in design/2 … design × 5/4. The
+gauge cannot identify a cell: a different cell of the same capacity is not
+detected and is corrected by its next learning cycle. A write happens only
+after a tracked FCC update, when the gauge's Data Memory FCC belongs to the
+configured Design Capacity and differs from a valid record by at least 1 % of
+design; at most 4 attempts per boot. That bounds the writes to about one per
+full discharge. A malformed record is ignored and replaced by the next valid
+save; NVS is never erased.
+
+**Restore after a gauge reset.** Unchanged trigger (`gauge_restore.c`,
+Design Capacity back at 3000): the worker reads the gauge profile, takes the
+record's FCC if valid for that profile, else 600, and writes FCC and Design
+Capacity once. An MCU restart with Design Capacity 600 writes nothing, so a
+learned FCC in the gauge is never replaced by 600.
+
+**Monitoring (`tools/roundie_gauge.py learn`, read-only).** Phase
+(`idle`, `qualified`, `edv2`), the last result (`updated`, `unchanged`,
+`aborted`) with FCC before and after, the inferred cause (`charge`,
+`low-temp`, `low-current`, `overload`, `gauge-reset`, `config-update`,
+`not-qualified`, `unknown`), the start RM and FCC, the minimum temperature,
+voltage/current/temperature/RM at EDV2, discharge current statistics,
+3C/32, the hold state, the stored record, and the last sample (VDQ, EDV2
+and FC are bits of `op` and `flags`). The cause is an inference from 5 s
+samples: a short charge between samples, self-discharge accounting or EDV2
+voltage margin are reported as `unknown`. After an MCU restart a discharge
+already in progress is followed (`resumed` 1); one restarted after EDV2 is
+not reported.
+
+**Learning load hold (`learn-hold MINUTES`, `learn-stop`).** Holds a
+diagnostics power inhibitor (CPU awake, display awake) renewed every 60 s
+with a 120 s timeout, so it lapses within 2 min if the worker stops. It ends
+by itself, and stays ended, at: an FCC update or `unchanged` result; an
+abort; voltage below 3300 mV while discharging; BatteryStatus SYSDWN or FD;
+temperature ≥ 45.0 °C; 30 s without a valid sample; the armed time (at most
+24 h). Afterwards the normal screen timeout and light sleep apply again. It
+does not switch the battery off: the device keeps drawing its light-sleep
+current until USB is connected.
+
+#### Controlled learning cycle (procedure, not yet run)
+
+Prerequisites, each separately approved: OTA of a firmware with this code
+(and, for keeping the result across a battery disconnection, the restore
+setting at 600), and the cycle itself. Room temperature 18–30 °C, the watch
+on a non-flammable surface, observed at the start and the end.
+
+**GO/NO-GO before unplugging USB (all must hold):**
+
+1. OTA image VALID, BootGuard safe 0, no unexpected reset.
+2. `status` format 3: Design Capacity 600 in `0x3C` and Data Memory, FCC
+   plausible (300–750), Gauging Configuration `0x102A`, Near Full 200,
+   Battery Low 700, Learning Low Temp 119, OverLoad 1500, Reserve 0, SOC Flag
+   Config A `0x0C8C` / B `0x8C`, Taper 100, Charging Voltage 4200;
+   OperationStatus UNSEALED, INITCOMP 1, CFGUPDATE 0. Any other value: NO-GO
+   and review (the audit above assumed TI defaults).
+3. Charge complete: on USB until the current stays below 100 mA and FC is set
+   or RM equals FCC; RM ≥ FCC − 20 mAh at the latest. FC never setting is
+   itself a finding (Taper Current, charger termination), not a reason to
+   force SoC.
+4. Temperature 15–40 °C.
+5. Load measurement (short pre-test): `learn-hold 15`, unplug for 10 min,
+   reconnect, `learn`: |`dsg_small_ma`| ≥ 70 mA (57 mA required at EDV2 plus
+   margin for the falling current at lower voltage). Below that: NO-GO, the
+   load has to be raised first (for example brightness 100 %, a test load
+   screen) and measured again. Reconnecting aborts that discharge (`charge`);
+   recharge to step 3.
+
+**Cycle.** `learn-hold 600` (10 h), check `hold` `running` and `inhibitor` 1,
+unplug USB. Expected duration: about 5–7 h if the awake current is 80–120 mA
+(assumption). Do not plug USB in until the screen turns dark by itself
+(hold ended) unless aborting.
+
+**Abort at any time** by connecting USB (the gauge disqualifies on charge; the
+hold ends with `aborted`/`charge`): heat, swelling, smell, temperature above
+45 °C, a reset or Safe Mode, or a hold running past 10 h.
+
+**Over-discharge protection.** The hold ends at the FCC update right after
+EDV2 (about 7 %, 42 mAh left by the gauge's estimate), at the latest at
+3300 mV, SYSDWN or FD; then the system returns to light sleep. No deep sleep
+or power-off is used. Connect USB within 1 h after the screen goes dark; the
+cell's own protection circuit is not verified and is not relied on.
+
+**After reconnecting USB:** `learn` and `status`. Success: result `updated`
+with cause `none`, new FCC within 300–750 and within the TRM's per-update
+limits; with the restore setting, `stored` 1 with that value. `unchanged` with
+cause `none` is a valid outcome (learned value equal). `unchanged` or
+`aborted` with `low-current` means the load was too low: NO-GO for a repeat
+until the load is raised. Record the EDV2 voltage/current/temperature and the
+discharge current statistics.
+
+**Then (separate approval):** one battery disconnection and reconnection to
+verify the restore writes Design Capacity 600 and the stored FCC.
 
 ## Manual board checklist
 
