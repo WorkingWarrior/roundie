@@ -119,11 +119,34 @@ Measured on the host (`tests/test_watchface_gui.c`, LVGL 360 × 360, x86-64;
 baseline (measured: 13376 → 13344 B used) and leave the store's buffer count
 unchanged.
 
-**PENDING (device 1.85B):** activation and update time, PSRAM buffer peak and
-LVGL pool use on the board; method: RF1 `STATUS` (`us`, `objects`, `pool`,
-`bytes`) after install, select and 100 switches; acceptance: no failures,
-pool free back within 256 B after the switches, update max below one frame
-period (33 ms).
+### Device 1.85B (firmware 0.3.73)
+
+Verified on one Waveshare ESP32-S3-Touch-LCD-1.85B dev board on 2026-11-21
+with `tools/hardware_validation/run_m10.py` (RF1/RP1/RT1/RW1 over USB
+Serial/JTAG; INJECTED selection, not touch evidence). All 13 steps PASS:
+
+| Measurement | Value |
+|---|---|
+| activation `classic_analog` / `minimal_digital` / `information` | 5.9 / 5.5 / 7.7 ms |
+| LVGL objects / face bytes | 12 / 4632, 9 / 454, 13 / 2906 (as on the host) |
+| 100 alternating switches | 0 failures, 0 refused, LVGL pool free 37056 → 37056 B, 13.5 s |
+| activation max / update max | 7.7 ms / 0.37 ms (below one 33 ms frame) |
+| corrupt transfer (one flipped bit) | refused `package-digest`, shown face unchanged |
+| `esp_restart` | preference kept; load 7.9 ms, activation 8.1 ms |
+| list from Home (RP1 `OPEN`), ABI 1 RESULT, ABI 3 app, exit | Home again, same face re-activated, not re-created |
+| one 5 s timed light sleep | face parked and resumed, resume 6.5 ms |
+
+Install of the three faces (separate from activation, shown face unchanged)
+was verified on the same board with 0.3.72; with 0.3.73 they were already
+installed and healthy. The device run found one defect, fixed in 0.3.73: a
+boot that shows Home before storage admission never scanned the registry,
+so the first swipe up showed an empty ERROR list until Refresh (regression
+test `launcher_tests face-boot`). The face store and RF1 refuse requests until
+BootGuard is STABLE (about 10 s after boot); the runner waits for that.
+
+**PENDING (device, needs a person):** finger gestures (swipe up, top strip,
+long press, gallery), the faces as seen on the panel, and PSRAM peak during
+activation (not exposed by RF1).
 
 ## Testing
 
@@ -135,7 +158,7 @@ period (33 ms).
 | host | `tests/test_launcher.c` | HOME state, list gestures, return after an application |
 | desktop / VHL | `test_desktop.py: test_watch_faces_on_home` | install ≠ activation, select, 100 switches, list and back, light sleep and wake, persistence across restart, corrupt package → system face |
 | desktop | updated navigation tests | every flow starts at HOME |
-| device | RF1 via `tools/roundie_face.py` | see the M10 device report |
+| device | `tools/hardware_validation/run_m10.py` | install, select, 100 switches, corrupt transfer, restart, apps from Home, light sleep (above) |
 
 VHL and desktop results are emulator evidence, not hardware evidence.
 
