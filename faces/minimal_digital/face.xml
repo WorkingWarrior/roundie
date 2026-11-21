@@ -1,0 +1,10 @@
+<!-- Minimal Digital: tap the time to switch the seconds ring. -->
+<face id="org.roundie.face.minimal" name="Minimalna cyfrowa" version="1.0.0" background="#000000">
+  <setting key="ring" options="2" default="1"/>
+  <arc x="8" y="8" size="344" width="4" bind="second" color="#2f6fd0" track="#10161e" when="setting:ring=1"/>
+  <label x="0" y="128" w="360" align="center" font="48" color="#ffffff" text="{HH}:{MM}"/>
+  <label x="0" y="196" w="360" align="center" font="20" color="#9aa7b4" text="{WEEKDAY}"/>
+  <label x="0" y="224" w="360" align="center" font="20" color="#9aa7b4" text="{D} {MONTH} {YYYY}"/>
+  <label x="0" y="96" w="360" align="center" font="14" color="#5a6573" text="Brak czasu" when="time-invalid"/>
+  <rect x="80" y="120" w="200" h="72" opacity="0" action="cycle" setting="ring"/>
+</face>

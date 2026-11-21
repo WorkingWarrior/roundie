@@ -1,0 +1,14 @@
+<!-- Classic Analog: tap the dial centre to show or hide the second hand. -->
+<face id="org.roundie.face.analog" name="Klasyczna analogowa" version="1.0.0" background="#0b0f14">
+  <setting key="seconds" options="2" default="1"/>
+  <resource name="icon" src="preview.pgm" preview="true"/>
+  <rect x="2" y="2" w="356" h="356" radius="circle" color="#0b0f14" border="2" border-color="#2a3340"/>
+  <ticks count="60" cx="180" cy="180" radius="172" length="6" major="16" color="#5a6573" major-color="#e8edf2"/>
+  <label x="80" y="92" w="200" align="center" font="20" color="#8a96a3" text="{WD} {D}"/>
+  <label x="80" y="246" w="200" align="center" font="14" color="#5a6573" text="Brak czasu" when="time-invalid"/>
+  <hand kind="hour" length="92" width="8" tail="14" color="#e8edf2"/>
+  <hand kind="minute" length="140" width="5" tail="20" color="#e8edf2"/>
+  <hand kind="second" length="150" width="2" tail="30" color="#e5484d" when="setting:seconds=1"/>
+  <rect x="172" y="172" w="16" h="16" radius="circle" color="#e5484d"/>
+  <rect x="120" y="120" w="120" h="120" opacity="0" action="cycle" setting="seconds"/>
+</face>

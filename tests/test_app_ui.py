@@ -31,4 +31,16 @@ class AppUiTests(unittest.TestCase):
             subprocess.run([str(build / "host/round_tests"), examples[3]], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests")], check=True, timeout=20)
             subprocess.run([str(build / "host/launcher_tests"), "low-memory"], check=True, timeout=20)
+            subprocess.run([str(build / "host/launcher_tests"), "face-boot"], check=True, timeout=20)
             subprocess.run([str(build / "host/display_tests")], check=True, timeout=20)
+            # Watch faces (M10): the demo faces through the real store and GUI.
+            faces = []
+            for face in ("classic_analog", "minimal_digital", "information"):
+                output = build / (face + ".rwf")
+                subprocess.run(["python3", str(ROOT / "tools/roundie_face.py"), "build",
+                                str(ROOT / "faces" / face / "face.xml"), "--output", str(output)],
+                               check=True, capture_output=True)
+                faces.append(str(output))
+            (build / "faces-work").mkdir()
+            subprocess.run([str(build / "host/watchface_tests"), str(build / "faces-work"), *faces],
+                           check=True, timeout=60)

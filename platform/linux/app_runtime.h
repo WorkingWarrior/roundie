@@ -22,3 +22,5 @@ void roundie_desktop_apps_forget_loaded(void);
 
 /* System worker: admission, the unloaded instance's storage, stall reports. */
 void roundie_desktop_apps_poll(int64_t now_us);
+/* System worker, once before the first poll: the watch face store. */
+void roundie_desktop_faces_init(bool fallback_only);

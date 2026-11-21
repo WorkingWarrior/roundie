@@ -16,6 +16,7 @@
 #include "roundie_app_ui.h"
 #include "roundie_platform.h"
 #include "roundie_power.h"
+#include "roundie_watchface.h"
 
 static const char *TAG = "power";
 
@@ -72,6 +73,7 @@ static void apply_screen(bool on)
     roundie_lock(&roundie_power_shared.lock);
     roundie_pm_screen(&roundie_power_shared.pm, on, roundie_time_us());
     roundie_unlock(&roundie_power_shared.lock);
+    roundie_watchface_gui_visible(on);
 }
 
 static void close_menu(void)
@@ -279,6 +281,8 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
             roundie_pm_resumed(&roundie_power_shared.pm, now_us);
         }
         roundie_unlock(&roundie_power_shared.lock);
+        /* M8-B: the face resumes after the display restore, from fresh RTC time. */
+        roundie_watchface_gui_resume();
         return true;
     }
     if (roundie_recovery_active()) {
@@ -291,6 +295,8 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
         if (!dma_idle || !released) {
             return true;
         }
+        /* M8-B: the face parks (no LVGL work for it) before the GUI does. */
+        roundie_watchface_gui_park();
         apply_screen(false);
         roundie_power_sleep_entered(&policy);
         roundie_lock(&roundie_power_shared.lock);

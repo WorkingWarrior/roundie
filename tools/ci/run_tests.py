@@ -47,6 +47,7 @@ VIRTUAL_TIME = [
     "test_watch_follows_the_emulated_rtc",
     "test_sound_in_virtual_time",
     "test_storage_survives_close_and_restart",
+    "test_watch_faces_on_home",
 ]
 REAL_TIME = [
     "test_launcher_flow_on_both_panels",
@@ -114,7 +115,7 @@ HOST_MODULES = [
     "test_lcd_clock", "test_packages", "test_power", "test_rep_deployment", "test_roundie_budget", "test_roundie_clock", "test_roundie_crash",
     "test_roundie_display", "test_roundie_elf", "test_roundie_launcher", "test_roundie_ota",
     "test_roundie_safe", "test_roundie_time", "test_run_m8", "test_stack_overflow_model", "test_storage_layout",
-    "test_storage_mode", "test_tone",
+    "test_storage_mode", "test_tone", "test_watchface",
 ]
 
 # name: (title, [(pattern, timing)], environment, primary)

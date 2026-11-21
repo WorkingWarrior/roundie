@@ -175,6 +175,9 @@ persistent GUI resources/pool and worker stack margin. Existing UI STATUS
 continues to report application resources, command depth/latency and LCD DMA.
 These diagnostics are neither a general remote control nor finger evidence.
 
+M10 adds `OPEN`: from the watch face Home it opens the list as the swipe up
+does (`roundie_launcher_open_list`, INJECTED; `tools/roundie_launcher.py open`).
+
 3E.1 appends RESULT=8 without renumbering old states. NAV retains its existing
 `us` fields and adds `name`, `completion` (request, completed serial, loader
 result, executed, success, verified-widget/foreground flag, apply us,

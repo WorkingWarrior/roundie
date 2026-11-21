@@ -99,3 +99,24 @@ bool roundie_local_time_now(roundie_elf_clock_t *out)
     }
     return local_fields(&local, (uint32_t)(wall_us % 1000000), monotonic_us, revision, out);
 }
+
+bool roundie_local_time_sample(roundie_elf_clock_t *out, int64_t *utc_seconds)
+{
+    uint32_t sync_count = 0;
+    if (!initialized || wall_valid == NULL || !wall_valid(&sync_count)) {
+        return false;
+    }
+    struct tm local;
+    roundie_clock_port_zone_lock();
+    int64_t wall_us = roundie_clock_port_wall_us();
+    int64_t monotonic_us = roundie_time_us();
+    time_t seconds = (time_t)(wall_us / 1000000);
+    bool converted = localtime_r(&seconds, &local) != NULL;
+    uint32_t revision = zone_revision + sync_count;
+    roundie_clock_port_zone_unlock();
+    if (!converted) {
+        return false;
+    }
+    *utc_seconds = (int64_t)seconds;
+    return local_fields(&local, (uint32_t)(wall_us % 1000000), monotonic_us, revision, out);
+}
