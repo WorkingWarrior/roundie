@@ -783,14 +783,16 @@ overload. EDV is not detected at all below C/32 or above OverLoad Current.
 
 **Findings.**
 
-1. *Load at EDV2 (pending, NO-GO until measured).* With the screen off the
-   system light-sleeps; its current is expected (hypothesis, not measured)
-   to be far below C/32 = 19 mA, so EDV2 is not even detected and the gauge
-   cannot learn. The cycle therefore keeps the screen and CPU awake with a
-   *learning load hold*. Whether the awake system draws ≥ 57 mA from the
-   battery is not known: the only recorded battery current is 0 mA on USB.
-   The tracker records the discharge current of every awake sample
-   (`dsg_avg_ma`, `dsg_small_ma`, `dsg_large_ma`) and the current at EDV2.
+1. *Load at EDV2 (measured near full charge, see the device result below).*
+   The earlier hypothesis that the screen-off system light-sleeps was wrong:
+   M8-B turns the screen off after 30 s but makes no automatic light-sleep
+   attempt (`attempts` 0), so the CPU stays active. On battery at about
+   4.08 V the held load (screen on, CPU awake) drew 105–107 mA and the
+   screen-off system 62–63 mA. 3C/32 is 57 mA, so the hold has about 85 %
+   margin; screen off alone has under 10 %. The current at lower voltage
+   near EDV2 is not measured. The tracker records the discharge current of
+   every awake sample (`dsg_avg_ma`, `dsg_small_ma`, `dsg_large_ma`) and the
+   current at EDV2.
 2. *Compensated EDV with generic coefficients (assumption).* EDV2 comes from
    TI's default CEDV coefficients. The learned FCC is relative to that EDV2
    voltage; it can be off by the error of the generic model. Cell-specific
@@ -858,9 +860,12 @@ with a 120 s timeout, so it lapses within 2 min if the worker stops. It ends
 by itself, and stays ended, at: an FCC update or `unchanged` result; an
 abort; voltage below 3300 mV while discharging; BatteryStatus SYSDWN or FD;
 temperature ≥ 45.0 °C; 30 s without a valid sample; the armed time (at most
-24 h). Afterwards the normal screen timeout and light sleep apply again. It
-does not switch the battery off: the device keeps drawing its light-sleep
-current until USB is connected.
+24 h). Afterwards the normal screen timeout applies again (screen off after
+30 s, CPU active, about 62 mA measured). It does not switch the battery off:
+the device keeps drawing that current until USB is connected. The
+`DISPLAY_AWAKE` kind only prevents the timeout; it does not turn on a screen
+that is already off, so the procedure sends `screen-on` (RW1) right before
+`learn-hold`.
 
 **Battery-only telemetry (`learn-log`).** Every gauge sample (5 s while the
 worker is awake) also goes to a 128-entry RAM ring (about 10 min awake, lost
@@ -915,10 +920,11 @@ self-discharge ≤ 256 mAh, voltage not below EDV2 − 256 mV, and at EDV2 a
 discharge current of at least 3C/32 (57 mA) and below OverLoad (1500 mA).
 VDQ not set within one minute of unplugging: stop, reconnect, NO-GO.
 
-**Cycle.** `learn-hold 600` (10 h), check `hold` `running` and `inhibitor` 1,
-unplug USB. Expected duration: about 5–7 h if the awake current is 80–120 mA
-(assumption). Do not plug USB in until the screen turns dark by itself
-(hold ended) unless aborting.
+**Cycle.** `roundie_power.py screen-on`, then `learn-hold 600` (10 h), check
+`hold` `running` and `inhibitor` 1, unplug USB. Expected duration: about
+5–5.5 h to EDV2 at the measured 105 mA (estimate; the current at lower
+voltage is not measured). Do not plug USB in until the screen turns dark by
+itself (hold ended) unless aborting.
 
 **Abort at any time** by connecting USB (the gauge disqualifies on charge; the
 hold ends with `aborted`/`charge`): heat, swelling, smell, temperature above
@@ -926,9 +932,12 @@ hold ends with `aborted`/`charge`): heat, swelling, smell, temperature above
 
 **Over-discharge protection.** The hold ends at the FCC update right after
 EDV2 (about 7 %, 42 mAh left by the gauge's estimate), at the latest at
-3300 mV, SYSDWN or FD; then the system returns to light sleep. No deep sleep
-or power-off is used. Connect USB within 1 h after the screen goes dark; the
-cell's own protection circuit is not verified and is not relied on.
+3300 mV, SYSDWN or FD; then the screen times out but the system keeps
+drawing about 62 mA (no automatic light sleep). No deep sleep or power-off
+is used. About 42 mAh left at EDV2 lasts roughly 40 min at that current, so
+the end of the cycle must be attended: connect USB within 15 min after the
+screen goes dark. The cell's own protection circuit is not verified and is
+not relied on.
 
 **After reconnecting USB:** `learn` and `status`. Success: result `updated`
 with cause `none`, new FCC within 300–750 and within the TRM's per-update
@@ -940,6 +949,32 @@ discharge current statistics.
 
 **Then (separate approval):** one battery disconnection and reconnection to
 verify the restore writes Design Capacity 600 and the stored FCC.
+
+**Device result, short LEARN HOLD validation (2026-11-21, firmware
+0.3.77-dev, one board).** OTA to `ota_0` PASS; 0.3.76 stayed VALID in
+`ota_1` as the rollback image. Before the test `STATUS` format 3 showed the
+values of the audit table, Design Capacity and FCC 600 in the registers and
+Data Memory, `written` 0 (no restore write at boot), no NVS record. On USB:
+`learn-stop` → hold `cancelled`, M8-B inhibitors 1 → 0; `learn-hold 1` →
+`expired` after 60 s, inhibitors 0. On battery: `screen-on`, `learn-hold 3`,
+USB unplugged 32 s later for 5 min 48 s; `learn-log` afterwards (samples
+with the USB flag 0 only):
+
+| Phase | Samples | Discharge current | Voltage | Temperature | RM |
+|---|---|---|---|---|---|
+| Hold (screen on, CPU awake) | 29 over 140 s | 105–107 mA, mean 106 | 4097 → 4073 mV | 25.7–25.9 °C | 577 → 573 |
+| After expiry, before screen-off | 7 | 106–107 mA | | | |
+| Screen off (normal M8-B) | 33 | 62–63 mA | 4087–4088 mV | 25.8–25.9 °C | 573 → 569 |
+
+VDQ set in the first battery sample (OperationStatus `0x00A4` → `0x00B4`,
+RM 577 ≥ FCC − Near Full = 400) without FC. The hold expired on time and
+released its inhibitor; the screen turned off about 35 s later
+(`screen_offs` 1 → 2). After reconnecting, charging at 220–400 mA cleared
+VDQ after about 115 s (RM +10 mAh): the tracker reported `aborted`/`charge`.
+No MCU reset (continuous sample times, BootGuard reset counters unchanged,
+safe 0, failures 0), OTA VALID, no gauge write, Design Capacity and FCC
+still 600, profile unchanged, NVS record absent and saves 0 (no FCC update
+occurred). Not measured: the current at lower voltage and at EDV2.
 
 ## Manual board checklist
 
