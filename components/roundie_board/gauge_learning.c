@@ -287,6 +287,22 @@ void roundie_gauge_hold_cancel(roundie_gauge_hold_t *hold)
     }
 }
 
+bool roundie_gauge_hold_test(roundie_gauge_hold_t *hold, roundie_gauge_test_t test, int64_t now_us,
+                             int64_t delay_us)
+{
+    if (hold->state != ROUNDIE_GAUGE_HOLD_RUNNING || hold->test != ROUNDIE_GAUGE_TEST_NONE) {
+        return false;
+    }
+    if ((test != ROUNDIE_GAUGE_TEST_END && test != ROUNDIE_GAUGE_TEST_STOP) || delay_us < 0 ||
+        delay_us > ROUNDIE_GAUGE_TEST_MAX_DELAY_US) {
+        return false;
+    }
+    hold->test = test;
+    hold->test_warn_us = now_us + delay_us;
+    hold->test_end_us = hold->test_warn_us + ROUNDIE_GAUGE_TEST_GAP_US;
+    return true;
+}
+
 static void hold_stop(roundie_gauge_hold_t *hold, roundie_gauge_hold_state_t state, int64_t now_us)
 {
     hold->state = state;
@@ -355,7 +371,7 @@ bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_l
         hold->state = ROUNDIE_GAUGE_HOLD_DONE;
         hold->ended_us = now_us;
         hold->result = result;
-        hold->learned = result == ROUNDIE_GAUGE_LEARN_RESULT_UPDATED;
+        hold->learned = result == ROUNDIE_GAUGE_LEARN_RESULT_UPDATED && !hold->simulated;
         hold->protect = true;
         hold->alert = ROUNDIE_GAUGE_ALERT_FINISHED;
     } else if (result == ROUNDIE_GAUGE_LEARN_RESULT_ABORTED) {
@@ -369,7 +385,31 @@ bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_l
         hold->protect = true;
         hold->alert = ROUNDIE_GAUGE_ALERT_FINISHED;
     } else if (hold->state == ROUNDIE_GAUGE_HOLD_EDV2 && now_us >= hold->edv2_deadline_us) {
-        hold_stop(hold, ROUNDIE_GAUGE_HOLD_NO_RESULT, now_us);
+        if (hold->simulated) {
+            /* The simulated EDV2 had no real result to wait for. */
+            hold->state = ROUNDIE_GAUGE_HOLD_TEST_END;
+            hold->ended_us = now_us;
+        } else {
+            hold_stop(hold, ROUNDIE_GAUGE_HOLD_NO_RESULT, now_us);
+        }
+    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && hold->test != ROUNDIE_GAUGE_TEST_NONE &&
+               now_us >= hold->test_end_us) {
+        hold->simulated = true;
+        if (hold->test == ROUNDIE_GAUGE_TEST_END) {
+            hold_snapshot(hold, sample);
+            hold->state = ROUNDIE_GAUGE_HOLD_EDV2;
+            hold->edv2_deadline_us = now_us + ROUNDIE_GAUGE_HOLD_EDV2_WAIT_US;
+            hold->protect = true;
+            hold->alert = ROUNDIE_GAUGE_ALERT_FINISHED;
+        } else {
+            hold_stop(hold, ROUNDIE_GAUGE_HOLD_TEST_STOP, now_us);
+        }
+    } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && hold->test != ROUNDIE_GAUGE_TEST_NONE &&
+               !hold->warned && now_us >= hold->test_warn_us) {
+        hold->simulated = true;
+        hold->warned = true;
+        hold->warned_us = now_us;
+        hold->alert = ROUNDIE_GAUGE_ALERT_NEAR_END;
     } else if (hold->state == ROUNDIE_GAUGE_HOLD_RUNNING && !hold->warned && hold_near_end(sample)) {
         hold->warned = true;
         hold->warned_us = now_us;
@@ -394,6 +434,8 @@ const char *roundie_gauge_hold_state_name(roundie_gauge_hold_state_t state)
     case ROUNDIE_GAUGE_HOLD_EDV2: return "edv2";
     case ROUNDIE_GAUGE_HOLD_COLD: return "cold";
     case ROUNDIE_GAUGE_HOLD_NO_RESULT: return "no-result";
+    case ROUNDIE_GAUGE_HOLD_TEST_END: return "test-end";
+    case ROUNDIE_GAUGE_HOLD_TEST_STOP: return "test-stop";
     }
     return "?";
 }
@@ -401,6 +443,14 @@ const char *roundie_gauge_hold_state_name(roundie_gauge_hold_state_t state)
 bool roundie_gauge_hold_sleep_wanted(const roundie_gauge_hold_t *hold)
 {
     return hold->protect && hold->state != ROUNDIE_GAUGE_HOLD_RUNNING && hold->state != ROUNDIE_GAUGE_HOLD_EDV2;
+}
+
+void roundie_gauge_hold_external_power(roundie_gauge_hold_t *hold)
+{
+    if (hold->state != ROUNDIE_GAUGE_HOLD_RUNNING && hold->state != ROUNDIE_GAUGE_HOLD_EDV2) {
+        hold->protect = false;
+        hold->alert = ROUNDIE_GAUGE_ALERT_NONE;
+    }
 }
 
 const char *roundie_gauge_alert_name(roundie_gauge_alert_t alert)
@@ -510,7 +560,8 @@ bool roundie_gauge_record_save_due(const roundie_gauge_record_t *stored, size_t 
 }
 
 void roundie_gauge_log_push(roundie_gauge_log_t *log, const roundie_gauge_learning_sample_t *sample,
-                            roundie_gauge_hold_state_t hold_state, bool usb_connected, bool inhibitor_held)
+                            roundie_gauge_hold_state_t hold_state, bool usb_connected, bool inhibitor_held,
+                            bool after_wake)
 {
     roundie_gauge_log_entry_t entry = {0};
     entry.time_ms = (uint32_t)(sample->time_us / 1000);
@@ -520,6 +571,9 @@ void roundie_gauge_log_push(roundie_gauge_log_t *log, const roundie_gauge_learni
     }
     if (inhibitor_held) {
         entry.flags |= ROUNDIE_GAUGE_LOG_INHIBITOR;
+    }
+    if (after_wake) {
+        entry.flags |= ROUNDIE_GAUGE_LOG_WAKE;
     }
     if (sample->valid) {
         entry.flags |= ROUNDIE_GAUGE_LOG_VALID;

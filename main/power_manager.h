@@ -39,6 +39,8 @@ bool roundie_power_request_timed_sleep(uint32_t limit_s);
 /* System worker: show a battery alert (roundie_gauge_alert_t; 0 removes it).
  * A non-zero alert also turns the screen on. */
 void roundie_power_battery_alert(uint8_t alert);
+/* Completed light sleeps since boot. */
+uint32_t roundie_power_light_sleeps(void);
 #endif
 #if CONFIG_ROUNDIE_DEV_POWER
 /* Same bounded framer as RS1; replies before any sleep starts. */

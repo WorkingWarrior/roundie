@@ -21,7 +21,8 @@ static void send(const char *response, int length)
 
 #if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH) && CONFIG_ROUNDIE_DEV_POWER
 /* LEARN, LEARN HOLD <minutes 1..1440>, LEARN STOP: reply with the learning
- * report. LEARN LOG <from> and LEARN END reply with RAM state only.
+ * report. LEARN LOG <from> and LEARN END reply with RAM state only;
+ * LEARN TEST END|STOP <s> schedules a simulated end and replies like END.
  * Returns false when operation is not a LEARN command. */
 static bool learn_command(const char *id, const char *operation, bool board_ready)
 {
@@ -47,6 +48,26 @@ static bool learn_command(const char *id, const char *operation, bool board_read
         }
     } else if (!board_ready) {
         error = ESP_ERR_INVALID_STATE;
+    } else if (strncmp(operation, "LEARN TEST ", 11) == 0) {
+        /* LEARN TEST END|STOP <delay 0..3600>: development simulation. */
+        const char *rest = operation + 11;
+        roundie_gauge_test_t test = ROUNDIE_GAUGE_TEST_NONE;
+        if (strncmp(rest, "END ", 4) == 0) {
+            test = ROUNDIE_GAUGE_TEST_END;
+            rest += 4;
+        } else if (strncmp(rest, "STOP ", 5) == 0) {
+            test = ROUNDIE_GAUGE_TEST_STOP;
+            rest += 5;
+        }
+        char *end = NULL;
+        unsigned long delay_s = strtoul(rest, &end, 10);
+        if (test == ROUNDIE_GAUGE_TEST_NONE || rest[0] < '0' || rest[0] > '9' || end == NULL || *end != '\0' ||
+            end - rest > 4 || delay_s > 3600) {
+            error = ESP_ERR_INVALID_ARG;
+        } else {
+            error = roundie_gauge_service_test(test, (uint32_t)delay_s, now_us);
+            end_reply = true;
+        }
     } else if (strcmp(operation, "LEARN STOP") == 0) {
         error = roundie_gauge_service_hold(0, now_us);
     } else if (strncmp(operation, "LEARN HOLD ", 11) == 0) {

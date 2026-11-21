@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "roundie_board.h"
+#include "roundie_gauge_learning.h"
 #include "sdkconfig.h"
 
 /* BQ27220 capacity learning on the 1.85B (docs/bringup.md, "Gauge capacity
@@ -29,5 +30,9 @@ int roundie_gauge_service_log_json(char *buffer, size_t size, uint32_t from);
 /* The RG1 LEARN END reply object: the end of the hold (warning, EDV2
  * snapshot, result, protection); returns snprintf's result. */
 int roundie_gauge_service_end_json(char *buffer, size_t size, int64_t now_us);
+/* Development test of the end path (LEARN TEST END|STOP <delay 0..3600>):
+ * simulated warning after delay_s, simulated end 60 s later, on a running
+ * hold. RAM only, never written to the gauge or NVS, gone after a reset. */
+esp_err_t roundie_gauge_service_test(roundie_gauge_test_t test, uint32_t delay_s, int64_t now_us);
 #endif
 #endif

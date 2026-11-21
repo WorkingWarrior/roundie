@@ -380,6 +380,14 @@ bool roundie_power_request_timed_sleep(uint32_t limit_s)
     return accepted;
 }
 
+uint32_t roundie_power_light_sleeps(void)
+{
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    uint32_t sleeps = roundie_power_shared.sleeps;
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+    return sleeps;
+}
+
 void roundie_power_battery_alert(uint8_t alert)
 {
     portENTER_CRITICAL(&roundie_power_shared.lock);

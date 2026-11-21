@@ -494,6 +494,115 @@ static void test_end_of_cycle(void)
     assert(!roundie_gauge_hold_sleep_wanted(&fresh));
 }
 
+/* Development test trigger: the end path without discharging. Samples stay
+ * real (full charge, no VDQ/EDV2), the tracker sees nothing, nothing is
+ * learned. */
+static void test_simulated_end(void)
+{
+    rig_t rig;
+    rig_init(&rig);
+    /* Only on a running hold, one test at a time, bounded delay. */
+    assert(!roundie_gauge_hold_test(&rig.hold, ROUNDIE_GAUGE_TEST_END, 0, 0));
+    assert(roundie_gauge_hold_arm(&rig.hold, 0, 3600 * SECOND));
+    assert(!roundie_gauge_hold_test(&rig.hold, ROUNDIE_GAUGE_TEST_NONE, 0, 0));
+    assert(!roundie_gauge_hold_test(&rig.hold, ROUNDIE_GAUGE_TEST_END, 0, -1));
+    assert(!roundie_gauge_hold_test(&rig.hold, ROUNDIE_GAUGE_TEST_END, 0, ROUNDIE_GAUGE_TEST_MAX_DELAY_US + 1));
+    assert(roundie_gauge_hold_test(&rig.hold, ROUNDIE_GAUGE_TEST_END, 0, 10 * SECOND));
+    assert(!roundie_gauge_hold_test(&rig.hold, ROUNDIE_GAUGE_TEST_STOP, 0, 0));
+    rig.sample.current_ma = -105;
+    step(&rig); /* 5 s */
+    assert(rig.held && !rig.hold.warned && !rig.hold.simulated);
+    step(&rig); /* 10 s: warning */
+    assert(rig.held && rig.hold.warned && rig.hold.simulated);
+    assert(rig.hold.alert == ROUNDIE_GAUGE_ALERT_NEAR_END && !rig.hold.protect);
+    for (int i = 0; i < 11; i++) {
+        step(&rig);
+        assert(rig.held);
+    }
+    step(&rig); /* 70 s: simulated EDV2, load released */
+    assert(!rig.held && rig.hold.state == ROUNDIE_GAUGE_HOLD_EDV2);
+    assert(rig.hold.edv2_seen && rig.hold.edv2.voltage_mv == 4150 && rig.hold.edv2.full_mah == 600);
+    assert((rig.hold.edv2.operation_flags & EDV2) == 0); /* the real flags, not faked */
+    assert(rig.hold.alert == ROUNDIE_GAUGE_ALERT_FINISHED && rig.hold.protect);
+    assert(!roundie_gauge_hold_sleep_wanted(&rig.hold));
+    assert(rig.tracker.phase == ROUNDIE_GAUGE_LEARN_IDLE && rig.tracker.updated_count == 0);
+    for (int i = 0; i < 23; i++) {
+        step(&rig);
+        assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_EDV2);
+    }
+    step(&rig); /* 120 s later: a test end, not NO_RESULT, not learned */
+    assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_TEST_END && !rig.hold.learned);
+    assert(rig.hold.result == ROUNDIE_GAUGE_LEARN_RESULT_NONE && rig.hold.alert == ROUNDIE_GAUGE_ALERT_FINISHED);
+    assert(roundie_gauge_hold_sleep_wanted(&rig.hold));
+    /* USB host link (full battery, no charging current) ends it too, but
+     * not a running hold or the EDV2 wait. */
+    roundie_gauge_hold_t copy = rig.hold;
+    roundie_gauge_hold_external_power(&copy);
+    assert(!copy.protect && copy.alert == ROUNDIE_GAUGE_ALERT_NONE && copy.state == ROUNDIE_GAUGE_HOLD_TEST_END);
+    roundie_gauge_hold_t waiting = {.state = ROUNDIE_GAUGE_HOLD_EDV2, .protect = true,
+                                    .alert = ROUNDIE_GAUGE_ALERT_FINISHED};
+    roundie_gauge_hold_external_power(&waiting);
+    assert(waiting.protect && waiting.alert == ROUNDIE_GAUGE_ALERT_FINISHED);
+    roundie_gauge_hold_t running = {.state = ROUNDIE_GAUGE_HOLD_RUNNING, .alert = ROUNDIE_GAUGE_ALERT_NEAR_END};
+    roundie_gauge_hold_external_power(&running);
+    assert(running.alert == ROUNDIE_GAUGE_ALERT_NEAR_END);
+    /* USB: a charging sample ends the protection. */
+    rig.sample.current_ma = 300;
+    step(&rig);
+    assert(!rig.hold.protect && rig.hold.alert == ROUNDIE_GAUGE_ALERT_NONE);
+    assert(rig.hold.state == ROUNDIE_GAUGE_HOLD_TEST_END && rig.tracker.updated_count == 0);
+
+    /* A real UPDATED during a simulated wait is not credited either. */
+    rig_init(&rig);
+    roundie_gauge_hold_t *hold = &rig.hold;
+    assert(roundie_gauge_hold_arm(hold, 0, 3600 * SECOND));
+    assert(roundie_gauge_hold_test(hold, ROUNDIE_GAUGE_TEST_END, 0, 0));
+    rig.sample.current_ma = -105;
+    roundie_gauge_hold_update(hold, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE, 0);
+    roundie_gauge_hold_update(hold, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE, ROUNDIE_GAUGE_TEST_GAP_US);
+    assert(hold->state == ROUNDIE_GAUGE_HOLD_EDV2 && hold->simulated);
+    roundie_gauge_hold_update(hold, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_UPDATED,
+                              ROUNDIE_GAUGE_TEST_GAP_US + SECOND);
+    assert(hold->state == ROUNDIE_GAUGE_HOLD_DONE && !hold->learned);
+
+    /* Simulated safety stop: protection and the stop alert, no snapshot. */
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(hold, 0, 3600 * SECOND));
+    assert(roundie_gauge_hold_test(hold, ROUNDIE_GAUGE_TEST_STOP, 0, 0));
+    rig.sample.current_ma = -105;
+    assert(roundie_gauge_hold_update(hold, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE, 0));
+    assert(hold->alert == ROUNDIE_GAUGE_ALERT_NEAR_END);
+    assert(!roundie_gauge_hold_update(hold, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE,
+                                      ROUNDIE_GAUGE_TEST_GAP_US));
+    assert(hold->state == ROUNDIE_GAUGE_HOLD_TEST_STOP && hold->protect && !hold->learned);
+    assert(hold->alert == ROUNDIE_GAUGE_ALERT_STOPPED && !hold->edv2_seen);
+    assert(roundie_gauge_hold_sleep_wanted(hold));
+
+    /* A real safety condition still wins over a pending simulation. */
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(hold, 0, 3600 * SECOND));
+    assert(roundie_gauge_hold_test(hold, ROUNDIE_GAUGE_TEST_END, 0, 0));
+    rig.sample.current_ma = -105;
+    rig.sample.temperature_deci_c = ROUNDIE_GAUGE_HOLD_MAX_DECI_C;
+    roundie_gauge_hold_update(hold, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE, ROUNDIE_GAUGE_TEST_GAP_US);
+    assert(hold->state == ROUNDIE_GAUGE_HOLD_HOT && !hold->simulated);
+
+    /* Cancel and re-arm clear the test; an MCU reset starts from OFF, where
+     * nothing can fire. */
+    rig_init(&rig);
+    assert(roundie_gauge_hold_arm(hold, 0, 3600 * SECOND));
+    assert(roundie_gauge_hold_test(hold, ROUNDIE_GAUGE_TEST_END, 0, 0));
+    roundie_gauge_hold_cancel(hold);
+    assert(!roundie_gauge_hold_update(hold, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE, 2 * ROUNDIE_GAUGE_TEST_GAP_US));
+    assert(hold->state == ROUNDIE_GAUGE_HOLD_CANCELLED && hold->alert == ROUNDIE_GAUGE_ALERT_NONE);
+    assert(roundie_gauge_hold_arm(hold, 0, 3600 * SECOND));
+    assert(hold->test == ROUNDIE_GAUGE_TEST_NONE && !hold->simulated);
+    roundie_gauge_hold_t fresh;
+    memset(&fresh, 0, sizeof(fresh));
+    assert(!roundie_gauge_hold_update(&fresh, &rig.sample, ROUNDIE_GAUGE_LEARN_RESULT_NONE, INT64_C(1) << 40));
+    assert(fresh.state == ROUNDIE_GAUGE_HOLD_OFF && fresh.alert == ROUNDIE_GAUGE_ALERT_NONE && !fresh.protect);
+}
+
 static roundie_gauge_capacity_t profile(void)
 {
     roundie_gauge_capacity_t state;
@@ -603,7 +712,7 @@ static void test_names(void)
     for (int i = 0; i <= ROUNDIE_GAUGE_LEARN_CAUSE_UNKNOWN; i++) {
         assert(strcmp(roundie_gauge_learn_cause_name((roundie_gauge_learn_cause_t)i), "?") != 0);
     }
-    for (int i = 0; i <= ROUNDIE_GAUGE_HOLD_NO_RESULT; i++) {
+    for (int i = 0; i <= ROUNDIE_GAUGE_HOLD_TEST_STOP; i++) {
         assert(strcmp(roundie_gauge_hold_state_name((roundie_gauge_hold_state_t)i), "?") != 0);
     }
     for (int i = 0; i <= ROUNDIE_GAUGE_ALERT_STOPPED; i++) {
@@ -629,10 +738,10 @@ static void test_telemetry_log(void)
     /* An invalid sample keeps only time, hold state and link flags. */
     sample.time_us = 5 * SECOND;
     sample.voltage_mv = 4000;
-    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_RUNNING, true, true);
+    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_RUNNING, true, true, true);
     assert(roundie_gauge_log_get(&log, 0, &entry));
     assert(entry.time_ms == 5000);
-    assert(entry.flags == (ROUNDIE_GAUGE_LOG_USB | ROUNDIE_GAUGE_LOG_INHIBITOR));
+    assert(entry.flags == (ROUNDIE_GAUGE_LOG_USB | ROUNDIE_GAUGE_LOG_INHIBITOR | ROUNDIE_GAUGE_LOG_WAKE));
     assert(entry.voltage_mv == 0);
     assert(entry.hold_state == ROUNDIE_GAUGE_HOLD_RUNNING);
 
@@ -645,7 +754,7 @@ static void test_telemetry_log(void)
     sample.full_mah = 600;
     sample.operation_flags = VDQ;
     sample.battery_flags = 0x0001;
-    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_EXPIRED, false, false);
+    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_EXPIRED, false, false, false);
     assert(roundie_gauge_log_get(&log, 1, &entry));
     assert(entry.flags == ROUNDIE_GAUGE_LOG_VALID);
     assert(entry.voltage_mv == 4000 && entry.current_ma == -85);
@@ -655,7 +764,7 @@ static void test_telemetry_log(void)
     assert(entry.operation_flags == VDQ && entry.battery_flags == 0x0001);
     assert(entry.hold_state == ROUNDIE_GAUGE_HOLD_EXPIRED);
     sample.temperature_deci_c = -70000;
-    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_OFF, false, false);
+    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_OFF, false, false, false);
     assert(roundie_gauge_log_get(&log, 2, &entry));
     assert(entry.temperature_deci_c == INT16_MIN);
     assert(!roundie_gauge_log_get(&log, 3, &entry));
@@ -663,7 +772,7 @@ static void test_telemetry_log(void)
     /* Wrap: the oldest entries are overwritten, sequences stay monotonic. */
     for (uint32_t i = 3; i < ROUNDIE_GAUGE_LOG_CAPACITY + 10; i++) {
         sample.time_us = (int64_t)i * SECOND;
-        roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_OFF, false, false);
+        roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_OFF, false, false, false);
     }
     assert(log.total == ROUNDIE_GAUGE_LOG_CAPACITY + 10);
     assert(roundie_gauge_log_first(&log) == 10);
@@ -689,6 +798,7 @@ int main(void)
     test_invalid_samples();
     test_hold_limits();
     test_end_of_cycle();
+    test_simulated_end();
     test_profile_id();
     test_record();
     test_save_policy();

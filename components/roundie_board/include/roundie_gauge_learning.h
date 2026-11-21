@@ -168,7 +168,18 @@ typedef enum {
     ROUNDIE_GAUGE_HOLD_EDV2,        /* EDV2 seen: load released, learning result awaited */
     ROUNDIE_GAUGE_HOLD_COLD,        /* temperature below the limit */
     ROUNDIE_GAUGE_HOLD_NO_RESULT,   /* no learning result within the wait after EDV2 */
+    ROUNDIE_GAUGE_HOLD_TEST_END,    /* simulated EDV2 end (development test), never learned */
+    ROUNDIE_GAUGE_HOLD_TEST_STOP,   /* simulated safety stop (development test) */
 } roundie_gauge_hold_state_t;
+
+/* Development test of the end path without discharging the cell. */
+typedef enum {
+    ROUNDIE_GAUGE_TEST_NONE,
+    ROUNDIE_GAUGE_TEST_END,  /* warning, then a simulated EDV2 */
+    ROUNDIE_GAUGE_TEST_STOP, /* warning, then a simulated safety stop */
+} roundie_gauge_test_t;
+#define ROUNDIE_GAUGE_TEST_GAP_US (INT64_C(60) * 1000000) /* warning to end */
+#define ROUNDIE_GAUGE_TEST_MAX_DELAY_US (INT64_C(3600) * 1000000)
 
 /* What the device should show; it does not depend on a USB host. */
 typedef enum {
@@ -190,14 +201,26 @@ typedef struct {
     bool edv2_seen;
     roundie_gauge_learning_sample_t edv2; /* first EDV2 sample (or the result sample) */
     roundie_gauge_learn_result_t result;  /* the learning result that ended the hold */
-    bool learned;                         /* UPDATED before any safety stop */
+    bool learned;                         /* UPDATED before any safety stop, never simulated */
     int64_t ended_us;
+    roundie_gauge_test_t test; /* scheduled simulation, RAM only */
+    int64_t test_warn_us;
+    int64_t test_end_us;
+    bool simulated; /* a simulated event changed this hold */
 } roundie_gauge_hold_t;
 
 /* duration_us: 1 .. ROUNDIE_GAUGE_HOLD_MAX_US; false otherwise (state kept).
  * Arming clears the previous end, alert and snapshot. */
 bool roundie_gauge_hold_arm(roundie_gauge_hold_t *hold, int64_t now_us, int64_t duration_us);
 void roundie_gauge_hold_cancel(roundie_gauge_hold_t *hold);
+/* Development only: on a RUNNING hold, schedule a simulated warning at
+ * now + delay_us and the simulated end (test) ROUNDIE_GAUGE_TEST_GAP_US
+ * later. Changes the hold only: no sample, tracker or gauge value is
+ * altered, and a simulated end never sets learned. The EDV2 snapshot of a
+ * simulated end is the real sample at that time. false: not RUNNING, a test
+ * already scheduled, or arguments out of range. */
+bool roundie_gauge_hold_test(roundie_gauge_hold_t *hold, roundie_gauge_test_t test, int64_t now_us,
+                             int64_t delay_us);
 /* Call after roundie_gauge_learning_update() with its return value. True
  * while the load is to be held. */
 bool roundie_gauge_hold_update(roundie_gauge_hold_t *hold, const roundie_gauge_learning_sample_t *sample,
@@ -208,6 +231,10 @@ const char *roundie_gauge_alert_name(roundie_gauge_alert_t alert);
  * the hold has ended (not while RUNNING, nor while the EDV2 result is
  * awaited, so the result is sampled without a sleep gap). */
 bool roundie_gauge_hold_sleep_wanted(const roundie_gauge_hold_t *hold);
+/* A USB host link was seen: external power is present even when a full
+ * battery shows no charging current. Ends the protection and alert of an
+ * ended hold; a running hold or the EDV2 wait is not changed. */
+void roundie_gauge_hold_external_power(roundie_gauge_hold_t *hold);
 
 /* Learned Full Charge Capacity record (one NVS blob). The gauge cannot
  * identify the cell: the record is tied to the configured Design Capacity
@@ -257,6 +284,7 @@ bool roundie_gauge_record_save_due(const roundie_gauge_record_t *stored, size_t 
 #define ROUNDIE_GAUGE_LOG_VALID 0x01U     /* the gauge sample was valid */
 #define ROUNDIE_GAUGE_LOG_USB 0x02U       /* USB Serial/JTAG saw host SOF frames */
 #define ROUNDIE_GAUGE_LOG_INHIBITOR 0x04U /* the learning load hold held its inhibitor */
+#define ROUNDIE_GAUGE_LOG_WAKE 0x08U      /* first sample after a completed light sleep */
 
 typedef struct {
     uint32_t time_ms; /* since boot */
@@ -278,7 +306,8 @@ typedef struct {
 } roundie_gauge_log_t;
 
 void roundie_gauge_log_push(roundie_gauge_log_t *log, const roundie_gauge_learning_sample_t *sample,
-                            roundie_gauge_hold_state_t hold_state, bool usb_connected, bool inhibitor_held);
+                            roundie_gauge_hold_state_t hold_state, bool usb_connected, bool inhibitor_held,
+                            bool after_wake);
 /* The oldest sequence number still retained. */
 uint32_t roundie_gauge_log_first(const roundie_gauge_log_t *log);
 /* false when sequence was overwritten or not yet pushed. */

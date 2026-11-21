@@ -49,6 +49,7 @@ static uint32_t protect_accepted;
 #endif
 #define LOG_REPLY_ENTRIES 10U
 static roundie_gauge_log_t telemetry;
+static uint32_t sleeps_seen;
 #endif
 
 /* The stored record as loaded (read once, never erased) and saves since boot. */
@@ -188,7 +189,7 @@ static void apply_hold(bool wanted, int64_t now_us)
 
 /* The end of a hold: the alert on the device (independent of a USB host) and
  * the protective light sleep, both through the PowerManager. */
-static void protect_end(void)
+static void protect_end(bool after_wake)
 {
     if (hold.alert != alert_shown) {
         ESP_LOGW(TAG, "Battery test alert %s (hold %s, learned %u)", roundie_gauge_alert_name(hold.alert),
@@ -208,12 +209,16 @@ static void protect_end(void)
                  hold.edv2.operation_flags, hold.edv2.battery_flags);
     }
 #if CONFIG_ROUNDIE_POWER
-    if (roundie_gauge_hold_sleep_wanted(&hold)) {
+    /* Not in the sample taken right after a wake: one more sample period
+     * awake lets a reconnected USB host enumerate and be seen. */
+    if (roundie_gauge_hold_sleep_wanted(&hold) && !after_wake) {
         protect_requests++;
         if (roundie_power_request_timed_sleep(PROTECT_SLEEP_S)) {
             protect_accepted++;
         }
     }
+#else
+    (void)after_wake;
 #endif
 }
 
@@ -262,16 +267,29 @@ void roundie_gauge_service_sample(roundie_board_t *board, const roundie_battery_
         /* A gauge reset: its thresholds are read again once it initialized. */
         profile_read = false;
     }
-    apply_hold(roundie_gauge_hold_update(&hold, &sample, result, now_us), now_us);
-    protect_end();
 #if CONFIG_ROUNDIE_DEV_POWER
-    sample.time_us = now_us;
 #if USB_MONITOR
     const bool usb_connected = usb_serial_jtag_is_connected();
 #else
     const bool usb_connected = false;
 #endif
-    roundie_gauge_log_push(&telemetry, &sample, hold.state, usb_connected, inhibitor_held());
+    /* The worker samples right after a light sleep returns, so this entry's
+     * gauge currents mostly cover the sleep (docs/bringup.md). */
+    const uint32_t sleeps = roundie_power_light_sleeps();
+    const bool after_wake = sleeps != sleeps_seen;
+    sleeps_seen = sleeps;
+#else
+    const bool usb_connected = false;
+    const bool after_wake = false;
+#endif
+    apply_hold(roundie_gauge_hold_update(&hold, &sample, result, now_us), now_us);
+    if (usb_connected) {
+        roundie_gauge_hold_external_power(&hold);
+    }
+    protect_end(after_wake);
+#if CONFIG_ROUNDIE_DEV_POWER
+    sample.time_us = now_us;
+    roundie_gauge_log_push(&telemetry, &sample, hold.state, usb_connected, inhibitor_held(), after_wake);
 #endif
 }
 
@@ -306,6 +324,16 @@ esp_err_t roundie_gauge_service_hold(uint32_t minutes, int64_t now_us)
     (void)now_us;
     return ESP_ERR_NOT_SUPPORTED;
 #endif
+}
+
+esp_err_t roundie_gauge_service_test(roundie_gauge_test_t test, uint32_t delay_s, int64_t now_us)
+{
+    if (!roundie_gauge_hold_test(&hold, test, now_us, (int64_t)delay_s * 1000000)) {
+        return hold.state == ROUNDIE_GAUGE_HOLD_RUNNING ? ESP_ERR_INVALID_ARG : ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGW(TAG, "Simulated end test %s in %" PRIu32 " s (warning), end 60 s later; nothing is written",
+             test == ROUNDIE_GAUGE_TEST_END ? "END" : "STOP", delay_s);
+    return ESP_OK;
 }
 
 int roundie_gauge_service_json(char *buffer, size_t size, int64_t now_us)
@@ -359,14 +387,15 @@ int roundie_gauge_service_end_json(char *buffer, size_t size, int64_t now_us)
         "\"protect\":%u,\"warned\":%u,\"warned_s\":%" PRId64 ",\"ended_s\":%" PRId64 ",\"sleep_req\":%" PRIu32
         ",\"sleep_ok\":%" PRIu32 ",\"snap\":%u,\"snap_s\":%" PRId64 ",\"snap_mv\":%u,\"snap_ma\":%d,"
         "\"snap_avg_ma\":%d,\"snap_temp\":%" PRId32 ",\"snap_rm\":%u,\"snap_fcc\":%u,\"snap_op\":%u,"
-        "\"snap_flags\":%u,\"avg_ma\":%d}",
+        "\"snap_flags\":%u,\"avg_ma\":%d,\"simulated\":%u,\"test\":%u}",
         roundie_gauge_hold_state_name(hold.state), roundie_gauge_alert_name(hold.alert), hold.learned ? 1U : 0U,
         roundie_gauge_learn_result_name(hold.result), hold.protect ? 1U : 0U, hold.warned ? 1U : 0U,
         hold.warned ? seconds_since(hold.warned_us, now_us) : INT64_C(-1), seconds_since(hold.ended_us, now_us),
         protect_requests, protect_accepted, hold.edv2_seen ? 1U : 0U,
         hold.edv2_seen ? seconds_since(snap->time_us, now_us) : INT64_C(-1), snap->voltage_mv, snap->current_ma,
         snap->average_current_ma, snap->temperature_deci_c, snap->remaining_mah, snap->full_mah,
-        snap->operation_flags, snap->battery_flags, last_sample.average_current_ma);
+        snap->operation_flags, snap->battery_flags, last_sample.average_current_ma, hold.simulated ? 1U : 0U,
+        (unsigned)hold.test);
 }
 
 int roundie_gauge_service_log_json(char *buffer, size_t size, uint32_t from)

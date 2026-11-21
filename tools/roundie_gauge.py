@@ -41,7 +41,7 @@ LEARN_NAMES = {
     "cause": ("none", "charge", "low-temp", "low-current", "overload", "gauge-reset", "config-update",
               "not-qualified", "unknown"),
     "hold": ("off", "running", "done", "aborted", "low-voltage", "sysdown", "hot", "no-data", "expired",
-             "cancelled", "edv2", "cold", "no-result"),
+             "cancelled", "edv2", "cold", "no-result", "test-end", "test-stop"),
 }
 END_NAMES = {
     "hold": LEARN_NAMES["hold"],
@@ -50,18 +50,19 @@ END_NAMES = {
 }
 END_INTS = ("learned", "protect", "warned", "warned_s", "ended_s", "sleep_req", "sleep_ok", "snap", "snap_s",
             "snap_mv", "snap_ma", "snap_avg_ma", "snap_temp", "snap_rm", "snap_fcc", "snap_op", "snap_flags",
-            "avg_ma")
+            "avg_ma", "simulated", "test")
 LEARN_INTS = ("resumed", "old_full", "new_full", "result_s", "qualified", "updated", "unchanged", "aborted",
               "start_rm", "start_full", "min_temp", "edv2", "edv2_qualified", "edv2_mv", "edv2_ma", "edv2_temp",
               "edv2_rm", "dsg_samples", "dsg_avg_ma", "dsg_small_ma", "dsg_large_ma", "need_ma", "hold_s",
               "inhibitor", "stored", "stored_full", "stored_seq", "saves", "load", "low_temp", "overload", "op",
               "flags", "mv", "ma", "temp", "rm", "fcc", "dc")
 OPERATIONS = (r"STATUS|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP|LEARN LOG [0-9]{1,10}"
-              r"|LEARN END")
+              r"|LEARN END|LEARN TEST (END|STOP) [0-9]{1,4}")
 LOG_FIELDS = ("seq", "time_ms", "mv", "ma", "temp", "rm", "fcc", "op", "flags", "hold", "link", "avg_ma")
 LOG_VALID = 0x01
 LOG_USB = 0x02
 LOG_INHIBITOR = 0x04
+LOG_WAKE = 0x08
 OP_VDQ = 0x0010
 OP_EDV2 = 0x0008
 REQUIRED_MA = 70
@@ -133,8 +134,8 @@ def parse_end(status):
     for key in END_INTS:
         if type(status[key]) is not int:
             raise ValueError(f"invalid {key}")
-    if status["learned"] == 1 and status["hold_result"] != "updated":
-        raise ValueError("learned without an updated result")
+    if status["learned"] == 1 and (status["hold_result"] != "updated" or status["simulated"] != 0):
+        raise ValueError("learned without a real updated result")
 
 
 def parse_log(status):
@@ -178,6 +179,19 @@ def summarize_log(entries):
             "rm_last": group[-1]["rm"] if group else None,
             "seconds": round((group[-1]["time_ms"] - group[0]["time_ms"]) / 1000, 1) if group else 0,
         }
+    # First samples after a light sleep: the gauge's Current() (1 s
+    # conversion) and AverageCurrent() (IIR, about 14.5 s) mostly cover the
+    # sleep. An estimate, not a meter reading (docs/bringup.md).
+    woke = [e for e in battery if e["link"] & LOG_WAKE]
+    report["after_wake"] = {"n": len(woke), "current_ma": summarize([-e["ma"] for e in woke]),
+                            "average_ma": summarize([-e["avg_ma"] for e in woke])}
+    # Mean discharge over the whole battery-only span from the gauge's RM
+    # (1 mAh resolution): sleeps included.
+    span_s = (battery[-1]["time_ms"] - battery[0]["time_ms"]) / 1000 if battery else 0
+    report["battery_span"] = {"seconds": round(span_s, 1),
+                              "rm_drop_mah": battery[0]["rm"] - battery[-1]["rm"] if battery else 0,
+                              "mean_ma_from_rm": round((battery[0]["rm"] - battery[-1]["rm"]) * 3600 / span_s, 1)
+                              if span_s >= 600 else None}
     report["required_ma"] = REQUIRED_MA
     report["vdq_seen"] = any(e["op"] & OP_VDQ for e in battery)
     report["edv2_seen"] = any(e["op"] & OP_EDV2 for e in battery)
@@ -223,11 +237,17 @@ def main(argv=None):
     commands.add_parser("learn-stop", help="end the load hold")
     commands.add_parser("learn-log", help="read the RAM telemetry ring and summarize battery-only samples")
     commands.add_parser("learn-end", help="end of the load hold: EDV2 snapshot, result, protection (read-only)")
+    test = commands.add_parser("learn-test", help="development: simulated warning after DELAY s, simulated end "
+                                                  "60 s later, on a running hold; never written, never learned")
+    test.add_argument("kind", choices=("end", "stop"))
+    test.add_argument("delay", type=int)
     args = parser.parse_args(argv)
     if args.command == "capacity" and not 100 <= args.mah <= 6000:
         parser.error("capacity must be 100..6000 mAh")
     if args.command == "learn-hold" and not 1 <= args.minutes <= 1440:
         parser.error("minutes must be 1..1440")
+    if args.command == "learn-test" and not 0 <= args.delay <= 3600:
+        parser.error("delay must be 0..3600")
     operation = {
         "status": "STATUS",
         "learn": "LEARN",
@@ -238,6 +258,8 @@ def main(argv=None):
         operation = f"CAPACITY {args.mah}"
     elif args.command == "learn-hold":
         operation = f"LEARN HOLD {args.minutes}"
+    elif args.command == "learn-test":
+        operation = f"LEARN TEST {args.kind.upper()} {args.delay}"
     try:
         with open_serial(args.port) as port:
             if args.command == "learn-log":
