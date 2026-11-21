@@ -120,7 +120,8 @@ Reply: `!RF1 <id> <esp_err> {json}` with `format` 1, transfer `phase`
 (0 idle, 1 receiving, 2 ready), `received`, `total`, `count`, GUI figures
 (`objects`, `pool`, `bytes`, `home`, `parked`, `gallery`), `fallback_only`,
 `loads`, `load_failures`, nine `counters` (creates, destroys, activations,
-deactivations, updates, switches, failures, refused, resumes), five `us`
+deactivations, updates, switches, failures, refused, resumes after
+light sleep; a return to Home from the list is an activation), five `us`
 timings (load, activate, activate max, update max, resume), `preferred`,
 `active`, `failed`, `error` and `faces` (`[id, version, healthy]`). The host
 client validates every field and bound before use (`parse_reply`).

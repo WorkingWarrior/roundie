@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import roundie_face  # noqa: E402
 import roundie_launcher  # noqa: E402
 import roundie_power  # noqa: E402
+import roundie_safe  # noqa: E402
 from roundie_time import DeviceError, TransportError, open_serial, request as time_request  # noqa: E402
 
 
@@ -60,6 +61,17 @@ class Check:
         return self.wait(f"face {face_id}", lambda: self.face("STATUS"),
                          lambda s: s["active"] == face_id and s["home"] == 1, 5)
 
+    def stable(self, timeout):
+        """Waits for BootGuard normal/STABLE (stage 4): the face store is
+        admitted only then, some seconds after boot."""
+        def read():
+            with open_serial(self.port_name) as port:
+                return roundie_safe.request(port, "STATUS")
+        guard = self.wait("BootGuard STABLE", read, lambda g: g["stage"] == 4 or g["safe"] != 0, timeout)
+        if guard["safe"] != 0:
+            raise DeviceError(f"board is in Safe Mode: {guard}")
+        return guard
+
     def reconnect(self, timeout):
         deadline = time.monotonic() + timeout
         last = None
@@ -89,6 +101,7 @@ def main(argv=None):
     check = Check(args.port, report)
     ok = True
     try:
+        check.stable(60)
         base = check.face("STATUS")
         report["baseline"] = base
         ok &= check.record("baseline", base["fallback_only"] == 0 and base["home"] == 1,
@@ -149,6 +162,7 @@ def main(argv=None):
             time_request(port, "RESTART")
         time.sleep(2)
         status = check.reconnect(30)
+        check.stable(60)
         status = check.wait("face after restart", lambda: check.face("STATUS"),
                             lambda s: s["active"] == ids[0], 15)
         ok &= check.record("restart keeps the face", status["preferred"] == ids[0] and status["home"] == 1 and
@@ -158,7 +172,8 @@ def main(argv=None):
         # to the list; an ABI 3 application exited returns to Home and the face
         # resumes.
         check.wait("idle Home", check.nav, lambda n: n["state"] == "HOME", 10)
-        resumes = check.face("STATUS")["counters"][8]
+        home_before = check.face("STATUS")
+        resumes = home_before["counters"][8]
         check.nav("OPEN")  # INJECTED swipe up: Home to the list
         nav = check.wait("list from Home", check.nav, lambda n: n["state"] == "LIST" and n["count"] > 0, 10)
         check.nav(f"SELECT {nav['revision']} {args.abi1_app}")
@@ -174,9 +189,16 @@ def main(argv=None):
         check.wait("Home after exit", check.nav, lambda n: n["state"] == "HOME", 10)
         status = check.wait("face resumed", lambda: check.face("STATUS"),
                             lambda s: s["home"] == 1 and s["parked"] == 0, 5)
+        # Hidden, not destroyed: the return activates the same face again
+        # (counters: 0 creates, 2 activations, 3 deactivations, 6 failures;
+        # 8 resumes counts light-sleep resumes only).
         ok &= check.record("Home after applications", hidden["home"] == 0 and status["active"] == ids[0] and
-                           status["counters"][8] > resumes and status["counters"][6] == after["counters"][6],
-                           resumes=status["counters"][8] - resumes)
+                           hidden["counters"][3] > home_before["counters"][3] and
+                           status["counters"][2] > hidden["counters"][2] and
+                           status["counters"][0] == home_before["counters"][0] and
+                           status["counters"][6] == after["counters"][6],
+                           activations=status["counters"][2] - hidden["counters"][2],
+                           creates=status["counters"][0] - home_before["counters"][0])
 
         # One timed light sleep (M8-B): the face parks and resumes.
         with open_serial(args.port) as port:
