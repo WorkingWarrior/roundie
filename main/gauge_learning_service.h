@@ -23,5 +23,8 @@ uint16_t roundie_gauge_service_restore_full(const roundie_gauge_capacity_t *befo
 esp_err_t roundie_gauge_service_hold(uint32_t minutes, int64_t now_us);
 /* The RG1 LEARN reply object; returns snprintf's result. */
 int roundie_gauge_service_json(char *buffer, size_t size, int64_t now_us);
+/* The RG1 LEARN LOG reply object: up to 10 telemetry entries from sequence
+ * from (or the oldest retained one); -1 when it does not fit. */
+int roundie_gauge_service_log_json(char *buffer, size_t size, uint32_t from);
 #endif
 #endif

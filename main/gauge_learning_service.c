@@ -9,6 +9,9 @@
 #include "nvs.h"
 #include "power_manager.h"
 #include "roundie_gauge_learning.h"
+#if CONFIG_ROUNDIE_DEV_POWER
+#include "driver/usb_serial_jtag.h"
+#endif
 
 static const char *TAG = "gauge_learn";
 
@@ -28,6 +31,17 @@ static uint32_t hold_handle;
 static int64_t hold_renewed_us;
 #endif
 static roundie_gauge_hold_state_t hold_logged;
+#if CONFIG_ROUNDIE_DEV_POWER
+/* The connection monitor is linked only with these options (IDF
+ * esp_driver_usb_serial_jtag CMakeLists). */
+#if defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED) || defined(CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION)
+#define USB_MONITOR 1
+#else
+#define USB_MONITOR 0
+#endif
+#define LOG_REPLY_ENTRIES 10U
+static roundie_gauge_log_t telemetry;
+#endif
 
 /* The stored record as loaded (read once, never erased) and saves since boot. */
 static bool record_loaded;
@@ -161,6 +175,18 @@ static void apply_hold(bool wanted, int64_t now_us)
     }
 }
 
+#if CONFIG_ROUNDIE_DEV_POWER
+static bool inhibitor_held(void)
+{
+#if CONFIG_ROUNDIE_POWER
+    return hold_handle != 0;
+#else
+    return false;
+#endif
+}
+
+#endif
+
 void roundie_gauge_service_sample(roundie_board_t *board, const roundie_battery_sample_t *battery,
                                   int64_t now_us)
 {
@@ -195,6 +221,15 @@ void roundie_gauge_service_sample(roundie_board_t *board, const roundie_battery_
         profile_read = false;
     }
     apply_hold(roundie_gauge_hold_update(&hold, &sample, result, now_us), now_us);
+#if CONFIG_ROUNDIE_DEV_POWER
+    sample.time_us = now_us;
+#if USB_MONITOR
+    const bool usb_connected = usb_serial_jtag_is_connected();
+#else
+    const bool usb_connected = false;
+#endif
+    roundie_gauge_log_push(&telemetry, &sample, hold.state, usb_connected, inhibitor_held());
+#endif
 }
 
 uint16_t roundie_gauge_service_restore_full(const roundie_gauge_capacity_t *before, uint16_t design_mah)
@@ -227,15 +262,6 @@ esp_err_t roundie_gauge_service_hold(uint32_t minutes, int64_t now_us)
     (void)minutes;
     (void)now_us;
     return ESP_ERR_NOT_SUPPORTED;
-#endif
-}
-
-static bool inhibitor_held(void)
-{
-#if CONFIG_ROUNDIE_POWER
-    return hold_handle != 0;
-#else
-    return false;
 #endif
 }
 
@@ -275,6 +301,36 @@ int roundie_gauge_service_json(char *buffer, size_t size, int64_t now_us)
         last_sample.battery_flags, last_sample.voltage_mv, last_sample.current_ma,
         last_sample.temperature_deci_c, last_sample.remaining_mah, last_sample.full_mah,
         last_sample.design_mah);
+}
+
+int roundie_gauge_service_log_json(char *buffer, size_t size, uint32_t from)
+{
+    uint32_t first = roundie_gauge_log_first(&telemetry);
+    uint32_t sequence = from > first ? from : first;
+    int length = snprintf(buffer, size, "{\"log\":1,\"usb_monitor\":%u,\"total\":%" PRIu32 ",\"first\":%" PRIu32
+                          ",\"e\":[", USB_MONITOR ? 1U : 0U, telemetry.total, first);
+    if (length < 0 || (size_t)length >= size) {
+        return -1;
+    }
+    roundie_gauge_log_entry_t entry;
+    for (uint32_t count = 0; count < LOG_REPLY_ENTRIES && roundie_gauge_log_get(&telemetry, sequence, &entry);
+         count++) {
+        int written = snprintf(buffer + length, size - (size_t)length,
+                               "%s[%" PRIu32 ",%" PRIu32 ",%u,%d,%d,%u,%u,%u,%u,%u,%u]", count > 0 ? "," : "",
+                               sequence, entry.time_ms, entry.voltage_mv, entry.current_ma,
+                               entry.temperature_deci_c, entry.remaining_mah, entry.full_mah,
+                               entry.operation_flags, entry.battery_flags, entry.hold_state, entry.flags);
+        if (written < 0 || (size_t)written >= size - (size_t)length) {
+            return -1;
+        }
+        length += written;
+        sequence++;
+    }
+    int written = snprintf(buffer + length, size - (size_t)length, "],\"next\":%" PRIu32 "}", sequence);
+    if (written < 0 || (size_t)written >= size - (size_t)length) {
+        return -1;
+    }
+    return length + written;
 }
 #endif
 #endif

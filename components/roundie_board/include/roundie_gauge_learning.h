@@ -204,3 +204,35 @@ uint16_t roundie_gauge_record_restore_full(const roundie_gauge_record_t *record,
 bool roundie_gauge_record_save_due(const roundie_gauge_record_t *stored, size_t stored_size,
                                    uint16_t design_mah, uint32_t profile_id,
                                    uint16_t learned_full_mah, uint32_t saves_this_boot);
+
+/* RAM telemetry ring for measurements without USB: one entry per gauge
+ * sample, read over RG1 after the cable is reconnected. Lost on reset. */
+#define ROUNDIE_GAUGE_LOG_CAPACITY 128U
+#define ROUNDIE_GAUGE_LOG_VALID 0x01U     /* the gauge sample was valid */
+#define ROUNDIE_GAUGE_LOG_USB 0x02U       /* USB Serial/JTAG saw host SOF frames */
+#define ROUNDIE_GAUGE_LOG_INHIBITOR 0x04U /* the learning load hold held its inhibitor */
+
+typedef struct {
+    uint32_t time_ms; /* since boot */
+    uint16_t voltage_mv;
+    int16_t current_ma;
+    int16_t temperature_deci_c;
+    uint16_t remaining_mah;
+    uint16_t full_mah;
+    uint16_t operation_flags;
+    uint16_t battery_flags;
+    uint8_t hold_state; /* roundie_gauge_hold_state_t */
+    uint8_t flags;      /* ROUNDIE_GAUGE_LOG_* */
+} roundie_gauge_log_entry_t;
+
+typedef struct {
+    roundie_gauge_log_entry_t entries[ROUNDIE_GAUGE_LOG_CAPACITY];
+    uint32_t total; /* entries ever pushed; the next sequence number */
+} roundie_gauge_log_t;
+
+void roundie_gauge_log_push(roundie_gauge_log_t *log, const roundie_gauge_learning_sample_t *sample,
+                            roundie_gauge_hold_state_t hold_state, bool usb_connected, bool inhibitor_held);
+/* The oldest sequence number still retained. */
+uint32_t roundie_gauge_log_first(const roundie_gauge_log_t *log);
+/* false when sequence was overwritten or not yet pushed. */
+bool roundie_gauge_log_get(const roundie_gauge_log_t *log, uint32_t sequence, roundie_gauge_log_entry_t *entry);

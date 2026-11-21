@@ -428,3 +428,52 @@ bool roundie_gauge_record_save_due(const roundie_gauge_record_t *stored, size_t 
                               : (uint16_t)(stored->learned_full_mah - learned_full_mah);
     return difference >= step;
 }
+
+void roundie_gauge_log_push(roundie_gauge_log_t *log, const roundie_gauge_learning_sample_t *sample,
+                            roundie_gauge_hold_state_t hold_state, bool usb_connected, bool inhibitor_held)
+{
+    roundie_gauge_log_entry_t entry = {0};
+    entry.time_ms = (uint32_t)(sample->time_us / 1000);
+    entry.hold_state = (uint8_t)hold_state;
+    if (usb_connected) {
+        entry.flags |= ROUNDIE_GAUGE_LOG_USB;
+    }
+    if (inhibitor_held) {
+        entry.flags |= ROUNDIE_GAUGE_LOG_INHIBITOR;
+    }
+    if (sample->valid) {
+        entry.flags |= ROUNDIE_GAUGE_LOG_VALID;
+        entry.voltage_mv = sample->voltage_mv;
+        entry.current_ma = sample->current_ma;
+        int32_t temperature = sample->temperature_deci_c;
+        if (temperature > INT16_MAX) {
+            temperature = INT16_MAX;
+        } else if (temperature < INT16_MIN) {
+            temperature = INT16_MIN;
+        }
+        entry.temperature_deci_c = (int16_t)temperature;
+        entry.remaining_mah = sample->remaining_mah;
+        entry.full_mah = sample->full_mah;
+        entry.operation_flags = sample->operation_flags;
+        entry.battery_flags = sample->battery_flags;
+    }
+    log->entries[log->total % ROUNDIE_GAUGE_LOG_CAPACITY] = entry;
+    log->total++;
+}
+
+uint32_t roundie_gauge_log_first(const roundie_gauge_log_t *log)
+{
+    if (log->total <= ROUNDIE_GAUGE_LOG_CAPACITY) {
+        return 0;
+    }
+    return log->total - ROUNDIE_GAUGE_LOG_CAPACITY;
+}
+
+bool roundie_gauge_log_get(const roundie_gauge_log_t *log, uint32_t sequence, roundie_gauge_log_entry_t *entry)
+{
+    if (sequence >= log->total || sequence < roundie_gauge_log_first(log)) {
+        return false;
+    }
+    *entry = log->entries[sequence % ROUNDIE_GAUGE_LOG_CAPACITY];
+    return true;
+}

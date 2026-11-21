@@ -29,7 +29,19 @@ static bool learn_command(const char *id, const char *operation, bool board_read
     }
     const int64_t now_us = esp_timer_get_time();
     esp_err_t error = ESP_OK;
-    if (!board_ready) {
+    bool log_reply = false;
+    unsigned long log_from = 0;
+    if (strncmp(operation, "LEARN LOG ", 10) == 0) {
+        const char *digits = operation + 10;
+        char *end = NULL;
+        log_from = strtoul(digits, &end, 10);
+        log_reply = true;
+        if (digits[0] < '0' || digits[0] > '9' || end == NULL || *end != '\0' || end - digits > 10 ||
+            log_from > UINT32_MAX) {
+            error = ESP_ERR_INVALID_ARG;
+            log_reply = false;
+        }
+    } else if (!board_ready) {
         error = ESP_ERR_INVALID_STATE;
     } else if (strcmp(operation, "LEARN STOP") == 0) {
         error = roundie_gauge_service_hold(0, now_us);
@@ -50,7 +62,14 @@ static bool learn_command(const char *id, const char *operation, bool board_read
     char response[1024];
     int length = snprintf(response, sizeof(response), "\n!RG1 %s %d ", id, (int)error);
     if (length > 0 && (size_t)length < sizeof(response)) {
-        int body = roundie_gauge_service_json(response + length, sizeof(response) - (size_t)length - 1, now_us);
+        int body = 0;
+        if (log_reply) {
+            /* Answered without the board: the ring is RAM only. */
+            body = roundie_gauge_service_log_json(response + length, sizeof(response) - (size_t)length - 1,
+                                                  (uint32_t)log_from);
+        } else {
+            body = roundie_gauge_service_json(response + length, sizeof(response) - (size_t)length - 1, now_us);
+        }
         if (body > 0 && (size_t)(length + body) < sizeof(response) - 1) {
             length += body;
             response[length++] = '\n';

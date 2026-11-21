@@ -11,7 +11,10 @@ learn reads the capacity learning report (TRM 1.1.3: VDQ, EDV2, FCC update
 and the inferred abort cause). learn-hold keeps the system load on (screen
 and CPU awake) for one controlled cycle; it ends by itself at the FCC update,
 an abort, the voltage floor, SYSDWN/FD, temperature, missing data or the
-given time. learn-stop ends it. None of these writes the gauge."""
+given time. learn-stop ends it. learn-log reads the RAM telemetry ring (one
+entry per 5 s gauge sample, including time without USB) after the cable is
+reconnected and summarizes the samples taken without a USB host. None of these
+writes the gauge."""
 import argparse
 import json
 import re
@@ -41,7 +44,14 @@ LEARN_INTS = ("resumed", "old_full", "new_full", "result_s", "qualified", "updat
               "edv2_rm", "dsg_samples", "dsg_avg_ma", "dsg_small_ma", "dsg_large_ma", "need_ma", "hold_s",
               "inhibitor", "stored", "stored_full", "stored_seq", "saves", "load", "low_temp", "overload", "op",
               "flags", "mv", "ma", "temp", "rm", "fcc", "dc")
-OPERATIONS = r"STATUS|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP"
+OPERATIONS = r"STATUS|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP|LEARN LOG [0-9]{1,10}"
+LOG_FIELDS = ("seq", "time_ms", "mv", "ma", "temp", "rm", "fcc", "op", "flags", "hold", "link")
+LOG_VALID = 0x01
+LOG_USB = 0x02
+LOG_INHIBITOR = 0x04
+OP_VDQ = 0x0010
+OP_EDV2 = 0x0008
+REQUIRED_MA = 70
 
 
 def parse_reply(line, request_id):
@@ -54,6 +64,10 @@ def parse_reply(line, request_id):
         code_text, payload = line[len(prefix):].split(b" ", 1)
         code = int(code_text)
         status = json.loads(payload)
+        if "log" in status:
+            if code != 0:
+                raise DeviceError(f"gauge rejected log command ({code}): {status}")
+            return parse_log(status)
         if "learn" in status:
             parse_learn(status)
             if code != 0:
@@ -92,6 +106,69 @@ def parse_learn(status):
             raise ValueError(f"invalid {key}")
 
 
+def parse_log(status):
+    if status["log"] != 1:
+        raise ValueError("invalid log format")
+    for key in ("usb_monitor", "total", "first", "next"):
+        if type(status[key]) is not int or status[key] < 0:
+            raise ValueError(f"invalid {key}")
+    entries = []
+    for raw in status["e"]:
+        if type(raw) is not list or len(raw) != len(LOG_FIELDS) or any(type(v) is not int for v in raw):
+            raise ValueError("invalid log entry")
+        entry = dict(zip(LOG_FIELDS, raw))
+        entry["hold"] = LEARN_NAMES["hold"][entry["hold"]] if entry["hold"] < len(LEARN_NAMES["hold"]) else "?"
+        entries.append(entry)
+    status["e"] = entries
+    return status
+
+
+def summarize(values):
+    if not values:
+        return None
+    return {"n": len(values), "avg": round(sum(values) / len(values), 1), "min": min(values), "max": max(values)}
+
+
+def summarize_log(entries):
+    """Statistics of the valid samples taken without a USB host (battery
+    only), split by whether the load hold held its inhibitor."""
+    battery = [e for e in entries if e["link"] & LOG_VALID and not e["link"] & LOG_USB]
+    report = {"entries": len(entries), "battery_samples": len(battery),
+              "usb_samples": sum(1 for e in entries if e["link"] & LOG_USB)}
+    for name, group in (("hold", [e for e in battery if e["link"] & LOG_INHIBITOR]),
+                        ("no_hold", [e for e in battery if not e["link"] & LOG_INHIBITOR])):
+        discharge = [-e["ma"] for e in group]
+        report[name] = {
+            "discharge_ma": summarize(discharge),
+            "at_least_required": sum(1 for v in discharge if v >= REQUIRED_MA),
+            "mv": summarize([e["mv"] for e in group]),
+            "temp_deci_c": summarize([e["temp"] for e in group]),
+            "rm_first": group[0]["rm"] if group else None,
+            "rm_last": group[-1]["rm"] if group else None,
+            "seconds": round((group[-1]["time_ms"] - group[0]["time_ms"]) / 1000, 1) if group else 0,
+        }
+    report["required_ma"] = REQUIRED_MA
+    report["vdq_seen"] = any(e["op"] & OP_VDQ for e in battery)
+    report["edv2_seen"] = any(e["op"] & OP_EDV2 for e in battery)
+    report["fcc_values"] = sorted({e["fcc"] for e in battery})
+    report["hold_states"] = sorted({e["hold"] for e in entries})
+    report["gaps_ms_max"] = max((b["time_ms"] - a["time_ms"] for a, b in zip(entries, entries[1:])), default=0)
+    return report
+
+
+def read_log(port):
+    entries = []
+    sequence = 0
+    while True:
+        status = request(port, f"LEARN LOG {sequence}")
+        if status["first"] > sequence and sequence != 0:
+            raise DeviceError(f"telemetry overwritten while reading: first {status['first']} > {sequence}")
+        entries.extend(status["e"])
+        if status["next"] >= status["total"] or not status["e"]:
+            return status, entries
+        sequence = status["next"]
+
+
 def request(port, operation, timeout=15.0):
     if re.fullmatch(OPERATIONS, operation) is None:
         raise DeviceError("invalid gauge command")
@@ -113,6 +190,7 @@ def main(argv=None):
     hold = commands.add_parser("learn-hold", help="hold the system load for one controlled cycle")
     hold.add_argument("minutes", type=int)
     commands.add_parser("learn-stop", help="end the load hold")
+    commands.add_parser("learn-log", help="read the RAM telemetry ring and summarize battery-only samples")
     args = parser.parse_args(argv)
     if args.command == "capacity" and not 100 <= args.mah <= 6000:
         parser.error("capacity must be 100..6000 mAh")
@@ -129,6 +207,12 @@ def main(argv=None):
         operation = f"LEARN HOLD {args.minutes}"
     try:
         with open_serial(args.port) as port:
+            if args.command == "learn-log":
+                status, entries = read_log(port)
+                print(json.dumps({"total": status["total"], "first": status["first"],
+                                  "usb_monitor": status["usb_monitor"], "entries": entries,
+                                  "summary": summarize_log(entries)}, indent=1))
+                return 0
             print(json.dumps(request(port, operation), indent=2))
         return 0
     except TransportError as error:

@@ -64,9 +64,39 @@ class GaugeToolTests(unittest.TestCase):
         with self.assertRaisesRegex(DeviceError, "learning command"):
             tool.parse_reply(reply(learn(), code=258), "1234abcd")
 
+    def test_log_reply_and_summary(self):
+        # seq, time_ms, mv, ma, temp, rm, fcc, op, flags, hold, link
+        raw = [[0, 1000, 4100, 0, 250, 580, 600, 0x10, 0, 1, 0x07],      # USB, hold
+               [1, 6000, 4090, -90, 251, 579, 600, 0x10, 0, 1, 0x05],    # battery, hold
+               [2, 11000, 4085, -60, 252, 578, 600, 0x10, 0, 1, 0x05],
+               [3, 16000, 4080, -20, 252, 578, 600, 0x10, 0, 8, 0x01],   # battery, released
+               [4, 21000, 0, 0, 0, 0, 0, 0, 0, 8, 0x00]]                  # invalid sample
+        payload = {"log": 1, "usb_monitor": 1, "total": 5, "first": 0, "e": raw, "next": 5}
+        parsed = tool.parse_reply(reply(payload), "1234abcd")
+        self.assertEqual(parsed["e"][1]["ma"], -90)
+        self.assertEqual(parsed["e"][3]["hold"], "expired")
+        summary = tool.summarize_log(parsed["e"])
+        self.assertEqual(summary["battery_samples"], 3)
+        self.assertEqual(summary["usb_samples"], 1)
+        self.assertEqual(summary["hold"]["discharge_ma"], {"n": 2, "avg": 75.0, "min": 60, "max": 90})
+        self.assertEqual(summary["hold"]["at_least_required"], 1)
+        self.assertEqual(summary["hold"]["rm_first"], 579)
+        self.assertEqual(summary["hold"]["rm_last"], 578)
+        self.assertEqual(summary["no_hold"]["discharge_ma"]["max"], 20)
+        self.assertTrue(summary["vdq_seen"])
+        self.assertFalse(summary["edv2_seen"])
+        self.assertEqual(summary["gaps_ms_max"], 5000)
+        for bad in ({**payload, "log": 2}, {**payload, "e": [[1, 2]]}, {**payload, "e": [[0] * 10 + ["x"]]},
+                    {**payload, "total": -1}):
+            with self.assertRaises(TransportError, msg=bad):
+                tool.parse_reply(reply(bad), "1234abcd")
+        with self.assertRaisesRegex(DeviceError, "log command"):
+            tool.parse_reply(reply(payload, code=258), "1234abcd")
+
     def test_only_bounded_operations_are_sent(self):
         for bad in ("CAPACITY", "CAPACITY 600 1", "CAPACITY -1", "capacity 600", "STATUS\n!RS1", "CAPACITY 123456",
-                    "LEARN HOLD 0", "LEARN HOLD 12345", "LEARN HOLD", "LEARN GO", "learn"):
+                    "LEARN HOLD 0", "LEARN HOLD 12345", "LEARN HOLD", "LEARN GO", "learn", "LEARN LOG",
+                    "LEARN LOG -1", "LEARN LOG 12345678901"):
             with self.assertRaises(DeviceError):
                 tool.request(None, bad)
 

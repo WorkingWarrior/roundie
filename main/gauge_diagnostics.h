@@ -10,5 +10,7 @@
  *   !RG1 <8 hex id> LEARN HOLD <m>  hold the system load 1..1440 min for one
  *                                   controlled cycle; ends by itself
  *   !RG1 <8 hex id> LEARN STOP      end the hold
+ *   !RG1 <8 hex id> LEARN LOG <n>   up to 10 RAM telemetry entries from
+ *                                   sequence n (read after USB reconnect)
  * Reply: !RG1 <id> <esp_err> {json}. board may be NULL (not ready). */
 void roundie_gauge_command(roundie_board_t *board, const char *line, bool discard);

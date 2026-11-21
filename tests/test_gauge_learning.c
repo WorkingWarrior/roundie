@@ -441,6 +441,61 @@ static void test_names(void)
     }
 }
 
+static void test_telemetry_log(void)
+{
+    static roundie_gauge_log_t log;
+    roundie_gauge_log_entry_t entry;
+    roundie_gauge_learning_sample_t sample = {0};
+    memset(&log, 0, sizeof(log));
+    assert(roundie_gauge_log_first(&log) == 0);
+    assert(!roundie_gauge_log_get(&log, 0, &entry));
+
+    /* An invalid sample keeps only time, hold state and link flags. */
+    sample.time_us = 5 * SECOND;
+    sample.voltage_mv = 4000;
+    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_RUNNING, true, true);
+    assert(roundie_gauge_log_get(&log, 0, &entry));
+    assert(entry.time_ms == 5000);
+    assert(entry.flags == (ROUNDIE_GAUGE_LOG_USB | ROUNDIE_GAUGE_LOG_INHIBITOR));
+    assert(entry.voltage_mv == 0);
+    assert(entry.hold_state == ROUNDIE_GAUGE_HOLD_RUNNING);
+
+    /* A valid battery sample; temperature clamps to int16. */
+    sample.valid = true;
+    sample.current_ma = -85;
+    sample.temperature_deci_c = 70000;
+    sample.remaining_mah = 570;
+    sample.full_mah = 600;
+    sample.operation_flags = VDQ;
+    sample.battery_flags = 0x0001;
+    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_EXPIRED, false, false);
+    assert(roundie_gauge_log_get(&log, 1, &entry));
+    assert(entry.flags == ROUNDIE_GAUGE_LOG_VALID);
+    assert(entry.voltage_mv == 4000 && entry.current_ma == -85);
+    assert(entry.temperature_deci_c == INT16_MAX);
+    assert(entry.remaining_mah == 570 && entry.full_mah == 600);
+    assert(entry.operation_flags == VDQ && entry.battery_flags == 0x0001);
+    assert(entry.hold_state == ROUNDIE_GAUGE_HOLD_EXPIRED);
+    sample.temperature_deci_c = -70000;
+    roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_OFF, false, false);
+    assert(roundie_gauge_log_get(&log, 2, &entry));
+    assert(entry.temperature_deci_c == INT16_MIN);
+    assert(!roundie_gauge_log_get(&log, 3, &entry));
+
+    /* Wrap: the oldest entries are overwritten, sequences stay monotonic. */
+    for (uint32_t i = 3; i < ROUNDIE_GAUGE_LOG_CAPACITY + 10; i++) {
+        sample.time_us = (int64_t)i * SECOND;
+        roundie_gauge_log_push(&log, &sample, ROUNDIE_GAUGE_HOLD_OFF, false, false);
+    }
+    assert(log.total == ROUNDIE_GAUGE_LOG_CAPACITY + 10);
+    assert(roundie_gauge_log_first(&log) == 10);
+    assert(!roundie_gauge_log_get(&log, 9, &entry));
+    assert(roundie_gauge_log_get(&log, 10, &entry));
+    assert(entry.time_ms == 10000);
+    assert(roundie_gauge_log_get(&log, ROUNDIE_GAUGE_LOG_CAPACITY + 9, &entry));
+    assert(entry.time_ms == (ROUNDIE_GAUGE_LOG_CAPACITY + 9) * 1000);
+}
+
 int main(void)
 {
     test_min_current();
@@ -459,6 +514,7 @@ int main(void)
     test_record();
     test_save_policy();
     test_names();
+    test_telemetry_log();
     printf("gauge learning: OK\n");
     return 0;
 }
