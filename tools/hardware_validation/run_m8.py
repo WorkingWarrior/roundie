@@ -365,7 +365,7 @@ class Runner:
         """The launcher relaunches home after any application ends normally
         (components/roundie_launcher/launcher.c), so wait out its transitions."""
         return self.wait_for("settled launcher", lambda: self.call("launcher", "NAV"),
-                             lambda n: n["state"] in ("LIST", "ACTIVE", "RESULT", "ERROR"), 15, 0.2)
+                             lambda n: n["state"] in ("LIST", "HOME", "ACTIVE", "RESULT", "ERROR"), 15, 0.2)
 
     def run_once(self, digest):
         """ABI 1 RUN. Home relaunches about 15 ms after the result appears, so
@@ -393,7 +393,8 @@ class Runner:
                 self.call("launcher", f"EXIT {nav['generation']}")
                 nav = self.wait_for("launcher list", lambda: self.call("launcher", "NAV"),
                                     lambda n: n["state"] == "LIST", 8)
-            if nav["state"] != "LIST":
+            # M10: the face Home is idle like the list.
+            if nav["state"] not in ("LIST", "HOME"):
                 raise Blocked(f"launcher is {nav['state']}, not idle")
             try:
                 self.wait_for("idle runtime", lambda: self.call("elf"),
@@ -409,8 +410,8 @@ class Runner:
 
     def return_home(self):
         nav = self.settled_nav()
-        if nav["state"] == "ACTIVE" and nav["selected"] == HOME:
-            return nav
+        if nav["state"] == "HOME" or (nav["state"] == "ACTIVE" and nav["selected"] == HOME):
+            return nav  # M10: the face Home
         if nav["state"] == "RESULT":
             self.call("launcher", f"BACK {nav['request']}")
             nav = self.settled_nav()

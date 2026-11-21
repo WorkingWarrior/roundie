@@ -154,13 +154,16 @@ def main(argv=None):
         ok &= check.record("restart keeps the face", status["preferred"] == ids[0] and status["home"] == 1 and
                            status["load_failures"] == 0, load_us=status["us"][0], activate_us=status["us"][1])
 
-        # REP applications from Home (INJECTED): ABI 1 RESULT, back to the
-        # list; an ABI 3 application exited returns to Home and the face resumes.
-        nav = check.wait("idle Home", check.nav, lambda n: n["state"] == "HOME", 10)
+        # REP applications (INJECTED): Home to the list, an ABI 1 RESULT, back
+        # to the list; an ABI 3 application exited returns to Home and the face
+        # resumes.
+        check.wait("idle Home", check.nav, lambda n: n["state"] == "HOME", 10)
         resumes = check.face("STATUS")["counters"][8]
+        check.nav("OPEN")  # INJECTED swipe up: Home to the list
+        nav = check.wait("list from Home", check.nav, lambda n: n["state"] == "LIST" and n["count"] > 0, 10)
         check.nav(f"SELECT {nav['revision']} {args.abi1_app}")
         nav = check.wait("ABI 1 result", check.nav, lambda n: n["state"] in ("RESULT", "ERROR"), 10)
-        ok &= check.record("ABI 1 application from Home", nav["state"] == "RESULT", result=nav["result"])
+        ok &= check.record("ABI 1 application via the list", nav["state"] == "RESULT", result=nav["result"])
         check.nav(f"BACK {nav['request']}")
         nav = check.wait("list", check.nav, lambda n: n["state"] == "LIST", 5)
         hidden = check.face("STATUS")
