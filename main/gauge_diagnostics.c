@@ -51,15 +51,19 @@ void roundie_gauge_command(roundie_board_t *board, const char *line, bool discar
     if (board != NULL) {
         roundie_board_battery_read(board, &battery);
     }
-    char response[512];
+    char response[768];
     int length_out = snprintf(response, sizeof(response),
-        "\n!RG1 %s %d {\"format\":1,\"step\":%u,\"design_mah\":%u,\"dm_full_mah\":%u,\"dm_design_mah\":%u,"
-        "\"battery_flags\":%u,\"operation_flags\":%u,\"state\":%d,\"voltage_mv\":%u,\"soc\":%u,"
-        "\"remaining_mah\":%u,\"full_mah\":%u,\"current_ma\":%d,\"initialized\":%u}\n",
-        id, (int)error, capacity.step, capacity.design_mah, capacity.dm_full_mah, capacity.dm_design_mah,
-        capacity.battery_flags, capacity.operation_flags, (int)battery.state, battery.voltage_mv,
-        battery.soc_percent, battery.remaining_mah, battery.full_mah, battery.current_ma,
-        battery.initialized ? 1U : 0U);
+        "\n!RG1 %s %d {\"format\":2,\"step\":%u,\"written\":%u,\"design_mah\":%u,\"dm_full_mah\":%u,"
+        "\"dm_design_mah\":%u,\"gauging_config\":%u,\"design_voltage_mv\":%u,\"charging_voltage_mv\":%u,"
+        "\"taper_current_ma\":%u,\"near_full_mah\":%u,\"battery_flags\":%u,\"operation_flags\":%u,"
+        "\"state\":%d,\"voltage_mv\":%u,\"soc\":%u,\"remaining_mah\":%u,\"full_mah\":%u,"
+        "\"current_ma\":%d,\"initialized\":%u}\n",
+        id, (int)error, capacity.step, capacity.written ? 1U : 0U, capacity.design_mah,
+        capacity.dm_full_mah, capacity.dm_design_mah, capacity.gauging_config,
+        capacity.design_voltage_mv, capacity.charging_voltage_mv, capacity.taper_current_ma,
+        capacity.near_full_mah, capacity.battery_flags, capacity.operation_flags,
+        (int)battery.state, battery.voltage_mv, battery.soc_percent, battery.remaining_mah,
+        battery.full_mah, battery.current_ma, battery.initialized ? 1U : 0U);
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));
     }

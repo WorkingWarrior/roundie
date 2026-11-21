@@ -592,39 +592,138 @@ JTAG reads of the firmware's sensor sample (0.3.73) showed 4124 mV, 0 mA,
 `RemainingCapacity()` 593 mAh, `FullChargeCapacity()` 3000 mAh,
 `BatteryStatus()` `0x5028` and `OperationStatus()` `0x00A4` (INITCOMP,
 UNSEALED, VDQ clear). The 20% comes from the chip (593/3000): the gauge still
-holds TI's default 3000 mAh profile. The manufacturer gives 600 mAh for the
-cell; that value is not measured here.
+holds TI's default 3000 mAh profile. The fitted cell is not Waveshare's
+500 mAh cell: the owner replaced it with a cell of 600 mAh nominal capacity
+(the cell maker's figure; not measured here).
 
 `!RG1` (`main/gauge_diagnostics.c`, enabled with `CONFIG_ROUNDIE_DEV_POWER`;
-client `tools/roundie_gauge.py`) has two operations:
+client `tools/roundie_gauge.py`, reply format 2) has two operations, both in
+`bq27220_config.c` (board directory, host-testable):
 
-- `STATUS` reads `DesignCapacity()` `0x3C` and the CEDV profile 1 Data Memory
-  block at `0x929D` (Full Charge Capacity, then Design Capacity at
-  `0x929F`, big-endian). It refuses a block whose `MACDataSum()`/`MACDataLen()`
-  it cannot reproduce (checksum: `roundie_gauge_block_checksum`, host test
-  `test_sensor_codec.c`).
-- `CAPACITY <mAh>` (100–6000) follows TRM SLUUBD4A §6.1: Full Access keys,
-  `ENTER_CFG_UPDATE`, one checksummed block write of both values,
-  `EXIT_CFG_UPDATE_REINIT`, readback. It refuses, before any write, a sealed
-  gauge, a missing battery, an incomplete initialization, an open CFGUPDATE,
-  a block that does not match `DesignCapacity()`, and a gauge that does not
-  report FULL ACCESS within 1 s of the keys. The values go to the gauge's
-  RAM; a gauge power-on reset (battery disconnected) restores the OTP
-  defaults. OTP is never programmed.
+- `STATUS` reads `BatteryStatus()`, `OperationStatus()`, `DesignCapacity()`
+  `0x3C` and three Data Memory blocks: `0x929B` (Gauging Configuration, Full
+  Charge Capacity `0x929D`, Design Capacity `0x929F`, Design Voltage
+  `0x92A3`), `0x91FB` (Charging Voltage `0x91FD`, Taper Current `0x9201`) and
+  `0x9268` (Near Full `0x926B`). Each block read selects the address, waits
+  for its echo at `0x3E` and refuses a block whose `MACDataSum()`/
+  `MACDataLen()` it cannot reproduce. No subcommand is sent.
+- `CAPACITY <mAh>` (100–6000) initializes Design Capacity and Full Charge
+  Capacity once (below). It writes nothing when Design Capacity already has
+  the value.
 
-**Device result (firmware 0.3.74 and 0.3.75, one board):** `STATUS`
-reproduced the block checksum and length and read 3000/3000 mAh, matching
-`DesignCapacity()`. `CAPACITY 600` was refused at step `full-access` twice:
-after `0xFFFF 0xFFFF` the SEC bits stayed `10` (UNSEALED), also when polled
-for 1 s. Nothing was written; the gauge kept 3000 mAh and `0x00A4`.
+#### Corrected procedure (2026-11-21)
 
-**Hypothesis:** this unit's Full Access key differs from the TRM procedure's
-`0xFFFF 0xFFFF` (programmed in OTP by the board maker). It is unverified;
-the key is not published for this board. Keys are not guessed.
+The first procedure (0.3.74/0.3.75) sent Full Access keys `0xFFFF 0xFFFF`
+before `ENTER_CFG_UPDATE`. **Device result (0.3.74 and 0.3.75, one board):**
+`STATUS` reproduced the block checksum and length and read 3000/3000 mAh,
+matching `DesignCapacity()`; `CAPACITY 600` stopped at step `full-access`
+twice because SEC stayed `10` (UNSEALED), also when polled for 1 s. Nothing
+was written; the gauge kept 3000 mAh and `0x00A4`. The Full Access
+requirement was wrong:
 
-**Pending:** the board maker's Full Access key, or another
-TI-documented way to Full Access; then `CAPACITY 600`, readback, and a
-charge/discharge cycle to check SoC.
+- **Verified (documentation):** TRM SLUUBD4A §2.2.21: `ENTER_CFG_UPDATE`
+  (`0x0090`) "is only available when the fuel gauge is UNSEALED"; the host
+  reads the CFGUPDATE flag at least 2 s after it. §8.1.4: the gauge leaves
+  CONFIG UPDATE by itself after about 240 s. TRM Table 2-2 marks `0x0090`–
+  `0x0092` as available sealed; this contradicts §2.2.21, and the procedure
+  follows §2.2.21 (refuses SEALED).
+- **Verified (documentation):** TI E2E thread 719878 (answer by a TI
+  engineer): a Data Memory write by address without Full Access, as
+  `ENTER_CFG_UPDATE`; address (little-endian) and data (big-endian) to `0x3E`
+  in one transaction; checksum and length to `0x60`; exit. Checksum is
+  `0xFF` minus the low byte of the sum of address and data bytes; length
+  counts address, data, checksum and length. Example: `0x929F` ← `0F CB`
+  gives `F4 06` (host test `test_bq27220_config.c`). Partial blocks up to 32
+  bytes are allowed.
+- **Decision:** no access keys are sent; the gauge is never sealed, reset
+  (`0x0041`) or written in OTP. The earlier hypothesis of a non-default Full
+  Access key is not pursued: Full Access is not needed, and keys are not
+  guessed.
+
+Sequence (`roundie_bq27220_initialize`; at most about 8 s, system worker,
+task watchdog fed in every delay):
+
+1. Read flags, `DesignCapacity()` and the blocks. Refuse (`INVALID_STATE`,
+   step `precheck`, no subcommand sent) when SEALED, no battery (BATTPRES),
+   INITCOMP clear, CFGUPDATE already set (an earlier procedure was
+   interrupted: it is not resumed) or the target is out of range. Refuse
+   (`INVALID_RESPONSE`) when the block's Design Capacity differs from
+   `DesignCapacity()`, or is neither the target nor the 3000 mAh reset
+   default (a profile nobody here configured).
+2. Design Capacity equal to the target: done, nothing written (the learned
+   Full Charge Capacity is kept).
+3. `ENTER_CFG_UPDATE`; first `OperationStatus()` read 2 s later, then every
+   500 ms (at most two reads per second) until CFGUPDATE, up to 4 s.
+4. One write of `9D 92 hi lo hi lo` to `0x3E` (FCC and Design Capacity =
+   target), then checksum and length 8 to `0x60`.
+5. Read back `0x929B` inside CFGUPDATE. A mismatch leaves with
+   `EXIT_CFG_UPDATE` (`0x0092`, no reinitialization on unconfirmed values).
+6. `EXIT_CFG_UPDATE_REINIT` (`0x0091`); wait for CFGUPDATE clear and INITCOMP
+   set, polls 500 ms apart, up to 3 s.
+7. Read everything again: `DesignCapacity()`, Design Capacity and FCC must
+   equal the target. SoC is not forced: the gauge re-estimates RM and SoC
+   itself after the reinitialization.
+
+On any failure after `ENTER_CFG_UPDATE` the procedure reads
+`OperationStatus()` (2 s after a failed `ENTER_CFG_UPDATE` write, since the
+gauge may have taken it) and sends `EXIT_CFG_UPDATE` only if CFGUPDATE is set.
+The reply's `written` says whether the commit was sent; `step` says where it
+stopped.
+
+Host tests (`tests/test_bq27220.py`, a model of the documented behavior, not
+of the device): UNSEALED and FULL ACCESS success with only `0x0090`/`0x0091`
+sent and every other Data Memory byte unchanged; SEALED, no battery, not
+initialized, open CFGUPDATE, out-of-range target, 500 mAh profile and a
+`DesignCapacity()` mismatch refused with nothing sent; 600 mAh with a learned
+FCC of 575 kept; bad block checksum and a missing address echo; CFGUPDATE
+never or late confirmed; commit not applied; exit never confirmed (reported
+with CFGUPDATE set); one failed I²C transfer at every position, lost or
+applied, leaving Data Memory all-old or all-new and the gauge out of
+CFGUPDATE. The tests found and fixed two faults before any device run: a
+failed `ENTER_CFG_UPDATE` write was followed by a flag read after 0.5 s
+instead of 2 s, and a commit that reported an error was not marked
+`written`.
+
+#### Profile review for the 600 mAh cell
+
+Only Design Capacity and Full Charge Capacity change. TRM §1.1.10: learned
+Full Charge Capacity starts from Design Capacity, so it is set once to 600
+with Design Capacity and then left to learning; a configured gauge is never
+written again. Everything else stays as the gauge holds it:
+
+- **Chemistry and cell characterization** (EMF, C0, R0, T0, R1, TC, C1, fixed
+  EDV0–EDV2, the DOD table): no data for this cell. Waveshare's 500 mAh demo
+  profile describes another cell and TI's defaults a generic one; neither is
+  copied.
+- **Charging Voltage 4200 mV, Design Voltage 3700 mV:** match a common
+  LiCoO₂/LiPo cell; unchanged. **Assumption:** the cell is a 4.2 V cell.
+- **Taper Current (TI default 100 mA):** C/6 for 600 mAh. FC needs current
+  below Taper Current for two 40 s windows; the charger's termination
+  current decides whether FC sets. The charger and its termination current
+  are not documented here. **Pending:** measure the charge current at
+  termination, then decide Taper Current.
+- **Near Full (default 200 mAh), Reserve Capacity, Gauging Configuration:**
+  capacity-related or policy values; unchanged until the device values are
+  read with `STATUS` (this unit's OTP may differ from TI's defaults).
+
+#### Restoring after a gauge reset
+
+The values live in the gauge's RAM: a gauge power-on reset (battery
+disconnected) restores 3000 mAh from OTP. With
+`CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH` (1.85B board Kconfig, default 0 =
+off) the system worker reads `DesignCapacity()` with every 5 s battery sample
+and, when it differs from the setting, runs the procedure once
+(`gauge_restore.c`): only with a present, initialized gauge, no OTA transfer
+in progress and at least 60 s after boot. A failed attempt is not repeated
+until the gauge reported the target or the battery was absent; a gauge at the
+target is never written, so learned FCC survives firmware restarts. The
+procedure itself writes only over the 3000 mAh reset default. OTP is never
+programmed.
+
+**Pending (device, needs approval):** `STATUS` on the board with the new
+firmware; then `CAPACITY 600` once, with the readback of DC, FCC, RM, SoC,
+flags and voltage; then enabling the restore setting at 600 and one battery
+reconnection; then a charge/discharge cycle to check SoC and FCC learning.
 
 ## Manual board checklist
 

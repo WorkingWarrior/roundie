@@ -5,6 +5,7 @@
 
 #include "esp_codec_dev.h"
 #include "esp_err.h"
+#include "roundie_gauge.h"
 #include "roundie_rtc_time.h"
 
 /* Board support boundary (docs/board-support.md). Firmware outside
@@ -82,6 +83,8 @@ typedef struct {
     int32_t temperature_deci_c;
     uint16_t remaining_mah;
     uint16_t full_mah;
+    uint16_t design_mah; /* DesignCapacity(); design_valid when read */
+    bool design_valid;
     uint16_t battery_flags;
     uint16_t operation_flags;
     bool charging;
@@ -173,40 +176,19 @@ esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
 void roundie_board_battery_read(roundie_board_t *board,
                                 roundie_battery_sample_t *sample);
 
-/* Gauge capacity configuration (development; 1.85B BQ27220 CEDV profile 1).
- *   design_mah       DesignCapacity() standard command 0x3C
- *   dm_full_mah      Data Memory Full Charge Capacity 0x929D
- *   dm_design_mah    Data Memory Design Capacity 0x929F
- *   step             the step that failed (ROUNDIE_GAUGE_STEP_*), NONE on success
- * Read only reads; it does not unseal or enter CFGUPDATE. Set writes
- * capacity_mah to both Data Memory values in one checksummed block (TRM
- * SLUUBD4A 6.1) and leaves CFGUPDATE with EXIT_CFG_UPDATE_REINIT; it refuses a
- * sealed gauge, a missing battery, an uninitialized gauge, an open CFGUPDATE,
- * a block that does not match DesignCapacity() and a checksum it cannot
- * reproduce. The write goes to the gauge's RAM: a gauge power-on reset
- * restores the OTP defaults. OTP is never programmed. After Set the gauge stays
- * in FULL ACCESS until its next reset. Bounded: at most about 5 s on the
- * caller's task. Boards without such a gauge return ESP_ERR_NOT_SUPPORTED. */
-enum {
-    ROUNDIE_GAUGE_STEP_NONE = 0,
-    ROUNDIE_GAUGE_STEP_PRECHECK = 1,
-    ROUNDIE_GAUGE_STEP_READ_BLOCK = 2,
-    ROUNDIE_GAUGE_STEP_FULL_ACCESS = 3,
-    ROUNDIE_GAUGE_STEP_ENTER = 4,
-    ROUNDIE_GAUGE_STEP_WRITE = 5,
-    ROUNDIE_GAUGE_STEP_EXIT = 6,
-    ROUNDIE_GAUGE_STEP_VERIFY = 7,
-};
-
-typedef struct {
-    uint16_t design_mah;
-    uint16_t dm_full_mah;
-    uint16_t dm_design_mah;
-    uint16_t battery_flags;
-    uint16_t operation_flags;
-    uint8_t step;
-} roundie_gauge_capacity_t;
-
+/* Gauge capacity configuration (1.85B BQ27220 CEDV profile 1; types in
+ * roundie_gauge.h). Read only reads flags and Data Memory; it sends no
+ * subcommand. Set initializes Design Capacity and Full Charge Capacity to
+ * capacity_mah once: it writes nothing when Design Capacity already equals
+ * capacity_mah (the learned FCC is kept), and writes only over the gauge's
+ * reset default of 3000 mAh. It needs an UNSEALED gauge (no access keys are
+ * sent; the gauge is never sealed or reset), refuses a sealed gauge, a missing
+ * battery, an uninitialized gauge, an open CFGUPDATE and a profile that does
+ * not match DesignCapacity(), verifies the write inside CFGUPDATE and after
+ * EXIT_CFG_UPDATE_REINIT. The write goes to the gauge's RAM: a gauge
+ * power-on reset restores the OTP defaults. OTP is never programmed. Up to
+ * about 7 s; call only from the system worker (its task watchdog is fed).
+ * Boards without such a gauge return ESP_ERR_NOT_SUPPORTED. */
 esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
                                             roundie_gauge_capacity_t *capacity);
 esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,

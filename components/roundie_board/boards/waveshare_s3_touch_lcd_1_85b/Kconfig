@@ -27,4 +27,16 @@ config ROUNDIE_LCD_WRITE_HZ
     default 30000000 if ROUNDIE_LCD_WRITE_30MHZ
     default 40000000 if ROUNDIE_LCD_WRITE_40MHZ
 
+config ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH
+    int "BQ27220 Design Capacity to restore after a gauge reset (mAh, 0 = off)"
+    range 0 6000
+    default 0
+    help
+        The fitted cell's nominal capacity. When the gauge reports its
+        3000 mAh reset default (its RAM was lost with the battery), the
+        system worker initializes Design Capacity and Full Charge Capacity
+        to this value once, in RAM only, with no access keys. A gauge that
+        already reports this value is never written, so the learned FCC is
+        kept. OTP is never programmed. See docs/bringup.md.
+
 endmenu

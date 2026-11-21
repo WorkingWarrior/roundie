@@ -1,7 +1,7 @@
 # The public API (include/) is board-independent; one board implementation
 # under boards/ is compiled, chosen by CONFIG_ROUNDIE_BOARD_DIR. Requirements
 # cannot depend on Kconfig, so they are the union of all boards' needs.
-set(srcs "rtc_time.c")
+set(srcs "gauge_restore.c" "rtc_time.c")
 set(includes "include")
 set(priv_includes "")
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
