@@ -862,6 +862,17 @@ temperature ≥ 45.0 °C; 30 s without a valid sample; the armed time (at most
 does not switch the battery off: the device keeps drawing its light-sleep
 current until USB is connected.
 
+**Battery-only telemetry (`learn-log`).** Every gauge sample (5 s while the
+worker is awake) also goes to a 128-entry RAM ring (about 10 min awake, lost
+on reset): time, voltage, current (`Current()` 0x0C, instantaneous),
+temperature, RM, FCC, OperationStatus, BatteryStatus, hold state, whether
+the hold held its inhibitor, and whether USB Serial/JTAG saw host SOF frames
+(`usb_serial_jtag_is_connected()`). `learn-log` reads it after USB is
+reconnected (RG1 `LEARN LOG n`, 10 entries per reply) and summarizes the
+samples without a USB host, split by hold. The USB flag shows the host link,
+not VBUS: it is evidence of battery operation together with the physical
+unplugging and a negative current, not on its own.
+
 #### Controlled learning cycle (procedure, not yet run)
 
 Prerequisites, each separately approved: OTA of a firmware with this code
@@ -878,17 +889,31 @@ on a non-flammable surface, observed at the start and the end.
    Config A `0x0C8C` / B `0x8C`, Taper 100, Charging Voltage 4200;
    OperationStatus UNSEALED, INITCOMP 1, CFGUPDATE 0. Any other value: NO-GO
    and review (the audit above assumed TI defaults).
-3. Charge complete: on USB until the current stays below 100 mA and FC is set
-   or RM equals FCC; RM ≥ FCC − 20 mAh at the latest. FC never setting is
+3. Charge: on USB until the charge current falls to its termination level;
+   aim for RM close to FCC. FC is **not** a GO condition: with FC_FOR_VDQ 0
+   the gauge does not need FC to qualify a discharge, and FC never setting is
    itself a finding (Taper Current, charger termination), not a reason to
-   force SoC.
-4. Temperature 15–40 °C.
-5. Load measurement (short pre-test): `learn-hold 15`, unplug for 10 min,
-   reconnect, `learn`: |`dsg_small_ma`| ≥ 70 mA (57 mA required at EDV2 plus
-   margin for the falling current at lower voltage). Below that: NO-GO, the
-   load has to be raised first (for example brightness 100 %, a test load
-   screen) and measured again. Reconnecting aborts that discharge (`charge`);
-   recharge to step 3.
+   force SoC. A start at lower RM still qualifies but leaves more of FCC to
+   the gauge's own RM estimate (DCR starts at FCC − RM).
+4. Temperature 15–40 °C (Learning Low Temp is 11.9 °C).
+5. Load measurement on battery only: a short `learn-hold`, USB unplugged,
+   then `learn-log` after reconnecting. Only samples with the USB flag 0
+   count; a reading taken on USB power is not evidence of the battery
+   current. Required: every held battery-only sample ≥ 70 mA (57 mA needed at
+   EDV2 plus margin for the falling current at lower voltage). Below that:
+   NO-GO, the load has to be raised first (for example brightness 100 %, a
+   test load screen) and measured again. Reconnecting USB disqualifies a
+   running discharge (`charge`).
+
+**The key evidence that a discharge qualifies is VDQ itself**, not FC:
+after unplugging, `learn-log`/`learn` must show OperationStatus VDQ (`op`
+bit `0x0010`) set and phase `qualified`. VDQ sets only when the discharge
+starts with RM ≥ FCC − Near Full (400 mAh with Near Full 200 and FCC 600).
+It then stays valid only while TI's conditions hold (TRM §1.1.3): no charge
+of 10 mAh or more, temperature above Learning Low Temp, estimated
+self-discharge ≤ 256 mAh, voltage not below EDV2 − 256 mV, and at EDV2 a
+discharge current of at least 3C/32 (57 mA) and below OverLoad (1500 mA).
+VDQ not set within one minute of unplugging: stop, reconnect, NO-GO.
 
 **Cycle.** `learn-hold 600` (10 h), check `hold` `running` and `inhibitor` 1,
 unplug USB. Expected duration: about 5–7 h if the awake current is 80–120 mA
