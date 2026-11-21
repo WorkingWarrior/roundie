@@ -720,10 +720,30 @@ target is never written, so learned FCC survives firmware restarts. The
 procedure itself writes only over the 3000 mAh reset default. OTP is never
 programmed.
 
-**Pending (device, needs approval):** `STATUS` on the board with the new
-firmware; then `CAPACITY 600` once, with the readback of DC, FCC, RM, SoC,
-flags and voltage; then enabling the restore setting at 600 and one battery
-reconnection; then a charge/discharge cycle to check SoC and FCC learning.
+**Device result (2026-11-21, firmware 0.3.76, one board, battery on USB):**
+OTA to `ota_1` PASS (preflight PASS, unexpected resets 0); 0.3.75 stayed
+VALID in `ota_0` as the rollback image. The restore setting was 0 (off).
+`STATUS` before the write: OperationStatus `0x00A4` (SEC `10` UNSEALED,
+INITCOMP 1, CFGUPDATE 0), BatteryStatus `0x5028` (BATTPRES), Design Capacity
+3000 in `0x3C` and Data Memory, FCC 3000, Gauging Configuration `0x102A`,
+Design Voltage 3700 mV, Charging Voltage 4200 mV, Taper Current 100 mA, Near
+Full 200 mAh (the TI defaults), RM 593 mAh, SoC 20%, 4124 mV, 0 mA. One
+`CAPACITY 600` (no access keys) returned OK at step `none` with
+`written` 1 in about 3 s: the readback inside CFGUPDATE and after
+`EXIT_CFG_UPDATE_REINIT` matched. After it: Design Capacity 600 in `0x3C`
+and Data Memory, FCC 600, RM 577 mAh, SoC 97%, 4124 mV, 0 mA, BatteryStatus
+`0x5028`, OperationStatus `0x00A4` (CFGUPDATE 0, INITCOMP 1); the other
+profile values were unchanged. BootGuard: safe 0, failures 0, no latch; OTA
+state VALID, `passed` 1. MCU uptime showed no reset after the write.
+
+The SoC is the gauge's own estimate after reinitialization (RM from the
+open-circuit voltage); it was not forced. 97% at 4124 mV with no current is
+plausible for a 4.2 V cell resting after charge termination, but SoC
+accuracy is not verified: the chemistry and EDV values are TI's generic ones.
+
+**Pending:** enabling the restore setting at 600 and one battery
+reconnection; a charge/discharge cycle to check SoC, FC detection (Taper
+Current) and FCC learning. Each needs approval.
 
 ## Manual board checklist
 
