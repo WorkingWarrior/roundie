@@ -810,3 +810,20 @@ void roundie_board_battery_read(roundie_board_t *board,
     sample->soc_valid = board_pmic_percent_valid(percent);
     sample->observed_us = esp_timer_get_time();
 }
+
+esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
+                                            roundie_gauge_capacity_t *capacity)
+{
+    (void)board;
+    if (capacity != NULL) {
+        memset(capacity, 0, sizeof(*capacity));
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
+                                           roundie_gauge_capacity_t *capacity)
+{
+    (void)capacity_mah;
+    return roundie_board_gauge_capacity_read(board, capacity);
+}

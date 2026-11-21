@@ -172,3 +172,42 @@ esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
                                         const roundie_rtc_time_t *time);
 void roundie_board_battery_read(roundie_board_t *board,
                                 roundie_battery_sample_t *sample);
+
+/* Gauge capacity configuration (development; 1.85B BQ27220 CEDV profile 1).
+ *   design_mah       DesignCapacity() standard command 0x3C
+ *   dm_full_mah      Data Memory Full Charge Capacity 0x929D
+ *   dm_design_mah    Data Memory Design Capacity 0x929F
+ *   step             the step that failed (ROUNDIE_GAUGE_STEP_*), NONE on success
+ * Read only reads; it does not unseal or enter CFGUPDATE. Set writes
+ * capacity_mah to both Data Memory values in one checksummed block (TRM
+ * SLUUBD4A 6.1) and leaves CFGUPDATE with EXIT_CFG_UPDATE_REINIT; it refuses a
+ * sealed gauge, a missing battery, an uninitialized gauge, an open CFGUPDATE,
+ * a block that does not match DesignCapacity() and a checksum it cannot
+ * reproduce. The write goes to the gauge's RAM: a gauge power-on reset
+ * restores the OTP defaults. OTP is never programmed. After Set the gauge stays
+ * in FULL ACCESS until its next reset. Bounded: at most about 5 s on the
+ * caller's task. Boards without such a gauge return ESP_ERR_NOT_SUPPORTED. */
+enum {
+    ROUNDIE_GAUGE_STEP_NONE = 0,
+    ROUNDIE_GAUGE_STEP_PRECHECK = 1,
+    ROUNDIE_GAUGE_STEP_READ_BLOCK = 2,
+    ROUNDIE_GAUGE_STEP_FULL_ACCESS = 3,
+    ROUNDIE_GAUGE_STEP_ENTER = 4,
+    ROUNDIE_GAUGE_STEP_WRITE = 5,
+    ROUNDIE_GAUGE_STEP_EXIT = 6,
+    ROUNDIE_GAUGE_STEP_VERIFY = 7,
+};
+
+typedef struct {
+    uint16_t design_mah;
+    uint16_t dm_full_mah;
+    uint16_t dm_design_mah;
+    uint16_t battery_flags;
+    uint16_t operation_flags;
+    uint8_t step;
+} roundie_gauge_capacity_t;
+
+esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
+                                            roundie_gauge_capacity_t *capacity);
+esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
+                                           roundie_gauge_capacity_t *capacity);

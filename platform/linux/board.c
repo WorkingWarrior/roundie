@@ -110,3 +110,20 @@ bool roundie_board_wake_source_active(roundie_board_t *target)
 {
     return atomic_load(&target->boot) || atomic_load(&target->touched);
 }
+
+esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
+                                            roundie_gauge_capacity_t *capacity)
+{
+    (void)board;
+    if (capacity != NULL) {
+        memset(capacity, 0, sizeof(*capacity));
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
+                                           roundie_gauge_capacity_t *capacity)
+{
+    (void)capacity_mah;
+    return roundie_board_gauge_capacity_read(board, capacity);
+}

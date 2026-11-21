@@ -585,6 +585,47 @@ labels; repeated unplug/replug and transient I²C fault recovery; and a
 longer GUI-responsiveness run. These short serial captures do not close
 Milestone 1's ten-cold-start, manual-recovery, or 30-minute interaction gate.
 
+### Gauge capacity (development command RG1)
+
+On 2026-11-21 the 1.85B gauge reported a steady SoC of 20% while on USB.
+JTAG reads of the firmware's sensor sample (0.3.73) showed 4124 mV, 0 mA,
+`RemainingCapacity()` 593 mAh, `FullChargeCapacity()` 3000 mAh,
+`BatteryStatus()` `0x5028` and `OperationStatus()` `0x00A4` (INITCOMP,
+UNSEALED, VDQ clear). The 20% comes from the chip (593/3000): the gauge still
+holds TI's default 3000 mAh profile. The manufacturer gives 600 mAh for the
+cell; that value is not measured here.
+
+`!RG1` (`main/gauge_diagnostics.c`, enabled with `CONFIG_ROUNDIE_DEV_POWER`;
+client `tools/roundie_gauge.py`) has two operations:
+
+- `STATUS` reads `DesignCapacity()` `0x3C` and the CEDV profile 1 Data Memory
+  block at `0x929D` (Full Charge Capacity, then Design Capacity at
+  `0x929F`, big-endian). It refuses a block whose `MACDataSum()`/`MACDataLen()`
+  it cannot reproduce (checksum: `roundie_gauge_block_checksum`, host test
+  `test_sensor_codec.c`).
+- `CAPACITY <mAh>` (100–6000) follows TRM SLUUBD4A §6.1: Full Access keys,
+  `ENTER_CFG_UPDATE`, one checksummed block write of both values,
+  `EXIT_CFG_UPDATE_REINIT`, readback. It refuses, before any write, a sealed
+  gauge, a missing battery, an incomplete initialization, an open CFGUPDATE,
+  a block that does not match `DesignCapacity()`, and a gauge that does not
+  report FULL ACCESS within 1 s of the keys. The values go to the gauge's
+  RAM; a gauge power-on reset (battery disconnected) restores the OTP
+  defaults. OTP is never programmed.
+
+**Device result (firmware 0.3.74 and 0.3.75, one board):** `STATUS`
+reproduced the block checksum and length and read 3000/3000 mAh, matching
+`DesignCapacity()`. `CAPACITY 600` was refused at step `full-access` twice:
+after `0xFFFF 0xFFFF` the SEC bits stayed `10` (UNSEALED), also when polled
+for 1 s. Nothing was written; the gauge kept 3000 mAh and `0x00A4`.
+
+**Hypothesis:** this unit's Full Access key differs from the TRM procedure's
+`0xFFFF 0xFFFF` (programmed in OTP by the board maker). It is unverified;
+the key is not published for this board. Keys are not guessed.
+
+**Pending:** the board maker's Full Access key, or another
+TI-documented way to Full Access; then `CAPACITY 600`, readback, and a
+charge/discharge cycle to check SoC.
+
 ## Manual board checklist
 
 Run these only on an identified 1.85B unit after flashing is separately

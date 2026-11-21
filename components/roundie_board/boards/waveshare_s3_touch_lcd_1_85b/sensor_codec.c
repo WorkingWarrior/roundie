@@ -73,3 +73,13 @@ int32_t roundie_gauge_deci_c(uint16_t raw)
 {
     return (int32_t)raw - 2732; /* 0.1 K to 0.1 C, rounded at 0 C */
 }
+
+uint8_t roundie_gauge_block_checksum(uint16_t address, const uint8_t *data,
+                                     size_t length)
+{
+    uint32_t sum = (uint32_t)(address & 0xff) + (uint32_t)(address >> 8);
+    for (size_t i = 0; i < length; i++) {
+        sum += data[i];
+    }
+    return (uint8_t)(255U - (sum & 0xffU));
+}

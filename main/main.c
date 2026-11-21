@@ -42,6 +42,7 @@
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #include "power_manager.h"
+#include "gauge_diagnostics.h"
 #include "roundie_storage_mode.h"
 #include "roundie_elf_crash.h"
 #include "storage_mode_screen.h"
@@ -312,6 +313,10 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
 #if CONFIG_ROUNDIE_DEV_POWER
                 if (strncmp(frame->line, "!RW1 ", 5) == 0) {
                     roundie_power_command(frame->line, frame->discard);
+                } else
+                if (strncmp(frame->line, "!RG1 ", 5) == 0) {
+                    roundie_gauge_command(shared->board_ready ? shared->board : NULL,
+                                          frame->line, frame->discard);
                 } else
 #endif
 #if CONFIG_ROUNDIE_DEV_OTA

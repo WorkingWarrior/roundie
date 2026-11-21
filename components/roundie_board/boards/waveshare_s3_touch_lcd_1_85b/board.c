@@ -966,3 +966,252 @@ void roundie_board_battery_read(roundie_board_t *board,
     }
     sample->observed_us = esp_timer_get_time();
 }
+
+/* BQ27220 Data Memory access (TRM SLUUBD4A 2.29-2.31 and 6.1). The 32-byte
+ * MAC block read at 0x929D holds Full Charge Capacity (bytes 0-1) followed by
+ * Design Capacity (bytes 2-3) of CEDV profile 1, both big-endian. */
+#define GAUGE_CMD_CONTROL 0x00
+#define GAUGE_CMD_BATTERY_STATUS 0x0a
+#define GAUGE_CMD_OPERATION_STATUS 0x3a
+#define GAUGE_CMD_DESIGN_CAPACITY 0x3c
+#define GAUGE_CMD_MAC 0x3e
+#define GAUGE_CMD_MAC_DATA 0x40
+#define GAUGE_CMD_MAC_SUM 0x60
+#define GAUGE_BLOCK_SIZE 32
+#define GAUGE_BLOCK_LENGTH (2 + GAUGE_BLOCK_SIZE + 2) /* address, data, sum, length */
+#define GAUGE_DM_FULL_CHARGE 0x929d
+#define GAUGE_SUBCMD_FULL_ACCESS_KEY 0xffff
+#define GAUGE_SUBCMD_ENTER_CFG_UPDATE 0x0090
+#define GAUGE_SUBCMD_EXIT_CFG_UPDATE_REINIT 0x0091
+#define GAUGE_SUBCMD_EXIT_CFG_UPDATE 0x0092
+#define GAUGE_BATTERY_PRESENT 0x0008
+#define GAUGE_OP_CFGUPDATE 0x0400
+#define GAUGE_OP_INITCOMP 0x0020
+#define GAUGE_OP_SECURITY_MASK 0x0006
+#define GAUGE_OP_SECURITY_SEALED 0x0006
+#define GAUGE_OP_SECURITY_FULL_ACCESS 0x0002
+#define GAUGE_CAPACITY_MIN_MAH 100
+#define GAUGE_CAPACITY_MAX_MAH 6000
+#define GAUGE_COMMAND_DELAY_MS 10
+#define GAUGE_CFG_TIMEOUT_MS 2000
+#define GAUGE_CFG_POLL_MS 50
+
+static esp_err_t gauge_write(roundie_board_t *board, uint8_t command,
+                             const uint8_t *data, size_t length)
+{
+    uint8_t raw[1 + 4];
+    if (length > sizeof(raw) - 1) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    raw[0] = command;
+    memcpy(&raw[1], data, length);
+    return i2c_master_transmit(board->gauge, raw, 1 + length, I2C_TIMEOUT_MS);
+}
+
+static esp_err_t gauge_control(roundie_board_t *board, uint16_t subcommand)
+{
+    const uint8_t data[2] = {(uint8_t)(subcommand & 0xff), (uint8_t)(subcommand >> 8)};
+    esp_err_t error = gauge_write(board, GAUGE_CMD_CONTROL, data, sizeof(data));
+    vTaskDelay(pdMS_TO_TICKS(GAUGE_COMMAND_DELAY_MS));
+    return error;
+}
+
+/* Selects the block, reads it and checks MACDataSum/MACDataLen against it. */
+static esp_err_t gauge_read_block(roundie_board_t *board, uint16_t address,
+                                  uint8_t block[GAUGE_BLOCK_SIZE])
+{
+    const uint8_t select[2] = {(uint8_t)(address & 0xff), (uint8_t)(address >> 8)};
+    esp_err_t error = gauge_write(board, GAUGE_CMD_MAC, select, sizeof(select));
+    if (error != ESP_OK) {
+        return error;
+    }
+    vTaskDelay(pdMS_TO_TICKS(GAUGE_COMMAND_DELAY_MS));
+    error = read_register(board->gauge, GAUGE_CMD_MAC_DATA, block, GAUGE_BLOCK_SIZE);
+    if (error != ESP_OK) {
+        return error;
+    }
+    uint8_t trailer[2];
+    error = read_register(board->gauge, GAUGE_CMD_MAC_SUM, trailer, sizeof(trailer));
+    if (error != ESP_OK) {
+        return error;
+    }
+    if (trailer[1] != GAUGE_BLOCK_LENGTH ||
+        trailer[0] != roundie_gauge_block_checksum(address, block, GAUGE_BLOCK_SIZE)) {
+        ESP_LOGW(TAG, "Gauge block 0x%04x: sum 0x%02x length %u not reproduced",
+                 address, trailer[0], trailer[1]);
+        return ESP_ERR_INVALID_CRC;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t gauge_wait_cfgupdate(roundie_board_t *board, bool expected)
+{
+    for (int waited = 0; waited <= GAUGE_CFG_TIMEOUT_MS; waited += GAUGE_CFG_POLL_MS) {
+        uint16_t operation;
+        esp_err_t error = gauge_read_word(board, GAUGE_CMD_OPERATION_STATUS, &operation);
+        if (error == ESP_OK && ((operation & GAUGE_OP_CFGUPDATE) != 0) == expected) {
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(GAUGE_CFG_POLL_MS));
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
+static uint16_t big_endian_word(const uint8_t raw[2])
+{
+    return (uint16_t)(((uint16_t)raw[0] << 8) | raw[1]);
+}
+
+esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
+                                            roundie_gauge_capacity_t *capacity)
+{
+    if (capacity == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(capacity, 0, sizeof(*capacity));
+    capacity->step = ROUNDIE_GAUGE_STEP_PRECHECK;
+    if (board == NULL || board->gauge == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    esp_err_t error = gauge_read_word(board, GAUGE_CMD_BATTERY_STATUS, &capacity->battery_flags);
+    if (error == ESP_OK) {
+        error = gauge_read_word(board, GAUGE_CMD_OPERATION_STATUS, &capacity->operation_flags);
+    }
+    if (error == ESP_OK) {
+        error = gauge_read_word(board, GAUGE_CMD_DESIGN_CAPACITY, &capacity->design_mah);
+    }
+    if (error != ESP_OK) {
+        return error;
+    }
+    capacity->step = ROUNDIE_GAUGE_STEP_READ_BLOCK;
+    uint8_t block[GAUGE_BLOCK_SIZE];
+    error = gauge_read_block(board, GAUGE_DM_FULL_CHARGE, block);
+    if (error != ESP_OK) {
+        return error;
+    }
+    capacity->dm_full_mah = big_endian_word(&block[0]);
+    capacity->dm_design_mah = big_endian_word(&block[2]);
+    capacity->step = ROUNDIE_GAUGE_STEP_NONE;
+    return ESP_OK;
+}
+
+/* Inside CFGUPDATE: rewrites the selected block's first four bytes, then
+ * commits it with the checksum and length of the whole block. */
+static esp_err_t gauge_write_capacity(roundie_board_t *board, uint16_t capacity_mah)
+{
+    uint8_t block[GAUGE_BLOCK_SIZE];
+    esp_err_t error = gauge_read_block(board, GAUGE_DM_FULL_CHARGE, block);
+    if (error != ESP_OK) {
+        return error;
+    }
+    const uint8_t value[4] = {
+        (uint8_t)(capacity_mah >> 8), (uint8_t)(capacity_mah & 0xff),
+        (uint8_t)(capacity_mah >> 8), (uint8_t)(capacity_mah & 0xff),
+    };
+    memcpy(block, value, sizeof(value));
+    error = gauge_write(board, GAUGE_CMD_MAC_DATA, value, sizeof(value));
+    if (error != ESP_OK) {
+        return error;
+    }
+    const uint8_t trailer[2] = {
+        roundie_gauge_block_checksum(GAUGE_DM_FULL_CHARGE, block, GAUGE_BLOCK_SIZE),
+        GAUGE_BLOCK_LENGTH,
+    };
+    error = gauge_write(board, GAUGE_CMD_MAC_SUM, trailer, sizeof(trailer));
+    vTaskDelay(pdMS_TO_TICKS(GAUGE_COMMAND_DELAY_MS));
+    return error;
+}
+
+esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
+                                           roundie_gauge_capacity_t *capacity)
+{
+    if (capacity == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = roundie_board_gauge_capacity_read(board, capacity);
+    if (error != ESP_OK) {
+        return error;
+    }
+    capacity->step = ROUNDIE_GAUGE_STEP_PRECHECK;
+    if (capacity_mah < GAUGE_CAPACITY_MIN_MAH || capacity_mah > GAUGE_CAPACITY_MAX_MAH) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((capacity->operation_flags & GAUGE_OP_SECURITY_MASK) == GAUGE_OP_SECURITY_SEALED ||
+        (capacity->battery_flags & GAUGE_BATTERY_PRESENT) == 0 ||
+        (capacity->operation_flags & GAUGE_OP_INITCOMP) == 0 ||
+        (capacity->operation_flags & GAUGE_OP_CFGUPDATE) != 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (capacity->dm_design_mah != capacity->design_mah) {
+        /* The block is not the active profile's: write nothing. */
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (capacity->dm_full_mah == capacity_mah && capacity->dm_design_mah == capacity_mah) {
+        capacity->step = ROUNDIE_GAUGE_STEP_NONE;
+        return ESP_OK;
+    }
+
+    capacity->step = ROUNDIE_GAUGE_STEP_FULL_ACCESS;
+    error = gauge_control(board, GAUGE_SUBCMD_FULL_ACCESS_KEY);
+    if (error == ESP_OK) {
+        error = gauge_control(board, GAUGE_SUBCMD_FULL_ACCESS_KEY);
+    }
+    /* SEC may follow the keys with a delay; the flags read last are reported. */
+    bool full_access = false;
+    for (int waited = 0; error == ESP_OK && !full_access && waited <= GAUGE_CFG_TIMEOUT_MS / 2;
+         waited += GAUGE_CFG_POLL_MS) {
+        error = gauge_read_word(board, GAUGE_CMD_OPERATION_STATUS, &capacity->operation_flags);
+        full_access = (capacity->operation_flags & GAUGE_OP_SECURITY_MASK) == GAUGE_OP_SECURITY_FULL_ACCESS;
+        if (!full_access) {
+            vTaskDelay(pdMS_TO_TICKS(GAUGE_CFG_POLL_MS));
+        }
+    }
+    if (error != ESP_OK) {
+        return error;
+    }
+    if (!full_access) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    capacity->step = ROUNDIE_GAUGE_STEP_ENTER;
+    error = gauge_control(board, GAUGE_SUBCMD_ENTER_CFG_UPDATE);
+    if (error == ESP_OK) {
+        error = gauge_wait_cfgupdate(board, true);
+    }
+    if (error == ESP_OK) {
+        capacity->step = ROUNDIE_GAUGE_STEP_WRITE;
+        error = gauge_write_capacity(board, capacity_mah);
+    }
+    if (error != ESP_OK) {
+        /* Nothing is committed without the block checksum: leave without REINIT. */
+        ESP_LOGE(TAG, "Gauge capacity step %u: %s", capacity->step, esp_err_to_name(error));
+        if (gauge_control(board, GAUGE_SUBCMD_EXIT_CFG_UPDATE) != ESP_OK ||
+            gauge_wait_cfgupdate(board, false) != ESP_OK) {
+            ESP_LOGE(TAG, "Gauge did not leave CFGUPDATE");
+        }
+        return error;
+    }
+
+    capacity->step = ROUNDIE_GAUGE_STEP_EXIT;
+    error = gauge_control(board, GAUGE_SUBCMD_EXIT_CFG_UPDATE_REINIT);
+    if (error == ESP_OK) {
+        error = gauge_wait_cfgupdate(board, false);
+    }
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "Gauge EXIT_CFG_UPDATE_REINIT: %s", esp_err_to_name(error));
+        return error;
+    }
+
+    error = roundie_board_gauge_capacity_read(board, capacity);
+    if (error != ESP_OK) {
+        capacity->step = ROUNDIE_GAUGE_STEP_VERIFY;
+        return error;
+    }
+    if (capacity->dm_full_mah != capacity_mah || capacity->dm_design_mah != capacity_mah ||
+        capacity->design_mah != capacity_mah) {
+        capacity->step = ROUNDIE_GAUGE_STEP_VERIFY;
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    ESP_LOGI(TAG, "Gauge capacity %u mAh (RAM; lost at gauge power-on reset)", capacity_mah);
+    return ESP_OK;
+}

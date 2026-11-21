@@ -42,6 +42,17 @@ static void test_gauge(void)
     assert(roundie_gauge_current(0xff85) == -123);
     assert(roundie_gauge_current(123) == 123);
     assert(roundie_gauge_deci_c(2982) == 250);
+
+    /* 0x9f + 0x92 + 0x04 + 0xb0 = 485; 485 mod 256 = 229; 255 - 229 = 26. */
+    uint8_t block[32] = {0x04, 0xb0};
+    assert(roundie_gauge_block_checksum(0x929f, block, sizeof(block)) == 26);
+    /* Replacement method (TRM 6.1): new = 255 - ((255 - old - removed + added) mod 256). */
+    uint8_t old_sum = roundie_gauge_block_checksum(0x929d, block, sizeof(block));
+    block[0] = 0x02;
+    block[1] = 0x58;
+    uint8_t expected = (uint8_t)(255 - ((255 - old_sum - 0x04 - 0xb0 + 0x02 + 0x58) & 0xff));
+    assert(roundie_gauge_block_checksum(0x929d, block, sizeof(block)) == expected);
+    assert(roundie_gauge_block_checksum(0x0000, block, 0) == 255);
 }
 
 static void test_utc_conversion(void)
