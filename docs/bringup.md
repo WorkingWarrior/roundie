@@ -885,7 +885,7 @@ samples without a USB host, split by hold. The USB flag shows the host link,
 not VBUS: it is evidence of battery operation together with the physical
 unplugging and a negative current, not on its own.
 
-#### Controlled learning cycle (procedure, not yet run)
+#### Controlled learning cycle (procedure; first cycle run 2026-11-22)
 
 Prerequisites, each separately approved: OTA of a firmware with this code
 (and, for keeping the result across a battery disconnection, the restore
@@ -1113,6 +1113,57 @@ an hour (±1 mAh then gives about ±1 mA). **PENDING (host-tested only):**
 reconnecting USB while the simulation is running (`test-usb`) and the
 no-resume rule on the device; in this run USB was reconnected after
 `test-end`.
+
+**First real learning cycle (2026-11-22, 0.3.79-dev, one board, attended).**
+Clean start: the VDQ left from the 0.3.79-dev battery test was cleared by a
+20 min discharge and a recharge of more than 10 mAh (tracker `aborted`/
+`charge`); the charger then stopped at about 160 mA and 4.21 V (FC not set,
+as before). Preflight at 09:22: 0.3.79-dev VALID in `ota_0`, 0.3.78-dev VALID
+in `ota_1`, BootGuard safe 0 and failures 0, no MCU reset since the previous
+day, VDQ 0, RM 597/600, FCC and Design Capacity 600 in the registers and Data
+Memory, the profile of the audit table unchanged, 25.3 °C, `written` 0, no
+NVS record. `screen-on`, `learn-hold 600`: hold `running`, inhibitor 1,
+PowerManager ACTIVE, `test` 0. USB unplugged between 09:22:34 and 09:25:27.
+VDQ could not be read right after unplugging (the only link is USB, and
+reconnecting would disqualify the discharge); the tracker's records below
+show the qualification.
+
+| Item | Result |
+|---|---|
+| Qualification | tracker `qualified` from RM 597, FCC 600; VDQ (`op` 0x00F4) still set in the last sample before EDV2 |
+| Discharge | 2417 awake samples, `Current()` −51 … −118 mA, mean −107 mA; RM 597 → 225 before EDV2 (about 3 h 20 min) |
+| EDV2 | about 12:44: 3624 mV, −115 mA (≥ 3C/32 = 57 mA), 27.0 °C; `edv2_qualified` 1 |
+| Learning result | `updated`, cause `none`: FCC 600 → **472 mAh** (−128, within the TRM's −256 limit and within 300–750); RM rescaled from 225 to 33 (7 % of 472) in the same sample |
+| Gauge after | FullChargeCapacity 472, Data Memory FCC 472 (written by the gauge itself, firmware `written` 0), Design Capacity 600 in `0x3C` and Data Memory |
+| NVS | `stored` 1, Learned FCC 472, sequence 1, saves 1 |
+| Hold | `done`, `learned` 1, `hold_result` `updated`, no safety stop; load released at EDV2 |
+| Protection | 6 timed light sleeps accepted after the end (14 requests; requests while the end screen was on are not accepted), `sleep_error` 0; cleared by the charging sample after reconnecting USB about 7 min after EDV2 (RM 31, 3634 mV) |
+| System | no MCU reset (tracker `resumed` 0, BootGuard counters unchanged, safe 0, failures 0), OTA VALID with the rollback VALID |
+
+Findings:
+
+- **No near-end warning.** EDV2 arrived at RM 225 of the old FCC 600 (37 %)
+  and 3624 mV, so neither warning condition (RM ≤ 15 % or ≤ 3550 mV) was met
+  before the end; the "Koniec testu baterii" screen came without the earlier
+  alert. The warning depends on the RM estimate and was wrong for an
+  unlearned FCC. With FCC 472 it is expected to work in the next cycle
+  (hypothesis, not tested).
+- **Learned value against the coulomb count (open).** The RM drop
+  597 → 225 (372 mAh) agrees with the sampled current (about 107–113 mA over
+  3 h 20 min). TRM §1.1.3 as summarized above (FCC = DCR + FCC × Battery
+  Low %) gives about 375 + 42 ≈ 417 mAh, not 472. The gauge may apply
+  further terms (for example DOD at EDV2 or its EDV compensation) that the
+  TRM table does not document. The gauge's result is the verified value; the
+  difference is not explained.
+- The learned FCC is relative to the EDV2 of TI's generic CEDV coefficients
+  (assumption, finding 2 of the audit), not to a cell-specific end voltage.
+- `learn-log`'s `mean_ma_from_rm` is meaningless across the FCC update (the
+  gauge rescales RM); use the tracker's discharge statistics instead.
+- **PENDING:** restoring the learned FCC from NVS after a battery
+  disconnection (separate approval), and the near-end warning with the
+  learned FCC.
+
+Result: **PASS** for the first supervised learning cycle of the 600 mAh cell.
 
 ## Manual board checklist
 
