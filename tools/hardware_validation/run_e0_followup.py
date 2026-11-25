@@ -112,6 +112,13 @@ def classify_cycles(baseline, after_each):
     return result
 
 
+def longest_gap(traces):
+    """Longest time between consecutive retained GUI iterations (µs)."""
+    times = [t["at_us"] for t in traces]
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    return max(gaps) if gaps else None
+
+
 def frame_stats(traces):
     """Period between flushing GUI iterations and their handler/render times (µs)."""
     flushing = [t for t in traces if t["flushes"] > 0]
@@ -252,6 +259,10 @@ class FollowupRunner(e0.Runner):
         stacks.append(("after bench on running stopwatch", self.call("safe", "HEALTH")["stacks"]["main"]))
         self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))
         self.call("ui", e0.semantic_operation("PRESS", generation, roles, "lap"))
+        # Let the lap event finish before EXIT: STOP closes UI admission at once
+        # (components/roundie_elf/manager.c:854), and a callback still running
+        # then has ui_update rejected (stopwatch -24, launcher RESULT).
+        self.settle(1.0)
         self.close_stopwatch(generation)
         self.open_list()
         benches.append(self.bench_with_traces("launcher list"))
@@ -311,14 +322,17 @@ class FollowupRunner(e0.Runner):
                 timing, lines = self.device.session(lambda port: timed_pair(
                     port, ("!RP1", "FSBENCH READ 1024"), ("!RS1", "STATUS"), 0.02))
                 ui_after = self.call("ui")
-                _, traces = self.perf_traces(perf["latest"])
+                # From the last iteration before READ, so the first gap spans it.
+                _, traces = self.perf_traces(max(perf["latest"] - 1, 0))
                 read = json.loads(lines[0].split(b" ", 3)[3])
                 code = int(lines[0].split(b" ", 3)[2])
                 if code != 0 or read["sha256"] != expected:
                     problems.append(f"READ 1024 code {code} or SHA-256 mismatch")
                 pairs.append({"timing": timing, "read_total_us": read["total_us"], "read_us": read["read_us"],
                               "sha_us": read["sha_us"], "chunk_max_us": read["chunk_max_us"],
-                              "frames": frame_stats(traces), "label_updates": ui_after["applied"] - ui_before["applied"]})
+                              "frames": frame_stats(traces), "longest_gui_gap_us": longest_gap(traces),
+                              "iterations_at_us": [t["at_us"] for t in traces],
+                              "label_updates": ui_after["applied"] - ui_before["applied"]})
                 self.settle(1.0)
             details["with_fsbench"] = pairs
             self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))

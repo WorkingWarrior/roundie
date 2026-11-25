@@ -56,6 +56,10 @@ class FrameStatsTest(unittest.TestCase):
         self.assertEqual(stats["period_us"], {"max": 200, "mean": 150.0})
         self.assertEqual(stats["handler_us"]["max"], 30)
 
+    def test_longest_gap(self):
+        self.assertEqual(followup.longest_gap([trace(0), trace(100), trace(350)]), 250)
+        self.assertIsNone(followup.longest_gap([trace(0)]))
+
 
 class PairPort:
     """Answers the second command first, as a busy worker never would; the
