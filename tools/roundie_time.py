@@ -14,6 +14,7 @@ TOLERANCE_SECONDS = 3.0
 # ROUNDIE_SENSOR_NOT_FOUND with result OK: the board has no external RTC and
 # the system clock alone carries the synchronized time.
 NO_RTC = 1
+ESP_ERR_NOT_FOUND = 0x105
 MAX_REPLY = 256
 REPLY = re.compile(
     rb"!RT1 ([0-9a-f]{8}) ([A-Z_]+) state=([0-6]) os=(-1|0|1) "
@@ -201,7 +202,13 @@ def restart_verify(path):
         try:
             with open_serial(path) as port:
                 after = request(port, "GET", timeout=1.0)
-                require_valid(after)
+            if (after.get("code") == "RTC_READ" and after.get("state") == NO_RTC and
+                    after.get("error") == ESP_ERR_NOT_FOUND):
+                # Early boot: the board is not published yet (wall_clock.c
+                # answers NOT_FOUND without touching state). Ask again.
+                last_error = "board not yet published after restart (RTC_READ, NOT_FOUND)"
+                continue
+            require_valid(after)
             elapsed = time.monotonic() - started
             advance = reference(after) - reference(before)
             if advance < 1 or abs(advance - elapsed) > 2:
