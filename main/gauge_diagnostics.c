@@ -116,6 +116,30 @@ static bool learn_command(const char *id, const char *operation, bool board_read
 }
 #endif
 
+/* BATTERY (E0, both boards): the board identity and the battery state as the
+ * board's gauge (1.85B BQ27220) or PMIC (1.75C AXP2101) reports it. This is the
+ * chip's state, not a current measurement. display is the panel in pixels; the
+ * UI canvas is 360 x 360 and is shown upscaled on a larger panel. */
+static void battery_reply(roundie_board_t *board, const char *id)
+{
+    roundie_battery_sample_t battery = {0};
+    roundie_board_battery_read(board, &battery);
+    char response[512];
+    int length = snprintf(response, sizeof(response),
+        "\n!RG1 %s 0 {\"format\":1,\"board\":\"%s\",\"display\":[%u,%u],\"state\":%d,\"error\":%d,"
+        "\"present\":%u,\"voltage_valid\":%u,\"voltage_mv\":%u,\"soc_valid\":%u,\"soc\":%u,"
+        "\"current_valid\":%u,\"current_ma\":%d,\"charging\":%u,\"discharging\":%u,"
+        "\"initialized\":%u,\"battery_flags\":%u}\n",
+        id, ROUNDIE_BOARD_NAME, (unsigned)ROUNDIE_BOARD_DISPLAY_WIDTH, (unsigned)ROUNDIE_BOARD_DISPLAY_HEIGHT,
+        (int)battery.state, (int)battery.error, battery.battery_present ? 1U : 0U,
+        battery.voltage_valid ? 1U : 0U, battery.voltage_mv, battery.soc_valid ? 1U : 0U, battery.soc_percent,
+        battery.current_valid ? 1U : 0U, battery.current_ma, battery.charging ? 1U : 0U,
+        battery.discharging ? 1U : 0U, battery.initialized ? 1U : 0U, battery.battery_flags);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        send(response, length);
+    }
+}
+
 void roundie_gauge_command(roundie_board_t *board, const char *line, bool discard)
 {
     char id[9] = "00000000";
@@ -140,6 +164,9 @@ void roundie_gauge_command(roundie_board_t *board, const char *line, bool discar
 #endif
         } else if (board == NULL) {
             error = ESP_ERR_INVALID_STATE;
+        } else if (strcmp(operation, "BATTERY") == 0) {
+            battery_reply(board, id);
+            return;
         } else if (strcmp(operation, "STATUS") == 0) {
             error = roundie_board_gauge_capacity_read(board, &capacity);
         } else if (strncmp(operation, "CAPACITY ", 9) == 0) {

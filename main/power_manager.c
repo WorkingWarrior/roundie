@@ -559,6 +559,7 @@ void roundie_power_command(char *line, bool discard)
     uint32_t wake_causes = roundie_power_shared.wake_causes;
     int64_t last_sleep_us = roundie_power_shared.last_sleep_us;
     bool bound = roundie_power_shared.board != NULL;
+    unsigned brightness = roundie_power_shared.brightness;
     roundie_pm_t pm = roundie_power_shared.pm;
     uint32_t owners = 0;
     uint32_t held = roundie_power_inhibit_held(&roundie_power_shared.inhibitors, &owners);
@@ -568,7 +569,7 @@ void roundie_power_command(char *line, bool discard)
     uint32_t full = roundie_power_shared.inhibitors.full;
     portEXIT_CRITICAL(&roundie_power_shared.lock);
     static const char *const guard_names[] = {"pending", "armed", "failed"};
-    char response[1024];
+    char response[1280];
     int length_out = snprintf(response, sizeof(response),
         "\n!RW1 %s %d {\"bound\":%u,\"state\":\"%s\",\"phase\":\"%s\",\"refusal\":\"%s\","
         "\"sleep_error\":%d,\"sleeps\":%" PRIu32 ",\"last_sleep_ms\":%" PRId64 ",\"wake_causes\":%" PRIu32 ","
@@ -582,7 +583,7 @@ void roundie_power_command(char *line, bool discard)
         "\"inhibitors\":%" PRIu32 ",\"inhibit_kinds\":%" PRIu32 ",\"inhibit_owners\":%" PRIu32 ","
         "\"inhibit_stale\":%" PRIu32 ",\"inhibit_expired\":%" PRIu32 ",\"inhibit_full\":%" PRIu32 ","
         "\"handle\":\"%08" PRIx32 "\",\"guard\":\"%s\",\"guard_pending\":%u,\"guard_checks\":%" PRIu32 ","
-        "\"guard_failures\":%" PRIu32 ",\"guard_lost\":%" PRIu32 "}\n",
+        "\"guard_failures\":%" PRIu32 ",\"guard_lost\":%" PRIu32 ",\"brightness\":%u}\n",
         id, (int)error, bound, roundie_power_state_name(state), phase_name(phase),
         roundie_power_refusal_name(refusal), (int)sleep_error, sleeps, last_sleep_us / 1000,
         wake_causes, screen_offs, CONFIG_ROUNDIE_POWER_SCREEN_TIMEOUT_SECONDS,
@@ -599,7 +600,7 @@ void roundie_power_command(char *line, bool discard)
         pm.last_suspend_us / 1000, pm.max_suspend_us / 1000, pm.last_resume_us / 1000, pm.max_resume_us / 1000,
         held, kinds, owners, stale, expired, full, handle,
         guard_names[guard.state <= ROUNDIE_ELF_GUARD_FAILED ? guard.state : 0], guard.recheck_pending,
-        guard.checks, guard.failures, guard.lost);
+        guard.checks, guard.failures, guard.lost, brightness);
     if (length_out > 0 && (size_t)length_out < sizeof(response)) {
         usb_serial_jtag_write_bytes(response, (size_t)length_out, pdMS_TO_TICKS(100));
     }

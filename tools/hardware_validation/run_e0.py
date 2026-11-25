@@ -37,15 +37,19 @@ import roundie_gauge as gauge  # noqa: E402
 import roundie_package as package  # noqa: E402
 from roundie_time import DeviceError, TransportError, read_serial_reply, write_command  # noqa: E402
 
-RUNNER_VERSION = 1
+RUNNER_VERSION = 2
 STOPWATCH = "org.roundie.stopwatch"
 # Creation order in examples/stopwatch_elf/stopwatch.c initialize().
 STOPWATCH_ROLES = ("view", "dial", "time", "laps", "lap")
 FS_SIZES_KIB = (64, 512, 1024)
 FS_SEED = 0x9E3779B9  # main/storage_bench.c BENCH_SEED
 FS_CHUNK = 4096
-# The default brightness after boot, from source; no protocol reports it.
+# The default brightness after boot, from source; used only when RW1 STATUS
+# predates its brightness field.
 BRIGHTNESS_SOURCE = {"percent": 60, "source": "main/main.c gui_state_t default; not read back"}
+# RG1 BATTERY board names (roundie_board_config.h) for each --board choice.
+BOARD_NAMES = {"1.85b": "Waveshare ESP32-S3-Touch-LCD-1.85B", "1.75c": "Waveshare ESP32-S3-Touch-AMOLED-1.75C"}
+POWER_CHIPS = {"1.85b": "BQ27220 fuel gauge", "1.75c": "AXP2101 PMIC"}
 PENDING_ITEMS = (
     ("current.active", "Average and peak current with the screen on (Home, stopwatch)"),
     ("current.screen_off", "Average current with the screen off"),
@@ -162,6 +166,36 @@ def heap_figures(health):
 
 def heap_delta(before, after):
     return {key: after[key] - before[key] for key in before}
+
+
+def brightness_context(power_status):
+    """Backlight percent as RW1 STATUS reports it (applied while the screen is on)."""
+    if "brightness" not in power_status:
+        return BRIGHTNESS_SOURCE
+    return {"percent": power_status["brightness"], "source": "RW1 STATUS brightness (GUI setting)"}
+
+
+def power_context(board, battery):
+    """Power source and charging state from RG1 BATTERY: the chip's state, not a
+    current measurement (the E0 current gate items stay PENDING)."""
+    power = {"source": f"RG1 BATTERY ({POWER_CHIPS[board]} state, not a current measurement)",
+             "battery_present": bool(battery["present"]), "charging": bool(battery["charging"]),
+             "discharging": bool(battery["discharging"]), "state": battery["state"]}
+    if battery["voltage_valid"]:
+        power["voltage_mv"] = battery["voltage_mv"]
+    if battery["soc_valid"]:
+        power["soc"] = battery["soc"]
+    if battery["current_valid"]:
+        power["current_ma"] = battery["current_ma"]
+    if not battery["present"]:
+        power["supply"] = "USB only (no battery reported)"
+    elif battery["charging"]:
+        power["supply"] = "USB, battery charging"
+    elif battery["discharging"]:
+        power["supply"] = "battery discharging (USB data link present)"
+    else:
+        power["supply"] = "USB, battery idle or charge complete"
+    return power
 
 
 class Runner:
@@ -322,26 +356,34 @@ class Runner:
             "ota_state": ota_status["ota_state"], "safe": safe_status["safe"], "safe_reason": safe_status["reason"],
             "rtc": {"state": time_status["state"], "code": time_status["code"]},
             "usb": "connected (the runner talks over USB Serial/JTAG)",
-            "brightness": BRIGHTNESS_SOURCE, "screen": power_status["state"],
+            "brightness": brightness_context(power_status), "screen": power_status["state"],
         }
+        problems = []
+        try:
+            battery = self.call("gauge", "BATTERY")
+            context["board_reported"] = battery["board"]
+            context["display"] = {"panel": battery["display"], "canvas": [360, 360],
+                                  "upscaled": battery["display"] != [360, 360]}
+            context["power"] = power_context(self.args.board, battery)
+            if battery["board"] != BOARD_NAMES[self.args.board]:
+                problems.append(f"the firmware reports board {battery['board']!r}, not {self.args.board}")
+        except (DeviceError, TransportError) as error:
+            context["power"] = {"source": "RG1 BATTERY", "error": str(error)}
+            problems.append(f"board identity unknown (RG1 BATTERY: {error})")
         if self.args.board == "1.85b":
             try:
                 g = self.call("gauge", "STATUS")
-                context["power"] = {"source": "RG1 STATUS (BQ27220 state, not a current measurement)",
+                context["gauge"] = {"source": "RG1 STATUS (BQ27220 state, not a current measurement)",
                                     "voltage_mv": g["voltage_mv"], "current_ma": g["current_ma"],
-                                    "soc": g["soc"], "full_mah": g["full_mah"], "battery_flags": g["battery_flags"],
-                                    "charging": g["current_ma"] > 0}
+                                    "soc": g["soc"], "full_mah": g["full_mah"], "battery_flags": g["battery_flags"]}
             except (DeviceError, TransportError) as error:
-                context["power"] = {"source": "RG1 STATUS", "error": str(error)}
-        else:
-            context["power"] = {"source": "no protocol reports the AXP2101 state", "charging": None}
+                context["gauge"] = {"source": "RG1 STATUS", "error": str(error)}
         if self.args.elf:
             local = hashlib.sha256(Path(self.args.elf).read_bytes()).hexdigest()
             context["local_elf_sha256"] = local
             context["elf_matches_build"] = local == ota_status["elf"]
         self.report["context"] = context
         self.write_report()
-        problems = []
         if safe_status["safe"]:
             problems.append(f"Safe Mode ({safe_status['reason']})")
         if ota_status["ota_state"] != "VALID" or ota_status["phase"] != "IDLE":
@@ -596,7 +638,7 @@ def gate(report):
         ("LittleFS read + SHA-256 64/512/1024 KiB", steps.get("littlefs", BLOCKED)),
         ("Light sleep with expected USB loss, state after return", steps.get("light_sleep", BLOCKED)),
         ("Brightness, power source, charging, USB recorded",
-         PASS if report["context"].get("power") is not None else BLOCKED),
+         PASS if report["context"].get("power") and "error" not in report["context"]["power"] else BLOCKED),
     ]
     items += [(entry["needs"], PENDING) for entry in report["pending"]]
     return items

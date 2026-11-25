@@ -47,6 +47,7 @@ typedef struct {
     char message[40];
     uint8_t battery_alert; /* roundie_gauge_alert_t; shown by the GUI */
     uint32_t battery_alert_serial;
+    uint8_t brightness; /* backlight percent the GUI applies while the screen is on */
     roundie_power_state_t state;
     roundie_power_refusal_t refusal;
     esp_err_t sleep_error;

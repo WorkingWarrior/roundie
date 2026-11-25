@@ -214,10 +214,92 @@ class LightSleepTest(unittest.TestCase):
         self.assertEqual(entry["status"], BLOCKED)
 
 
+class ContextDevice:
+    """Answers the context calls of one board."""
+
+    def __init__(self, board_name, display, battery_extra=None, brightness=True):
+        self.path = "fake"
+        self.battery = {"format": 1, "board": board_name, "display": display, "state": 2, "error": 0,
+                        "present": 1, "voltage_valid": 1, "voltage_mv": 4100, "soc_valid": 1, "soc": 80,
+                        "current_valid": 0, "current_ma": 0, "charging": 1, "discharging": 0,
+                        "initialized": 0, "battery_flags": 0, **(battery_extra or {})}
+        self.brightness = brightness
+
+    def call(self, protocol, operation="STATUS", timeout=None):
+        if protocol == "ota":
+            return {"version": "0.3.90-e0", "running": "ota_0", "elf": "ab" * 32, "ota_state": "VALID",
+                    "phase": "IDLE"}
+        if protocol == "safe":
+            return {"safe": 0, "reason": "none"}
+        if protocol == "time":
+            return {"state": "NO_RTC", "code": 0}
+        if protocol == "power":
+            status = {"state": "active"}
+            if self.brightness:
+                status["brightness"] = 60
+            return status
+        if protocol == "gauge" and operation == "BATTERY":
+            return self.battery
+        if protocol == "gauge" and operation == "STATUS":
+            return {"voltage_mv": 4000, "current_ma": 12, "soc": 70, "full_mah": 600, "battery_flags": 0}
+        raise AssertionError((protocol, operation))
+
+
+class ContextTest(unittest.TestCase):
+    def context(self, board, device):
+        monitor = types.SimpleNamespace(faults=[], notices=[])
+        args = types.SimpleNamespace(board=board, commit="c", elf=None)
+        with tempfile.TemporaryDirectory() as out:
+            runner = run_e0.Runner(args, device, monitor, out)
+            problems = runner.context("AA:BB")
+            return problems, runner.report["context"]
+
+    def test_1_75c_reports_axp2101_state_and_upscaled_panel(self):
+        problems, context = self.context("1.75c", ContextDevice(run_e0.BOARD_NAMES["1.75c"], [466, 466]))
+        self.assertEqual(problems, [])
+        self.assertIn("AXP2101", context["power"]["source"])
+        self.assertTrue(context["power"]["charging"])
+        self.assertNotIn("current_ma", context["power"])
+        self.assertEqual(context["display"], {"panel": [466, 466], "canvas": [360, 360], "upscaled": True})
+        self.assertEqual(context["brightness"]["percent"], 60)
+        self.assertIn("RW1", context["brightness"]["source"])
+        self.assertNotIn("gauge", context)
+
+    def test_1_85b_keeps_gauge_details(self):
+        device = ContextDevice(run_e0.BOARD_NAMES["1.85b"], [360, 360],
+                               {"current_valid": 1, "current_ma": 15}, brightness=False)
+        problems, context = self.context("1.85b", device)
+        self.assertEqual(problems, [])
+        self.assertEqual(context["power"]["current_ma"], 15)
+        self.assertFalse(context["display"]["upscaled"])
+        self.assertEqual(context["gauge"]["full_mah"], 600)
+        self.assertEqual(context["brightness"], run_e0.BRIGHTNESS_SOURCE)
+
+    def test_wrong_board_or_missing_identity_halts(self):
+        problems, _ = self.context("1.75c", ContextDevice(run_e0.BOARD_NAMES["1.85b"], [360, 360]))
+        self.assertTrue(any("not 1.75c" in p for p in problems))
+
+        class Old(ContextDevice):
+            def call(self, protocol, operation="STATUS", timeout=None):
+                if operation == "BATTERY":
+                    raise DeviceError("invalid gauge command")
+                return super().call(protocol, operation, timeout)
+        problems, context = self.context("1.75c", Old(run_e0.BOARD_NAMES["1.75c"], [466, 466]))
+        self.assertTrue(any("board identity unknown" in p for p in problems))
+        self.assertIn("error", context["power"])
+
+    def test_power_supply_classification(self):
+        battery = {"present": 0, "charging": 0, "discharging": 0, "state": 1, "voltage_valid": 0,
+                   "soc_valid": 0, "current_valid": 0}
+        self.assertEqual(run_e0.power_context("1.75c", battery)["supply"], "USB only (no battery reported)")
+        battery.update(present=1, discharging=1)
+        self.assertIn("discharging", run_e0.power_context("1.75c", battery)["supply"])
+
+
 class GateTest(unittest.TestCase):
     def report(self, steps, snapshots, power=True):
         return {"steps": [{"name": n, "status": s} for n, s in steps.items()],
-                "snapshots": snapshots, "context": {"power": {} if power else None},
+                "snapshots": snapshots, "context": {"power": {"source": "RG1 BATTERY"} if power else None},
                 "pending": [{"needs": "current", "status": PENDING}],
                 "monitoring": {"unexpected_resets": []}}
 

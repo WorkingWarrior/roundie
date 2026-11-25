@@ -50,6 +50,21 @@ class GaugeToolTests(unittest.TestCase):
         self.assertEqual(tool.STEPS.index("enter"), 3)
         self.assertNotIn("full-access", tool.STEPS)
 
+    def test_battery_reply(self):
+        battery = {"format": 1, "board": "Waveshare ESP32-S3-Touch-AMOLED-1.75C", "display": [466, 466],
+                   "state": 2, "error": 0, "present": 1, "voltage_valid": 1, "voltage_mv": 4100,
+                   "soc_valid": 1, "soc": 87, "current_valid": 0, "current_ma": 0, "charging": 1,
+                   "discharging": 0, "initialized": 0, "battery_flags": 0x2412}
+        parsed = tool.parse_reply(reply(battery), "1234abcd")
+        self.assertEqual(parsed["display"], [466, 466])
+        self.assertEqual(parsed["charging"], 1)
+        for bad in ({**battery, "format": 2}, {**battery, "display": [466]}, {**battery, "charging": 2},
+                    {**battery, "board": ""}, {**battery, "current_ma": 40000}):
+            with self.assertRaises(TransportError):
+                tool.parse_reply(reply(bad), "1234abcd")
+        with self.assertRaises(DeviceError):
+            tool.parse_reply(reply(battery, code=259), "1234abcd")
+
     def test_format3_and_learn_reply(self):
         extra = dict(format=3, battery_low_centi=700, learning_low_temp=119, overload_ma=1500, reserve_mah=0,
                      flag_config_a=0x0c8c, flag_config_b=0x8c)
