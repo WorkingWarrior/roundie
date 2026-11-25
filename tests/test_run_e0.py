@@ -87,7 +87,7 @@ class FsbenchRequestTest(unittest.TestCase):
 
 class SemanticInputTest(unittest.TestCase):
     def ui(self, **values):
-        status = {"generation": 7, "widgets": 5, "last_widget": 25}
+        status = {"generation": 7, "widgets": 5, "view": 21, "last_widget": 23}
         status.update(values)
         return status
 
@@ -103,7 +103,7 @@ class SemanticInputTest(unittest.TestCase):
         with self.assertRaises(DeviceError):
             run_e0.stopwatch_roles(self.ui(widgets=4), 7)
         with self.assertRaises(DeviceError):
-            run_e0.stopwatch_roles(self.ui(last_widget=3), 7)
+            run_e0.stopwatch_roles(self.ui(view=0), 7)
 
     def test_refuses_unknown_role_and_kind(self):
         roles = run_e0.stopwatch_roles(self.ui(), 7)

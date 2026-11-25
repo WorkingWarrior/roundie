@@ -58,6 +58,12 @@ PENDING_ITEMS = (
 )
 
 
+# roundie_power_inhibit.h: ROUNDIE_POWER_INHIBIT_DISPLAY_AWAKE; held for at most
+# the firmware maximum, released explicitly at the end of the run.
+DISPLAY_AWAKE = 2
+SCREEN_HOLD_S = 600
+
+
 def fs_pattern_sha256(kib):
     """SHA-256 of the FSBENCH test file: xorshift32 words, little-endian."""
     digest = hashlib.sha256()
@@ -112,13 +118,14 @@ class Device(m8.Device):
 
 
 def stopwatch_roles(ui_status, generation):
-    """Semantic handles of the stopwatch from its creation order. The UI bridge
-    reports the last created widget; the stopwatch creates exactly five."""
+    """Semantic handles of the stopwatch from its creation order
+    (examples/stopwatch_elf/stopwatch.c). The bridge assigns handles from one
+    serial counter and reports the root view; the other four follow it.
+    (last_widget is the handle of the last applied command, not the last created.)"""
     if ui_status["generation"] != generation or ui_status["widgets"] != len(STOPWATCH_ROLES):
         raise DeviceError(f"stopwatch UI not ready: {ui_status['widgets']} widgets, "
                           f"generation {ui_status['generation']} != {generation}")
-    last = ui_status["last_widget"]
-    first = last - len(STOPWATCH_ROLES) + 1
+    first = ui_status["view"]
     if first < 1:
         raise DeviceError("stopwatch handles out of range")
     return {role: first + i for i, role in enumerate(STOPWATCH_ROLES)}
@@ -247,7 +254,12 @@ class Runner:
             nav = self.wait_for("Home or list after exit", self.nav, lambda n: n["state"] in ("HOME", "LIST"), 10)
         if nav["state"] == "LIST":
             self.call("launcher", "HOME")
-        return self.wait_for("Home", self.nav, lambda n: n["state"] == "HOME", 10)
+        nav = self.wait_for("Home", self.nav, lambda n: n["state"] == "HOME", 10)
+        # Runtime admission (and LittleFS usage) arrives some seconds after boot;
+        # snapshots taken before it report capacity ok=0.
+        self.wait_for("runtime admission", lambda: self.call("package"),
+                      lambda status: status["capacity"][0] == 1, 60, interval=1.0)
+        return nav
 
     def perf_traces(self, after_sequence):
         """Retained GUI iterations newer than after_sequence, in one session."""
@@ -471,10 +483,34 @@ class Runner:
         return (FAIL if problems else PASS), {"sizes": results, "problems": problems,
                                               "worker": "total_us is the time the system worker was busy"}
 
+    def keep_screen_on(self):
+        """The screen-on scenarios need the panel lit: RW1 SCREEN ON and a
+        diagnostics-owned DISPLAY_AWAKE inhibitor (no screen-off on timeout)."""
+        self.call("power", "SCREEN ON")
+        status = self.wait_for("screen on", lambda: self.call("power"),
+                               lambda s: s["state"] != "screen_off", 5)
+        held = self.call("power", f"INHIBIT {DISPLAY_AWAKE} {SCREEN_HOLD_S}")
+        self.screen_handle = held["handle"]
+        self.report["context"]["screen_during_scenarios"] = {
+            "state": status["state"], "inhibitor": "DISPLAY_AWAKE (RW1 INHIBIT 2)", "handle": held["handle"]}
+
+    def release_screen(self):
+        handle = getattr(self, "screen_handle", None)
+        if handle is None:
+            return
+        self.screen_handle = None
+        self.call("power", f"RELEASE {handle.upper()}")
+
     def s_light_sleep(self):
         if not self.args.light_sleep:
             raise Blocked("light sleep not allowed (--light-sleep)")
         self.go_home()
+        if getattr(self, "screen_handle", None) is not None:
+            # Light sleep starts from the ordinary screen-off state.
+            self.release_screen()
+            self.call("power", "SCREEN OFF")
+            self.wait_for("screen off", lambda: self.call("power"),
+                          lambda s: s["state"] == "screen_off", 5)
         before = self.call("power")
         health_before = self.observe_uptime("before light sleep")
         reply = self.call("power", f"SLEEP {self.args.sleep_seconds}")
@@ -623,8 +659,19 @@ def main(argv=None, device_factory=Device, by_id=m8.BY_ID, sleep=time.sleep, now
         if problems:
             runner.halted = "; ".join(problems)
         runner.observe_uptime("start")
-        for name in args.only or Runner.SCENARIOS:
-            runner.run_scenario(name)
+        if not runner.halted:
+            try:
+                runner.keep_screen_on()
+            except (DeviceError, TransportError) as error:
+                runner.report["context"]["screen_during_scenarios"] = {"error": str(error)}
+        try:
+            for name in args.only or Runner.SCENARIOS:
+                runner.run_scenario(name)
+        finally:
+            try:
+                runner.release_screen()
+            except (DeviceError, TransportError) as error:
+                runner.report["monitoring"]["notices"].append(f"inhibitor release: {error}")
         runner.report["gate"] = [{"item": item, "status": status} for item, status in gate(runner.report)]
         runner.report["outcome"] = outcome(runner.report)
         runner.report["finished"] = m8.utc_now()
