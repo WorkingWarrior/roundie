@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
@@ -104,3 +105,95 @@ void roundie_boot_history_record(bool nvs_available);
 /* Once per boot with the first gauge reading; later calls do nothing. */
 void roundie_boot_history_battery(uint16_t voltage_mv);
 void roundie_boot_history_get(roundie_boot_history_t *out);
+
+/* Safe Mode cause diagnostics (docs/safe-mode.md "Latch cause"; E0 1.85B
+ * report §9.4 items 1, 2 and 4). Data only: nothing here is read by the boot
+ * guard or Safe Mode logic, and no Safe Mode decision depends on it.
+ * - A private RTC record keeps, across software, panic and watchdog resets of
+ *   any image, the code of the last unplanned esp_restart() site and the last
+ *   battery sample with the uptime; power-on and brownout clear RTC RAM.
+ * - After the durable latch commit succeeds, a separate NVS commit writes a
+ *   cause record (its failure cannot fail or change the latch): the entry site, the raw reset, the previous stage and session, the
+ *   package loaded then, and the previous session's RTC record. */
+typedef enum {
+    ROUNDIE_RESTART_SITE_NONE,
+    ROUNDIE_RESTART_SITE_LCD_TIMEOUT,  /* LCD transfer completion timeout */
+    ROUNDIE_RESTART_SITE_LCD_FLUSH,    /* flush while a transfer is pending */
+    ROUNDIE_RESTART_SITE_GUI_WATCHDOG, /* GUI task watchdog registration/feed failed */
+} roundie_restart_site_t;
+typedef enum {
+    ROUNDIE_SAFE_SITE_NONE,
+    ROUNDIE_SAFE_SITE_RETAINED,       /* decided in roundie_boot_begin from the RTC record */
+    ROUNDIE_SAFE_SITE_SERIAL,         /* USB Serial/JTAG driver unavailable */
+    ROUNDIE_SAFE_SITE_SYSTEM_WORKER,  /* system worker task not created */
+    ROUNDIE_SAFE_SITE_OTHER,          /* any other roundie_boot_enter_safe() */
+} roundie_safe_site_t;
+typedef struct {
+    bool valid;                 /* RTC record of the previous session survived */
+    uint8_t image[8];           /* ELF SHA-256 prefix of the image that wrote it */
+    uint32_t restart_site;      /* roundie_restart_site_t */
+    uint32_t uptime_ms;         /* at the last battery sample or restart site */
+    bool battery_valid;
+    uint16_t voltage_mv;
+    int16_t current_ma;         /* 0 unless the board reports a current */
+    uint16_t soc_percent;
+    uint16_t battery_flags;
+    int32_t temperature_deci_c;
+    uint32_t battery_uptime_ms; /* when the battery sample was taken */
+    int64_t rtc_unix;           /* wall clock at that sample, 0 when invalid */
+} roundie_boot_session_t;
+typedef struct {
+    bool valid;
+    uint32_t latch;             /* roundie_safe_reason_t written with it */
+    uint32_t site;              /* roundie_safe_site_t */
+    uint32_t raw_reset;         /* esp_reset_reason_t of the boot that wrote it */
+    uint32_t previous_stage;
+    uint32_t failures;
+    bool retained_valid;
+    char fault_app[ROUNDIE_BOOT_APP_ID];
+    uint8_t image[8];           /* ELF SHA-256 prefix of the image that wrote it */
+    roundie_boot_session_t previous;
+} roundie_boot_cause_t;
+/* Boot owner, right after roundie_boot_begin(). */
+void roundie_boot_diag_begin(uint32_t raw_reset, const uint8_t image[32]);
+/* Before the esp_restart() of an unplanned restart. */
+void roundie_boot_diag_restart_site(roundie_restart_site_t site, int64_t now_us);
+/* Before a roundie_boot_enter_safe() whose site is not RETAINED/OTHER. */
+void roundie_boot_diag_safe_site(roundie_safe_site_t site);
+/* Battery sample from the system worker; kept at most once a minute. */
+void roundie_boot_diag_battery(uint16_t voltage_mv, int16_t current_ma, uint16_t soc_percent,
+                               uint16_t battery_flags, int32_t temperature_deci_c, int64_t rtc_unix,
+                               int64_t now_us);
+void roundie_boot_diag_previous(roundie_boot_session_t *out);
+/* Fills the cause record for a latch written now (persistence backend). */
+void roundie_boot_diag_cause(uint32_t latch, roundie_boot_cause_t *out);
+/* The cause record stored after the latch (own NVS commit), read at persistence_init. */
+void roundie_boot_diag_stored_cause(roundie_boot_cause_t *out);
+void roundie_boot_diag_set_stored_cause(const roundie_boot_cause_t *cause);
+
+/* Bounded diagnostic blobs in the boot_guard NVS namespace (persistence
+ * backend). Diagnostics yield to settings: a blob is written only while the
+ * partition keeps ROUNDIE_BOOT_DIAG_RESERVE_ENTRIES available entries after
+ * the write, in its own commit, and never touches another key. */
+#define ROUNDIE_BOOT_DIAG_BLOB_MAX 256U
+#define ROUNDIE_BOOT_DIAG_RESERVE_ENTRIES 126U /* one 4 KiB NVS page */
+typedef enum {
+    ROUNDIE_DIAG_STORED = 0,
+    ROUNDIE_DIAG_UNCHANGED = 1, /* identical copy already stored, nothing written */
+    ROUNDIE_DIAG_TOO_LARGE = 2,
+    ROUNDIE_DIAG_NO_ROOM = 3,   /* would cut into the reserve: skipped */
+    ROUNDIE_DIAG_FAILED = 4,    /* NVS unavailable or the write/commit failed */
+} roundie_diag_store_t;
+typedef struct {
+    bool valid;
+    uint32_t used_entries;
+    uint32_t available_entries;
+    uint32_t total_entries;
+} roundie_boot_nvs_stats_t;
+/* NVS entries a blob of this size needs, as the ESP-IDF NVS stores it:
+ * blob index, chunk header and one entry per 32 data bytes. */
+uint32_t roundie_boot_diag_entries(size_t size);
+roundie_diag_store_t roundie_boot_diag_store(const char *key, const void *data, size_t size);
+/* Exact-size read; false when absent, of another size or NVS is unavailable. */
+bool roundie_boot_diag_load(const char *key, void *data, size_t size);
+void roundie_boot_diag_nvs_stats(roundie_boot_nvs_stats_t *out);

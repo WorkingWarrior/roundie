@@ -1,6 +1,7 @@
 #include "recovery_diagnostics.h"
 
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
@@ -184,14 +185,14 @@ void roundie_recovery_poll(int64_t now_us)
  * run-time addresses; tools/roundie_crash.py maps them to the ELF. M9.1 adds
  * the exception frame address, the executor phase, the trigger, the PC the
  * stack monitor latched, the executor stack layout and the derived origin. */
-static void crash_reply(const char *id)
+static void crash_reply(const char *id, const roundie_elf_crash_report_t *found, const char *extra)
 {
-    roundie_elf_crash_report_t report;
     char response[1024];
     int length;
-    if (!roundie_elf_crash_last(&report)) {
-        length = snprintf(response, sizeof(response), "\n!RS1 %s 0 {\"crash\":{\"valid\":0}}\n", id);
+    if (found == NULL) {
+        length = snprintf(response, sizeof(response), "\n!RS1 %s 0 {\"crash\":{%s\"valid\":0}}\n", id, extra);
     } else {
+        const roundie_elf_crash_report_t report = *found;
         const roundie_elf_crash_context_t *context = &report.context;
         const roundie_elf_crash_fault_t *fault = &report.details;
         char digest[65];
@@ -199,9 +200,9 @@ static void crash_reply(const char *id)
             snprintf(digest + i * 2, 3, "%02x", context->digest[i]);
         }
         length = snprintf(response, sizeof(response),
-            "\n!RS1 %s 0 {\"crash\":{\"valid\":1,\"loaded\":%u,\"fault\":%u,\"instance\":%lu,"
+            "\n!RS1 %s 0 {\"crash\":{%s\"valid\":1,\"loaded\":%u,\"fault\":%u,\"instance\":%lu,"
             "\"digest\":\"%s\",\"text_exec\":%lu,\"sections\":[",
-            id, report.loaded, report.fault, (unsigned long)context->instance, digest,
+            id, extra, report.loaded, report.fault, (unsigned long)context->instance, digest,
             (unsigned long)context->text_exec);
         for (unsigned i = 0; i < ROUNDIE_ELF_CRASH_SECTIONS && length > 0 && (size_t)length < sizeof(response); i++) {
             const roundie_elf_crash_section_t *section = &context->sections[i];
@@ -230,6 +231,136 @@ static void crash_reply(const char *id)
                 (unsigned long)stack->stack_high, (unsigned long)stack->armed,
                 roundie_elf_crash_origin_name(roundie_elf_crash_classify(&report)));
         }
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
+/* E0 1.85B report §9.4 item 3: the retained crash record lives in RTC RAM
+ * and is lost on power loss. After a panic or watchdog reset it is copied once
+ * to NVS ("crash" in the boot_guard namespace, 224 B on Xtensa and the host, at most
+ * ROUNDIE_BOOT_DIAG_BLOB_MAX) through the bounded diagnostic store, which
+ * skips the copy rather than cut into the reserve kept for settings. Data
+ * only: no Safe Mode or boot guard decision reads it. */
+#define STORED_CRASH_MAGIC UINT32_C(0x52434331)
+#define STORED_CRASH_VERSION 1U
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t raw_reset;
+    uint8_t image[8];
+    roundie_elf_crash_report_t report;
+    uint32_t crc;
+} stored_crash_t;
+_Static_assert(sizeof(stored_crash_t) <= ROUNDIE_BOOT_DIAG_BLOB_MAX, "crash copy exceeds the diagnostic limit");
+
+static int stored_crash_result = -1; /* roundie_diag_store_t, -1 when no copy was due */
+
+static uint32_t stored_crash_crc(const stored_crash_t *record)
+{
+    const uint8_t *bytes = (const uint8_t *)record;
+    uint32_t crc = UINT32_MAX;
+    for (size_t i = 0; i < offsetof(stored_crash_t, crc); i++) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (UINT32_C(0xedb88320) & (0U - (crc & 1U)));
+        }
+    }
+    return ~crc;
+}
+
+void roundie_recovery_store_crash(uint32_t raw_reset, const uint8_t image[32])
+{
+    bool fault_reset = raw_reset == ESP_RST_PANIC || raw_reset == ESP_RST_INT_WDT ||
+        raw_reset == ESP_RST_TASK_WDT || raw_reset == ESP_RST_WDT;
+    roundie_elf_crash_report_t report;
+    if (!fault_reset || !roundie_elf_crash_last(&report) || !report.fault) {
+        return;
+    }
+    stored_crash_t record;
+    memset(&record, 0, sizeof(record));
+    record.magic = STORED_CRASH_MAGIC;
+    record.version = STORED_CRASH_VERSION;
+    record.raw_reset = raw_reset;
+    memcpy(record.image, image, sizeof(record.image));
+    memcpy(&record.report, &report, sizeof(report));
+    record.crc = stored_crash_crc(&record);
+    stored_crash_result = roundie_boot_diag_store("crash", &record, sizeof(record));
+}
+
+/* RS1 CRASH STORED (read-only): the NVS copy, in the RS1 CRASH format, with
+ * the copy's reset and image, this boot's store result and NVS occupancy. */
+static void stored_crash_reply(const char *id)
+{
+    roundie_boot_nvs_stats_t stats;
+    roundie_boot_diag_nvs_stats(&stats);
+    stored_crash_t record;
+    bool valid = roundie_boot_diag_load("crash", &record, sizeof(record)) &&
+        record.magic == STORED_CRASH_MAGIC && record.version == STORED_CRASH_VERSION &&
+        record.crc == stored_crash_crc(&record);
+    char image[17] = "";
+    if (valid) {
+        for (unsigned i = 0; i < sizeof(record.image); i++) {
+            snprintf(image + i * 2, 3, "%02x", record.image[i]);
+        }
+    }
+    char extra[200];
+    snprintf(extra, sizeof(extra),
+             "\"stored\":1,\"store\":%d,\"limit\":%u,\"size\":%u,\"nvs\":[%u,%lu,%lu,%lu],"
+             "\"raw_reset\":%lu,\"image\":\"%s\",",
+             stored_crash_result, ROUNDIE_BOOT_DIAG_BLOB_MAX, (unsigned)sizeof(record), stats.valid,
+             (unsigned long)stats.used_entries, (unsigned long)stats.available_entries,
+             (unsigned long)stats.total_entries, valid ? (unsigned long)record.raw_reset : 0UL, image);
+    crash_reply(id, valid ? &record.report : NULL, extra);
+}
+
+static int append_session(char *out, size_t capacity, const roundie_boot_session_t *session)
+{
+    char image[17];
+    for (unsigned i = 0; i < sizeof(session->image); i++) {
+        snprintf(image + i * 2, 3, "%02x", session->image[i]);
+    }
+    return snprintf(out, capacity,
+        "{\"valid\":%u,\"image\":\"%s\",\"restart_site\":%lu,\"uptime_ms\":%lu,\"battery\":%u,"
+        "\"mv\":%u,\"ma\":%d,\"soc\":%u,\"flags\":%u,\"temp_dc\":%ld,\"battery_ms\":%lu,\"rtc\":%lld}",
+        session->valid, image, (unsigned long)session->restart_site, (unsigned long)session->uptime_ms,
+        session->battery_valid, session->voltage_mv, session->current_ma, session->soc_percent,
+        session->battery_flags, (long)session->temperature_deci_c, (unsigned long)session->battery_uptime_ms,
+        (long long)session->rtc_unix);
+}
+
+/* RS1 CAUSE (read-only): the cause record stored after the last latch write
+ * and this boot's view of the previous session (RTC record). */
+static void cause_reply(const char *id)
+{
+    roundie_boot_cause_t cause;
+    roundie_boot_session_t previous;
+    roundie_boot_diag_stored_cause(&cause);
+    roundie_boot_diag_previous(&previous);
+    char image[17];
+    for (unsigned i = 0; i < sizeof(cause.image); i++) {
+        snprintf(image + i * 2, 3, "%02x", cause.image[i]);
+    }
+    char response[1024];
+    int length = snprintf(response, sizeof(response),
+        "\n!RS1 %s 0 {\"cause\":{\"valid\":%u,\"latch\":%lu,\"site\":%lu,\"raw_reset\":%lu,"
+        "\"previous_stage\":%lu,\"failures\":%lu,\"retained_valid\":%u,\"fault_app\":\"%s\","
+        "\"image\":\"%s\",\"session\":",
+        id, cause.valid, (unsigned long)cause.latch, (unsigned long)cause.site, (unsigned long)cause.raw_reset,
+        (unsigned long)cause.previous_stage, (unsigned long)cause.failures, cause.retained_valid,
+        cause.fault_app, image);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += append_session(response + length, sizeof(response) - (size_t)length, &cause.previous);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length, "},\"previous\":");
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += append_session(response + length, sizeof(response) - (size_t)length, &previous);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length, "}\n");
     }
     if (length > 0 && (size_t)length < sizeof(response)) {
         usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
@@ -290,7 +421,14 @@ void roundie_recovery_command(char *line, bool discard)
                 if (strcmp(operation, "STATUS") == 0 || strcmp(operation, "SLOT STATUS") == 0) {
                     error = ESP_OK;
                 } else if (strcmp(operation, "CRASH") == 0) {
-                    crash_reply(id);
+                    roundie_elf_crash_report_t report;
+                    crash_reply(id, roundie_elf_crash_last(&report) ? &report : NULL, "");
+                    return;
+                } else if (strcmp(operation, "CRASH STORED") == 0) {
+                    stored_crash_reply(id);
+                    return;
+                } else if (strcmp(operation, "CAUSE") == 0) {
+                    cause_reply(id);
                     return;
                 } else if (strcmp(operation, "HISTORY") == 0) {
                     history_reply(id);

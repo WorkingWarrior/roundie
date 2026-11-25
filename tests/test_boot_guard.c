@@ -18,6 +18,22 @@
 static uint8_t image[32] = {1};
 static uint8_t blob[16];
 static bool blob_present;
+static uint8_t cause_blob[512];
+static size_t cause_size;
+static unsigned cause_writes, cause_commits;
+static bool cause_pending;
+static uint8_t crash_blob[512];
+static size_t crash_size;
+static unsigned crash_writes, crash_commits;
+static bool crash_pending;
+static size_t nvs_available = 378; /* nvs_get_stats available_entries */
+/* Every latch record written, in order: identical for every CAUSE_FAULT mode. */
+static char latch_trace[512];
+/* CAUSE_FAULT: 0 none, 1 cause set fails (NVS full), 2 damaged cause entry
+ * (reads back garbage, set fails), 3 cause commit fails. */
+#ifndef CAUSE_FAULT
+#define CAUSE_FAULT 0
+#endif
 static bool nvs_ok = true;
 static bool write_ok = true;
 static unsigned writes, commits, resets, selections;
@@ -54,6 +70,30 @@ esp_err_t nvs_open(const char *name, unsigned mode, nvs_handle_t *handle)
 }
 esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *data, size_t *size)
 {
+    if (strcmp(key, "crash") == 0) {
+        assert(handle == 1 && *size <= sizeof(crash_blob));
+        if (crash_size == 0) {
+            return ESP_ERR_NVS_NOT_FOUND;
+        }
+        if (*size != crash_size) {
+            return ESP_ERR_NVS_INVALID_LENGTH;
+        }
+        memcpy(data, crash_blob, crash_size);
+        return ESP_OK;
+    }
+    if (strcmp(key, "cause") == 0) {
+        assert(handle == 1 && *size <= sizeof(cause_blob));
+        if (CAUSE_FAULT == 2) {
+            memset(data, 0x5a, *size);
+            return ESP_OK;
+        }
+        if (cause_size == 0) {
+            return ESP_ERR_NVS_NOT_FOUND;
+        }
+        assert(*size == cause_size);
+        memcpy(data, cause_blob, cause_size);
+        return ESP_OK;
+    }
     assert(handle == 1 && strcmp(key, "latch") == 0 && *size == sizeof(blob));
     if (!blob_present) {
         return ESP_ERR_NVS_NOT_FOUND;
@@ -63,8 +103,34 @@ esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *data, size_t 
 }
 esp_err_t nvs_set_blob(nvs_handle_t handle, const char *key, const void *data, size_t size)
 {
+    if (strcmp(key, "crash") == 0) {
+        assert(handle == 1 && size <= sizeof(crash_blob));
+        crash_writes++;
+        memcpy(crash_blob, data, size);
+        crash_size = size;
+        crash_pending = true;
+        return ESP_OK;
+    }
+    if (strcmp(key, "cause") == 0) {
+        assert(handle == 1 && size <= sizeof(cause_blob));
+        cause_writes++;
+        if (CAUSE_FAULT == 1) {
+            return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
+        }
+        if (CAUSE_FAULT == 2 || !write_ok) {
+            return ESP_FAIL;
+        }
+        cause_pending = true;
+        memcpy(cause_blob, data, size);
+        cause_size = size;
+        return ESP_OK;
+    }
     assert(handle == 1 && strcmp(key, "latch") == 0 && size == sizeof(blob));
+    assert(!cause_pending); /* The latch never shares a commit with the cause. */
     writes++;
+    char entry[32];
+    snprintf(entry, sizeof(entry), "%u%s ", ((const uint32_t *)data)[2], write_ok ? "" : "!");
+    strncat(latch_trace, entry, sizeof(latch_trace) - strlen(latch_trace) - 1);
     if (!write_ok) {
         return ESP_FAIL;
     }
@@ -75,8 +141,28 @@ esp_err_t nvs_set_blob(nvs_handle_t handle, const char *key, const void *data, s
 esp_err_t nvs_commit(nvs_handle_t handle)
 {
     assert(handle == 1);
+    if (crash_pending) {
+        crash_pending = false;
+        crash_commits++;
+        return ESP_OK;
+    }
+    if (cause_pending) {
+        cause_pending = false;
+        cause_commits++;
+        return CAUSE_FAULT == 3 ? ESP_FAIL : ESP_OK;
+    }
     commits++;
     return write_ok ? ESP_OK : ESP_FAIL;
+}
+esp_err_t nvs_get_stats(const char *part_name, nvs_stats_t *stats)
+{
+    assert(part_name == NULL);
+    stats->total_entries = 504;
+    stats->available_entries = nvs_available;
+    stats->used_entries = 378 - nvs_available;
+    stats->free_entries = 504 - stats->used_entries;
+    stats->namespace_count = 4;
+    return ESP_OK;
 }
 esp_reset_reason_t esp_reset_reason(void) { return raw_reset; }
 /* The boot history has its own test (test_boot_history.c). */
@@ -141,11 +227,15 @@ static roundie_boot_status_t status(void)
 static void start(roundie_reset_class_t reset)
 {
     roundie_boot_begin(reset, image);
+    roundie_boot_diag_begin(reset == ROUNDIE_RESET_POWER ? ESP_RST_POWERON : ESP_RST_SW, image);
     roundie_boot_persistence_init(nvs_ok);
 }
 static void fresh(void)
 {
     blob_present = false;
+    cause_size = 0;
+    cause_writes = cause_commits = 0;
+    cause_pending = false;
     nvs_ok = write_ok = true;
     writes = commits = resets = selections = 0;
     elf_busy = false;
@@ -210,7 +300,21 @@ int main(void)
     assert(status().failures == 2 && !status().safe);
     start(ROUNDIE_RESET_SOFTWARE);
     assert(status().failures == 3 && status().safe && status().reason == ROUNDIE_SAFE_BOOT_LOOP);
-    assert(roundie_boot_persistence_sync() && writes == 1);
+    roundie_boot_cause_t cause;
+    roundie_boot_diag_stored_cause(&cause);
+    assert(!cause.valid);
+    assert(roundie_boot_persistence_sync() && writes == 1 && commits == 1);
+    /* The cause record follows in its own commit and is diagnostic only. */
+    assert(cause_writes == 1);
+    roundie_boot_diag_stored_cause(&cause);
+#if CAUSE_FAULT == 0
+    assert(cause_commits == 1);
+    assert(cause.valid && cause.latch == ROUNDIE_SAFE_BOOT_LOOP && cause.site == ROUNDIE_SAFE_SITE_RETAINED);
+    assert(cause.raw_reset == ESP_RST_SW && cause.failures == 3 && cause.retained_valid);
+    assert(memcmp(cause.image, image, sizeof(cause.image)) == 0);
+#else
+    assert(!cause.valid); /* A failed diagnostic write is simply absent. */
+#endif
     for (unsigned i = 0; i < 5; i++) {
         start(ROUNDIE_RESET_PANIC);
         assert(status().safe && status().failures == 3 && status().skip_gui);
@@ -218,6 +322,16 @@ int main(void)
     }
     start(ROUNDIE_RESET_POWER);
     assert(status().safe && status().failures == 0); /* Durable latch, no retained crash count. */
+    roundie_boot_diag_stored_cause(&cause); /* Reloaded from NVS after power-on. */
+#if CAUSE_FAULT == 0 || CAUSE_FAULT == 3
+    /* nvs_set_blob() already wrote the entry; only its commit call failed. */
+    assert(cause.valid && cause.latch == ROUNDIE_SAFE_BOOT_LOOP && cause.failures == 3);
+#else
+    assert(!cause.valid); /* Damaged or missing entry: ignored, never fatal. */
+#endif
+    roundie_boot_session_t previous;
+    roundie_boot_diag_previous(&previous);
+    assert(!previous.valid); /* RTC RAM is not trusted after power-on. */
     assert(roundie_boot_normal_trial() && roundie_boot_persistence_sync());
     start(ROUNDIE_RESET_SOFTWARE);
     assert(!status().safe && status().trial);
@@ -327,6 +441,61 @@ int main(void)
                   "\"frames\":[1107296272,1077411840],\"frame\":0,\"phase\":\"idle\",\"trigger\":0,"
                   "\"monitor_pc\":0,\"stack\":[0,0,0,0,0],\"origin\":\"app_code\"}}\n") != NULL);
     assert(!command("CRASH extra", false));
+    /* NVS copy of the crash record (E0 §9.4 item 3): bounded, own commit,
+     * yields to the reserve kept for settings, touches no other key. */
+    assert(command("CRASH STORED", false));
+    assert(strstr(response, "{\"crash\":{\"stored\":1,\"store\":-1,\"limit\":256,\"size\":224,"
+                  "\"nvs\":[1,0,378,504],\"raw_reset\":0,\"image\":\"\",\"valid\":0}}\n") != NULL);
+    roundie_recovery_store_crash(ESP_RST_SW, image); /* not a fault reset: nothing to copy */
+    assert(crash_writes == 0);
+    unsigned latch_writes = writes;
+    unsigned latch_commits = commits;
+    uint8_t latch_before[sizeof(blob)];
+    memcpy(latch_before, blob, sizeof(blob));
+    nvs_available = roundie_boot_diag_entries(224) + ROUNDIE_BOOT_DIAG_RESERVE_ENTRIES - 1; /* full */
+    roundie_recovery_store_crash(ESP_RST_PANIC, image);
+    assert(crash_writes == 0 && crash_commits == 0);
+    assert(command("CRASH STORED", false) && strstr(response, "\"store\":3,") != NULL);
+    assert(strstr(response, "\"valid\":0}}") != NULL);
+    nvs_available = roundie_boot_diag_entries(224) + ROUNDIE_BOOT_DIAG_RESERVE_ENTRIES;
+    roundie_recovery_store_crash(ESP_RST_PANIC, image);
+    assert(crash_writes == 1 && crash_commits == 1);
+    assert(command("CRASH STORED", false) && strstr(response, "\"store\":0,") != NULL);
+    char expected_image[64];
+    snprintf(expected_image, sizeof(expected_image), "\"raw_reset\":4,\"image\":\"%02x00000000000000\",", image[0]);
+    assert(strstr(response, expected_image) != NULL);
+    assert(strstr(response, "\",\"valid\":1,\"loaded\":1,\"fault\":1,\"instance\":7,\"digest\":\"abababab") != NULL);
+    assert(strstr(response, "\"origin\":\"app_code\"}}\n") != NULL);
+    roundie_recovery_store_crash(ESP_RST_TASK_WDT, image); /* identical apart from the reset */
+    assert(crash_writes == 2);
+    roundie_recovery_store_crash(ESP_RST_TASK_WDT, image); /* identical copy: no write */
+    assert(crash_writes == 2 && crash_commits == 2);
+    assert(command("CRASH STORED", false) && strstr(response, "\"store\":1,") != NULL);
+    crash_blob[20] ^= 1U; /* damaged copy: reported absent, never fatal */
+    assert(command("CRASH STORED", false) && strstr(response, "\"valid\":0}}") != NULL);
+    uint8_t oversized[ROUNDIE_BOOT_DIAG_BLOB_MAX + 1] = {0};
+    assert(roundie_boot_diag_store("crash", oversized, sizeof(oversized)) == ROUNDIE_DIAG_TOO_LARGE);
+    assert(writes == latch_writes && commits == latch_commits && memcmp(blob, latch_before, sizeof(blob)) == 0);
+    nvs_available = 378;
+    /* RTC session record (§9.4 items 2 and 4): restart site and battery
+     * survive a software/watchdog reset, never a power-on. */
+    roundie_boot_diag_restart_site(ROUNDIE_RESTART_SITE_GUI_WATCHDOG, 5000000);
+    roundie_boot_diag_battery(3900, -120, 80, 0x10, 251, 1764000000, 6000000);
+    roundie_boot_diag_battery(3700, -100, 70, 0, 250, 1764000001, 7000000); /* within 60 s: kept out */
+    roundie_boot_diag_begin(ESP_RST_TASK_WDT, image);
+    roundie_boot_session_t session;
+    roundie_boot_diag_previous(&session);
+    assert(session.valid && session.restart_site == ROUNDIE_RESTART_SITE_GUI_WATCHDOG && session.voltage_mv == 3900);
+    assert(command("CAUSE", false));
+    assert(strstr(response, "{\"cause\":{\"valid\":") != NULL);
+    assert(strstr(response, "},\"previous\":{\"valid\":1,") != NULL);
+    assert(strstr(response, "\"restart_site\":3,\"uptime_ms\":6000,\"battery\":1,\"mv\":3900,\"ma\":-120,"
+                  "\"soc\":80,\"flags\":16,\"temp_dc\":251,\"battery_ms\":6000,\"rtc\":1764000000}}\n") != NULL);
+    assert(!command("CAUSE extra", false));
+    roundie_boot_diag_restart_site(ROUNDIE_RESTART_SITE_LCD_FLUSH, 1000);
+    roundie_boot_diag_begin(ESP_RST_POWERON, image); /* RTC RAM undefined: ignored */
+    roundie_boot_diag_previous(&session);
+    assert(!session.valid);
     assert(!command("REQUEST extra", false) && !status().safe);
     assert(!command("REQUEST", true) && !status().safe);
     ota.running.state = ESP_OTA_IMG_PENDING_VERIFY;
@@ -476,6 +645,7 @@ int main(void)
         raw_reset = (esp_reset_reason_t)reason;
         assert(roundie_boot_reset_class() <= ROUNDIE_RESET_EXTERNAL);
     }
+    printf("latch trace: %s\n", latch_trace);
     puts("BootGuard engine, actual NVS backend and RS1 controller PASS (mocked IDF, no hardware)");
     return 0;
 }
