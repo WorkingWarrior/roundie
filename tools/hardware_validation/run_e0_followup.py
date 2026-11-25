@@ -193,8 +193,7 @@ class FollowupRunner(e0.Runner):
     # ---- 2. launch/close cycles ---------------------------------------
     def open_stopwatch(self):
         self.go_home()
-        self.call("launcher", "OPEN")
-        nav = self.wait_for("list", self.nav, lambda n: n["state"] == "LIST", 10)
+        nav = self.open_list()
         self.call("launcher", f"SELECT {nav['revision']} {e0.STOPWATCH}")
         nav = self.wait_for("stopwatch active", self.nav,
                             lambda n: n["state"] == "ACTIVE" and n["selected"] == e0.STOPWATCH, 15)
@@ -254,8 +253,7 @@ class FollowupRunner(e0.Runner):
         self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))
         self.call("ui", e0.semantic_operation("PRESS", generation, roles, "lap"))
         self.close_stopwatch(generation)
-        self.call("launcher", "OPEN")
-        self.wait_for("list", self.nav, lambda n: n["state"] == "LIST", 10)
+        self.open_list()
         benches.append(self.bench_with_traces("launcher list"))
         self.call("launcher", "HOME")
         self.wait_for("Home", self.nav, lambda n: n["state"] == "HOME", 10)

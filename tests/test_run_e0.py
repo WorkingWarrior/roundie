@@ -251,5 +251,49 @@ class DiscoveryTest(unittest.TestCase):
             self.assertEqual(json.loads((out / "report.json").read_text())["outcome"], BLOCKED)
 
 
+class LauncherDevice:
+    """Launcher without a list snapshot: OPEN shows ERROR until REFRESH."""
+
+    def __init__(self):
+        self.state = "HOME"
+        self.sent = []
+
+    def call(self, protocol, operation="STATUS", timeout=None):
+        if protocol != "launcher":
+            raise AssertionError(protocol)
+        if operation != "NAV":
+            self.sent.append(operation)
+        if operation == "OPEN":
+            self.state = "ERROR"
+        elif operation == "REFRESH":
+            self.state = "LIST"
+        elif operation == "HOME":
+            self.state = "HOME"
+        return {"state": self.state, "revision": 4, "generation": 0, "request": 0, "selected": ""}
+
+
+class OpenListTest(unittest.TestCase):
+    def runner(self, device):
+        clock = FakeClock()
+        monitor = types.SimpleNamespace(faults=[], notices=[])
+        args = types.SimpleNamespace()
+        out = tempfile.mkdtemp()
+        return run_e0.Runner(args, device, monitor, out, clock.sleep, clock.now)
+
+    def test_refreshes_an_unavailable_list(self):
+        device = LauncherDevice()
+        nav = self.runner(device).open_list()
+        self.assertEqual(nav["state"], "LIST")
+        self.assertEqual(device.sent, ["OPEN", "REFRESH"])
+
+    def test_error_view_returns_home(self):
+        device = LauncherDevice()
+        device.state = "ERROR"
+        runner = self.runner(device)
+        runner.wait_for = lambda what, probe, accept, timeout, interval=0.2: probe() if what != "runtime admission" else None
+        runner.go_home()
+        self.assertEqual(device.sent, ["HOME"])
+
+
 if __name__ == "__main__":
     unittest.main()

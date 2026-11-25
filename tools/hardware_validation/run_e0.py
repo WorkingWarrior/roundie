@@ -252,13 +252,23 @@ class Runner:
         if nav["state"] == "ACTIVE":
             self.call("launcher", f"EXIT {nav['generation']}")
             nav = self.wait_for("Home or list after exit", self.nav, lambda n: n["state"] in ("HOME", "LIST"), 10)
-        if nav["state"] == "LIST":
+        if nav["state"] in ("LIST", "ERROR"):
             self.call("launcher", "HOME")
         nav = self.wait_for("Home", self.nav, lambda n: n["state"] == "HOME", 10)
         # Runtime admission (and LittleFS usage) arrives some seconds after boot;
         # snapshots taken before it report capacity ok=0.
         self.wait_for("runtime admission", lambda: self.call("package"),
                       lambda status: status["capacity"][0] == 1, 60, interval=1.0)
+        return nav
+
+    def open_list(self):
+        """RP1 OPEN from Home. Without a list snapshot since boot the launcher
+        shows ERROR ("Lista niedostępna"); the user path is Refresh."""
+        self.call("launcher", "OPEN")
+        nav = self.wait_for("list", self.nav, lambda n: n["state"] in ("LIST", "ERROR"), 10)
+        if nav["state"] == "ERROR":
+            self.call("launcher", "REFRESH")
+            nav = self.wait_for("refreshed list", self.nav, lambda n: n["state"] == "LIST", 20)
         return nav
 
     def perf_traces(self, after_sequence):
@@ -384,8 +394,7 @@ class Runner:
     def s_stopwatch(self):
         nav = self.go_home()
         perf = self.call("perf", "PERF")
-        self.call("launcher", "OPEN")
-        nav = self.wait_for("list", self.nav, lambda n: n["state"] == "LIST", 10)
+        nav = self.open_list()
         self.call("launcher", f"SELECT {nav['revision']} {STOPWATCH}")
         nav = self.wait_for("stopwatch active", self.nav,
                             lambda n: n["state"] == "ACTIVE" and n["selected"] == STOPWATCH, 15)
