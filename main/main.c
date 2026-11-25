@@ -1178,6 +1178,8 @@ void app_main(void)
     esp_err_t nvs_error = nvs_flash_init();
     ESP_LOGI(TAG, "NVS initialization: %s; no erase fallback", esp_err_to_name(nvs_error));
     roundie_boot_persistence_init(nvs_error == ESP_OK);
+    /* Diagnostic ring of reset reasons; never read by BootGuard. */
+    roundie_boot_history_record(nvs_error == ESP_OK);
     roundie_local_time_init(nvs_error == ESP_OK, roundie_wall_clock_valid);
     roundie_elf_set_clock_source(roundie_local_time_now);
     roundie_boot_status_t boot;
@@ -1269,6 +1271,9 @@ void app_main(void)
              sensor_state_name(initial_battery.state), initial_battery.battery_present,
              initial_battery.voltage_mv, initial_battery.soc_valid,
              initial_battery.soc_percent, esp_err_to_name(initial_battery.error));
+    if (initial_battery.error == ESP_OK && initial_battery.battery_present) {
+        roundie_boot_history_battery(initial_battery.voltage_mv);
+    }
     roundie_wall_clock_start(&initial_rtc);
 
     lv_init();

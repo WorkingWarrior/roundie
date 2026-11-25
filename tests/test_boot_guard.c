@@ -79,6 +79,8 @@ esp_err_t nvs_commit(nvs_handle_t handle)
     return write_ok ? ESP_OK : ESP_FAIL;
 }
 esp_reset_reason_t esp_reset_reason(void) { return raw_reset; }
+/* The boot history has its own test (test_boot_history.c). */
+void roundie_boot_history_get(roundie_boot_history_t *out) { memset(out, 0, sizeof(*out)); }
 void esp_restart(void) { resets++; }
 size_t heap_caps_get_free_size(unsigned flags) { (void)flags; return 100000; }
 size_t heap_caps_get_minimum_free_size(unsigned flags) { (void)flags; return 90000; }

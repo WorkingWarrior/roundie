@@ -75,3 +75,32 @@ const char *roundie_boot_reason_name(uint32_t reason);
 void roundie_boot_persistence_init(bool nvs_available);
 bool roundie_boot_persistence_sync(void);
 roundie_reset_class_t roundie_boot_reset_class(void);
+
+/* Boot history (diagnostic only, docs/safe-mode.md "Boot history"): a ring of
+ * the last raw reset reasons with the gauge voltage at startup, and a count of
+ * brownout resets, in its own NVS namespace. It never influences Safe Mode.
+ * At most two small NVS writes per boot; a malformed record is preserved and
+ * reported, never overwritten or erased. */
+#define ROUNDIE_BOOT_HISTORY_ENTRIES 8U
+typedef enum {
+    ROUNDIE_HISTORY_UNAVAILABLE, /* no NVS or an I/O error */
+    ROUNDIE_HISTORY_OK,
+    ROUNDIE_HISTORY_MALFORMED,   /* kept as found; nothing recorded */
+} roundie_history_state_t;
+typedef struct {
+    uint32_t boot;      /* 1-based boot number since the record was created */
+    uint16_t raw_reset; /* esp_reset_reason_t */
+    uint16_t vbat_mv;   /* gauge voltage at startup, 0 when not read */
+} roundie_boot_history_entry_t;
+typedef struct {
+    roundie_history_state_t state;
+    uint32_t boots;
+    uint32_t brownouts;
+    uint32_t count;     /* valid entries, newest first */
+    roundie_boot_history_entry_t entries[ROUNDIE_BOOT_HISTORY_ENTRIES];
+} roundie_boot_history_t;
+/* Boot owner, once, after nvs_flash_init(). */
+void roundie_boot_history_record(bool nvs_available);
+/* Once per boot with the first gauge reading; later calls do nothing. */
+void roundie_boot_history_battery(uint16_t voltage_mv);
+void roundie_boot_history_get(roundie_boot_history_t *out);

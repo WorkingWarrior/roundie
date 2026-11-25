@@ -236,6 +236,30 @@ static void crash_reply(const char *id)
     }
 }
 
+/* RS1 HISTORY (read-only): the diagnostic boot history, newest first, as
+ * [boot, raw esp_reset_reason, gauge mV at startup or 0]. */
+static void history_reply(const char *id)
+{
+    static const char *const states[] = {"unavailable", "ok", "malformed"};
+    roundie_boot_history_t history;
+    roundie_boot_history_get(&history);
+    char response[400];
+    int length = snprintf(response, sizeof(response),
+        "\n!RS1 %s 0 {\"history\":{\"state\":\"%s\",\"boots\":%lu,\"brownouts\":%lu,\"entries\":[",
+        id, states[history.state], (unsigned long)history.boots, (unsigned long)history.brownouts);
+    for (uint32_t i = 0; i < history.count && length > 0 && (size_t)length < sizeof(response); i++) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length, "%s[%lu,%u,%u]",
+                           i == 0 ? "" : ",", (unsigned long)history.entries[i].boot,
+                           history.entries[i].raw_reset, history.entries[i].vbat_mv);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length, "]}}\n");
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
 void roundie_recovery_command(char *line, bool discard)
 {
     char id[9] = "00000000";
@@ -267,6 +291,9 @@ void roundie_recovery_command(char *line, bool discard)
                     error = ESP_OK;
                 } else if (strcmp(operation, "CRASH") == 0) {
                     crash_reply(id);
+                    return;
+                } else if (strcmp(operation, "HISTORY") == 0) {
+                    history_reply(id);
                     return;
                 } else if (strcmp(operation, "HEALTH") == 0) {
                     /* Read-only: STATUS plus memory, task and stack figures. */
