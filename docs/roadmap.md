@@ -16,7 +16,15 @@ Plan rozwoju platformy po audycie Phosphora. Stan odniesienia dla faktów z kodu
 
 **Fakt.** Istnieją `RS1 HEALTH`, `RP1 PERF/BENCH` i skrypty prób sprzętowych. `BENCH` mierzy pracę GUI, z pomiarami DMA w diagnostyce, lecz sam nie mierzy scanoutu. Manager ma już korelację żądań po Web Serial. [Diagnostyka GUI](../main/gui_diagnostics.c) · [Runner sprzętowy](../tools/hardware_validation/README.md)
 
-**Zakres.** Uruchamianie i zamykanie istniejącego stopera, semantyczne `PRESS/VALUE`, statusy, raport i kontrolowany scenariusz light sleep w trybie deweloperskim Managera. Użyć istniejących protokołów i procedur testowych. W scenariuszu snu tolerować oczekiwaną utratę USB, a po powrocie odczytać stan urządzenia. Pomiary czasu wake opierać na niezależnym odniesieniu.
+**Zakres.** Uruchamianie i zamykanie istniejącego stopera, semantyczne `PRESS/VALUE`, statusy, raport i kontrolowany scenariusz light sleep. Wykonawcą jest runner Pythona (`tools/hardware_validation/run_e0.py`, jedna komenda na płytkę: `e0_board.py --board 1.85b|1.75c`), a nie tryb deweloperski Managera. Użyć istniejących protokołów i procedur testowych.
+
+**Decyzja (domknięcie E0, 2026-11-26): runner zamiast trybu deweloperskiego Managera.** Uzasadnienie:
+- runner działa bez obecności użytkownika, a Web Serial wymaga gestu użytkownika przy każdym otwarciu portu;
+- obsługuje oczekiwaną utratę USB w light sleep i powrót przez ponowne otwarcie ścieżki `/dev/serial/by-id`;
+- jego logika ma testy hosta w CI (`tests/test_run_e0*.py`, `tests/test_e0_board.py`);
+- raporty JSON zapisuje w repozytorium roboczym obok obrazu i commitu.
+
+Manager zachowuje swoją rolę (instalacja, pakiety, w EABI prezentacja formatu i wymagań). Tryb deweloperski Managera nie jest warunkiem żadnej bramki. Jeśli okaże się potrzebny do prób z użytkownikiem (PENDING), zostanie dodany jako cienka nakładka na te same protokoły. W scenariuszu snu tolerować oczekiwaną utratę USB, a po powrocie odczytać stan urządzenia. Pomiary czasu wake opierać na niezależnym odniesieniu.
 
 **Bramka.** Dla Home, stopera, pełnego odświeżania i stanu po zamknięciu zebrać bieżący i minimalny wolny heap wewnętrzny/PSRAM, największe bloki, zapas stosów, czasy GUI/DMA i wolne miejsce LittleFS. Zmierzyć prąd średni i szczytowy w pracy, przy zgaszonym ekranie i w light sleep. Na obu płytkach zapisać jasność, rodzaj zasilania, stan ładowania i podłączenie USB. Zmierzyć osobno odczyt, SHA-256 i czas łączny dla 64, 512 i 1024 KiB danych testowych w LittleFS, ze szczególnym uwzględnieniem wpływu na system worker.
 
