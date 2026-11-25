@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "app_runtime.c" "clock_diagnostic.c" "display_scale.c" "storage_diagnostics.c" "ota_diagnostics.c" "recovery_diagnostics.c" "elf_diagnostics.c" "package_diagnostics.c" "face_diagnostics.c" "gui_diagnostics.c" "power_manager.c" "power_gui.c" "storage_mode_screen.c" "storage_usb.c" "storage_import.c" "audio_diagnostics.c"
+idf_component_register(SRCS "main.c" "app_runtime.c" "clock_diagnostic.c" "display_scale.c" "storage_diagnostics.c" "ota_diagnostics.c" "recovery_diagnostics.c" "gauge_diagnostics.c" "gauge_learning_service.c" "elf_diagnostics.c" "package_diagnostics.c" "face_diagnostics.c" "gui_diagnostics.c" "power_manager.c" "power_gui.c" "storage_mode_screen.c" "storage_usb.c" "storage_import.c" "audio_diagnostics.c"
                        LDFRAGMENTS "lvgl_iram.lf"
                        REQUIRES roundie_board lvgl roundie_fonts esp_timer
                        PRIV_REQUIRES esp_app_format spi_flash esp_psram heap roundie_platform roundie_time

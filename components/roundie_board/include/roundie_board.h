@@ -5,6 +5,7 @@
 
 #include "esp_codec_dev.h"
 #include "esp_err.h"
+#include "roundie_gauge.h"
 #include "roundie_rtc_time.h"
 
 /* Board support boundary (docs/board-support.md). Firmware outside
@@ -79,9 +80,13 @@ typedef struct {
     uint16_t voltage_mv;
     uint16_t soc_percent;
     int16_t current_ma; /* positive = charging, negative = discharging */
+    bool average_current_valid;
+    int16_t average_current_ma; /* AverageCurrent(), where the board reads it */
     int32_t temperature_deci_c;
     uint16_t remaining_mah;
     uint16_t full_mah;
+    uint16_t design_mah; /* DesignCapacity(); design_valid when read */
+    bool design_valid;
     uint16_t battery_flags;
     uint16_t operation_flags;
     bool charging;
@@ -172,3 +177,21 @@ esp_err_t roundie_board_rtc_set_trusted(roundie_board_t *board,
                                         const roundie_rtc_time_t *time);
 void roundie_board_battery_read(roundie_board_t *board,
                                 roundie_battery_sample_t *sample);
+
+/* Gauge capacity configuration (1.85B BQ27220 CEDV profile 1; types in
+ * roundie_gauge.h). Read only reads flags and Data Memory; it sends no
+ * subcommand. Set initializes Design Capacity to capacity_mah and Full Charge
+ * Capacity to full_mah (a stored learned value, or capacity_mah) once: it writes nothing when Design Capacity already equals
+ * capacity_mah (the learned FCC is kept), and writes only over the gauge's
+ * reset default of 3000 mAh. It needs an UNSEALED gauge (no access keys are
+ * sent; the gauge is never sealed or reset), refuses a sealed gauge, a missing
+ * battery, an uninitialized gauge, an open CFGUPDATE and a profile that does
+ * not match DesignCapacity(), verifies the write inside CFGUPDATE and after
+ * EXIT_CFG_UPDATE_REINIT. The write goes to the gauge's RAM: a gauge
+ * power-on reset restores the OTP defaults. OTP is never programmed. Up to
+ * about 7 s; call only from the system worker (its task watchdog is fed).
+ * Boards without such a gauge return ESP_ERR_NOT_SUPPORTED. */
+esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
+                                            roundie_gauge_capacity_t *capacity);
+esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
+                                           uint16_t full_mah, roundie_gauge_capacity_t *capacity);

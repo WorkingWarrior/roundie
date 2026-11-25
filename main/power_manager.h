@@ -26,6 +26,35 @@ bool roundie_power_gui_sleep(void);
 
 /* Existing system worker loop. */
 void roundie_power_worker_poll(int64_t now_us);
+#if CONFIG_ROUNDIE_POWER
+/* System worker: a diagnostics-owned inhibitor its holder renews. Releases
+ * *handle (0 = none), then for seconds 1..600 acquires kinds, in one step
+ * under the power lock; seconds 0 only releases. Returns whether held. */
+bool roundie_power_diagnostics_hold(uint32_t *handle, uint32_t kinds, uint32_t seconds);
+/* System worker: request a light sleep of limit_s (1..3600) seconds through
+ * the normal admission path, only while the screen is already off, no sleep
+ * or command is pending. Returns whether the request was accepted (the
+ * worker may still refuse it at admission). */
+bool roundie_power_request_timed_sleep(uint32_t limit_s);
+/* System worker: show a battery alert (roundie_gauge_alert_t; 0 removes it).
+ * A non-zero alert also turns the screen on. */
+void roundie_power_battery_alert(uint8_t alert);
+/* Completed light sleeps since boot. */
+uint32_t roundie_power_light_sleeps(void);
+/* Completed light sleeps since boot: their total time, wakes by the timer
+ * alone or by anything else, the awake gaps between consecutive sleeps
+ * (each from a wake to the next sleep start) and the last cause mask. */
+typedef struct {
+    uint32_t sleeps;
+    int64_t slept_us;
+    uint32_t timer_wakes;
+    uint32_t other_wakes;
+    int64_t awake_us;
+    uint32_t awake_gaps;
+    uint32_t causes;
+} roundie_power_sleep_counters_t;
+void roundie_power_sleep_counters(roundie_power_sleep_counters_t *counters);
+#endif
 #if CONFIG_ROUNDIE_DEV_POWER
 /* Same bounded framer as RS1; replies before any sleep starts. */
 void roundie_power_command(char *line, bool discard);

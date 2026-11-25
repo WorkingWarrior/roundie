@@ -237,6 +237,17 @@ static void light_sleep(roundie_board_t *board, uint32_t limit_s)
     roundie_power_shared.last_sleep_us = slept_us;
     if (error == ESP_OK) {
         roundie_power_shared.sleeps++;
+        roundie_power_shared.slept_total_us += slept_us;
+        if (causes == (1U << ESP_SLEEP_WAKEUP_TIMER)) {
+            roundie_power_shared.timer_wakes++;
+        } else {
+            roundie_power_shared.other_wakes++;
+        }
+        if (roundie_power_shared.last_wake_us > 0) {
+            roundie_power_shared.awake_total_us += started_us - roundie_power_shared.last_wake_us;
+            roundie_power_shared.awake_gaps++;
+        }
+        roundie_power_shared.last_wake_us = started_us + slept_us;
     }
     roundie_pm_woke(&roundie_power_shared.pm, causes, user_wake, error != ESP_OK, slept_us, esp_timer_get_time());
     portEXIT_CRITICAL(&roundie_power_shared.lock);
@@ -336,6 +347,83 @@ static const char *phase_name(sleep_phase_t phase)
     return "unknown";
 }
 
+#endif
+
+bool roundie_power_diagnostics_hold(uint32_t *handle, uint32_t kinds, uint32_t seconds)
+{
+    const int64_t now_us = esp_timer_get_time();
+    bool held = false;
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    if (*handle != 0) {
+        /* An expired handle is already released: STALE is expected then. */
+        (void)roundie_power_inhibit_release(&roundie_power_shared.inhibitors, *handle, now_us);
+        *handle = 0;
+    }
+    if (seconds > 0) {
+        roundie_power_inhibit_handle_t acquired = 0;
+        held = roundie_power_inhibit_acquire(&roundie_power_shared.inhibitors, ROUNDIE_POWER_OWNER_DIAGNOSTICS,
+                                             kinds, now_us, (int64_t)seconds * 1000000, &acquired) ==
+               ROUNDIE_POWER_INHIBIT_OK;
+        if (held) {
+            *handle = acquired;
+        }
+    }
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+    return held;
+}
+
+bool roundie_power_request_timed_sleep(uint32_t limit_s)
+{
+    if (limit_s < 1 || limit_s > 3600) {
+        return false;
+    }
+    bool accepted = false;
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    if (roundie_power_shared.board != NULL && roundie_power_shared.phase == SLEEP_IDLE &&
+        roundie_power_shared.command == COMMAND_NONE && roundie_power_shared.state == ROUNDIE_POWER_SCREEN_OFF &&
+        roundie_power_shared.screen_request == SCREEN_REQUEST_NONE &&
+        roundie_pm_request_light_sleep(&roundie_power_shared.pm, esp_timer_get_time()) == ROUNDIE_POWER_ALLOWED) {
+        roundie_power_shared.phase = SLEEP_REQUESTED;
+        roundie_power_shared.sleep_limit_s = limit_s;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+    return accepted;
+}
+
+uint32_t roundie_power_light_sleeps(void)
+{
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    uint32_t sleeps = roundie_power_shared.sleeps;
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+    return sleeps;
+}
+
+void roundie_power_sleep_counters(roundie_power_sleep_counters_t *counters)
+{
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    counters->sleeps = roundie_power_shared.sleeps;
+    counters->slept_us = roundie_power_shared.slept_total_us;
+    counters->timer_wakes = roundie_power_shared.timer_wakes;
+    counters->other_wakes = roundie_power_shared.other_wakes;
+    counters->awake_us = roundie_power_shared.awake_total_us;
+    counters->awake_gaps = roundie_power_shared.awake_gaps;
+    counters->causes = roundie_power_shared.wake_causes;
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+}
+
+void roundie_power_battery_alert(uint8_t alert)
+{
+    portENTER_CRITICAL(&roundie_power_shared.lock);
+    roundie_power_shared.battery_alert = alert;
+    roundie_power_shared.battery_alert_serial++;
+    if (alert != 0 && roundie_power_shared.board != NULL) {
+        roundie_power_shared.screen_request = SCREEN_REQUEST_ON;
+    }
+    portEXIT_CRITICAL(&roundie_power_shared.lock);
+}
+
+#if CONFIG_ROUNDIE_DEV_POWER
 void roundie_power_command(char *line, bool discard)
 {
     char id[9] = "00000000";

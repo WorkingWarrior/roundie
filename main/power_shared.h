@@ -45,6 +45,8 @@ typedef struct {
     screen_request_t screen_request;
     uint32_t message_serial;
     char message[40];
+    uint8_t battery_alert; /* roundie_gauge_alert_t; shown by the GUI */
+    uint32_t battery_alert_serial;
     roundie_power_state_t state;
     roundie_power_refusal_t refusal;
     esp_err_t sleep_error;
@@ -52,6 +54,12 @@ typedef struct {
     uint32_t screen_offs;
     uint32_t wake_causes;
     int64_t last_sleep_us;
+    int64_t slept_total_us;   /* completed light sleeps, since boot */
+    uint32_t timer_wakes;     /* completed sleeps woken by the timer alone */
+    uint32_t other_wakes;     /* completed sleeps woken by anything else */
+    int64_t awake_total_us;   /* awake gaps between consecutive sleeps */
+    uint32_t awake_gaps;
+    int64_t last_wake_us;     /* 0 before the first completed sleep */
     roundie_pm_t pm;                     /* M8-B state model and its diagnostics */
     roundie_power_inhibitors_t inhibitors;
 } roundie_power_shared_t;

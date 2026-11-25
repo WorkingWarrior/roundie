@@ -42,6 +42,8 @@
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #include "power_manager.h"
+#include "gauge_diagnostics.h"
+#include "gauge_learning_service.h"
 #include "roundie_storage_mode.h"
 #include "roundie_elf_crash.h"
 #include "storage_mode_screen.h"
@@ -313,6 +315,10 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
                 if (strncmp(frame->line, "!RW1 ", 5) == 0) {
                     roundie_power_command(frame->line, frame->discard);
                 } else
+                if (strncmp(frame->line, "!RG1 ", 5) == 0) {
+                    roundie_gauge_command(shared->board_ready ? shared->board : NULL,
+                                          frame->line, frame->discard);
+                } else
 #endif
 #if CONFIG_ROUNDIE_DEV_OTA
                 if (strncmp(frame->line, "!RO1 ", 5) == 0) {
@@ -357,6 +363,9 @@ static void sensor_worker(void *argument)
     bool first_battery = true;
     uint16_t last_voltage = 0;
     uint16_t last_soc = 0;
+#if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH) && CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH > 0
+    roundie_gauge_restore_t gauge_restore = {0};
+#endif
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
     /* Secondary VFS RX requires its standard interrupt driver. One RX owner,
      * no extra task or per-command transport allocation. */
@@ -483,6 +492,38 @@ static void sensor_worker(void *argument)
         shared->rtc = rtc;
         shared->battery = battery;
         portEXIT_CRITICAL(&shared->lock);
+#if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH)
+        roundie_gauge_service_sample(shared->board, &battery, esp_timer_get_time());
+#endif
+#if defined(CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH) && CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH > 0
+        /* The gauge lost its RAM (battery removed): its Design Capacity is
+         * back at the OTP default. One initialization per loss, never over a
+         * configured capacity (docs/bringup.md). FCC is the learned value
+         * kept in NVS when its record is valid, else the design value. Blocks
+         * this worker for up to about 7 s, so not during an OTA transfer or
+         * the first minute. */
+        roundie_ota_status_t ota_now;
+        roundie_ota_snapshot(&ota_now);
+        bool gauge_ready = battery.initialized && ota_now.phase == ROUNDIE_OTA_IDLE &&
+                           esp_timer_get_time() >= 60000000;
+        if (roundie_gauge_restore_due(&gauge_restore, CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH,
+                                      battery.battery_present, gauge_ready, battery.design_valid,
+                                      battery.design_mah)) {
+            roundie_gauge_capacity_t capacity;
+            uint16_t full_mah = CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH;
+            esp_err_t gauge_error = roundie_board_gauge_capacity_read(shared->board, &capacity);
+            if (gauge_error == ESP_OK) {
+                full_mah = roundie_gauge_service_restore_full(&capacity, CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH);
+                gauge_error = roundie_board_gauge_capacity_set(
+                    shared->board, CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH, full_mah, &capacity);
+            }
+            roundie_gauge_restore_done(&gauge_restore, gauge_error);
+            ESP_LOGW(TAG, "Gauge capacity restore %" PRIu32 ": %u -> %d mAh, FCC %u, %s, step %u",
+                     gauge_restore.attempts, battery.design_mah,
+                     CONFIG_ROUNDIE_GAUGE_DESIGN_CAPACITY_MAH, full_mah, esp_err_to_name(gauge_error),
+                     capacity.step);
+        }
+#endif
     }
 }
 

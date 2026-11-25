@@ -20,11 +20,13 @@
 #include "esp_clk_tree.h"
 #include "esp_codec_dev_defaults.h"
 #include "esp_sleep.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lcd_init_tables.h"
 #include "board_pins.h"
+#include "bq27220_config.h"
 #include "lcd_config.h"
 #include "sensor_codec.h"
 #include "soc/spi_struct.h"
@@ -950,8 +952,21 @@ void roundie_board_battery_read(roundie_board_t *board,
     if (error == ESP_OK) {
         sample->current_ma = roundie_gauge_current(value);
         sample->current_valid = true;
-        /* The BQ27220 reports charging as a positive average current. */
+        /* Current() 0x0C is the instantaneous current; charging is positive. */
         sample->charging = sample->current_ma > 0;
+    }
+    sample_error(board, sample, error);
+    /* AverageCurrent() 0x14, IIR-filtered (TRM 4.9.9). Diagnostic only: a
+     * failed read leaves it invalid without failing the sample. */
+    error = gauge_read_word(board, 0x14, &value);
+    if (error == ESP_OK) {
+        sample->average_current_ma = roundie_gauge_current(value);
+        sample->average_current_valid = true;
+    }
+    error = gauge_read_word(board, 0x3c, &value);
+    if (error == ESP_OK) {
+        sample->design_mah = value;
+        sample->design_valid = true;
     }
     sample_error(board, sample, error);
     error = gauge_read_word(board, 0x06, &value);
@@ -965,4 +980,82 @@ void roundie_board_battery_read(roundie_board_t *board,
         sample->state = ROUNDIE_SENSOR_UNCALIBRATED;
     }
     sample->observed_us = esp_timer_get_time();
+}
+
+/* BQ27220 capacity configuration (bq27220_config.c) over the gauge handle.
+ * Called only from the system worker: the delays feed its task watchdog. */
+#define GAUGE_WRITE_MAX 8
+
+static esp_err_t gauge_io_read(void *context, uint8_t command, uint8_t *data, size_t length)
+{
+    roundie_board_t *board = context;
+    return read_register(board->gauge, command, data, length);
+}
+
+static esp_err_t gauge_io_write(void *context, uint8_t command, const uint8_t *data,
+                                size_t length)
+{
+    roundie_board_t *board = context;
+    uint8_t raw[1 + GAUGE_WRITE_MAX];
+    if (length > GAUGE_WRITE_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    raw[0] = command;
+    memcpy(&raw[1], data, length);
+    return i2c_master_transmit(board->gauge, raw, 1 + length, I2C_TIMEOUT_MS);
+}
+
+static void gauge_io_delay(void *context, uint32_t milliseconds)
+{
+    (void)context;
+    const uint32_t slice_ms = 500;
+    while (milliseconds > 0) {
+        uint32_t step = milliseconds < slice_ms ? milliseconds : slice_ms;
+        vTaskDelay(pdMS_TO_TICKS(step) > 0 ? pdMS_TO_TICKS(step) : 1);
+        (void)esp_task_wdt_reset();
+        milliseconds -= step;
+    }
+}
+
+static roundie_bq27220_io_t gauge_io(roundie_board_t *board)
+{
+    const roundie_bq27220_io_t io = {
+        .context = board,
+        .read = gauge_io_read,
+        .write = gauge_io_write,
+        .delay_ms = gauge_io_delay,
+    };
+    return io;
+}
+
+esp_err_t roundie_board_gauge_capacity_read(roundie_board_t *board,
+                                            roundie_gauge_capacity_t *capacity)
+{
+    if (board == NULL || capacity == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(capacity, 0, sizeof(*capacity));
+    if (board->gauge == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    const roundie_bq27220_io_t io = gauge_io(board);
+    return roundie_bq27220_read(&io, capacity);
+}
+
+esp_err_t roundie_board_gauge_capacity_set(roundie_board_t *board, uint16_t capacity_mah,
+                                           uint16_t full_mah, roundie_gauge_capacity_t *capacity)
+{
+    if (board == NULL || capacity == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(capacity, 0, sizeof(*capacity));
+    if (board->gauge == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    const roundie_bq27220_io_t io = gauge_io(board);
+    esp_err_t error = roundie_bq27220_initialize(&io, capacity_mah, full_mah, capacity);
+    ESP_LOGW(TAG, "Gauge capacity %u mAh, FCC %u mAh: %s, step %u, written %d, DC %u, DM FCC %u, op=0x%04x",
+             capacity_mah, full_mah, esp_err_to_name(error), capacity->step, capacity->written,
+             capacity->design_mah, capacity->dm_full_mah, capacity->operation_flags);
+    return error;
 }
