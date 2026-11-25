@@ -1,41 +1,88 @@
 # Progress
 
+Rules (from the task, binding for every session):
+- Autonomous mode. Decisions and their reasons go in the reports. PASS only with evidence from a test that was run.
+- Closure rule: before a stage counts as finished, do everything that can be implemented and checked without the 1.75C and without the user present. The only allowed gaps are:
+  - BLOCKED: items that need a connected 1.75C;
+  - PENDING: physical tests (current, finger touch, image, audibility, wake moment, brownout).
+- Hardware: flash/OTA and automatic tests on connected boards are allowed. Never erase all Flash, the storage partition or NVS. No eFuse, Secure Boot or Flash Encryption. At most one retry of a test on a board.
+- Git: commit after every subphase. Never commit AGENTS.md or `.log`.
+- Publication after each stage:
+  1. push the branch;
+  2. `gh pr create` to main;
+  3. `gh pr checks --watch`;
+  4. merge commit (no squash), only when CI is green and every automatically checkable gate item is PASS;
+  5. delete the remote branch.
+  If push or `gh` fails, stop and report it. Don't work around it.
+
 ## Stage A: E0 closure (branch e0-baseline)
 
-### A2: 1.75C runner support (committed)
-- RG1 `BATTERY` reports board identity, display size and AXP2101/BQ27220 battery data (main/gauge_diagnostics.c, tools/roundie_gauge.py).
-- RW1 STATUS reports `brightness` (frame 1280 B); the runner records the brightness it reads back.
-- run_e0.py v2: the board identity check, display context (466x466 panel, 360x360 canvas upscaled) and power context.
-- Single command: `python3 tools/hardware_validation/e0_board.py --board 1.75c`.
-- CI coverage: the missing E0 test modules are registered in tools/ci/run_tests.py (coverage check: 0 problems, 327 tests).
-- Verified: the host tests pass (test_roundie_gauge, test_run_e0, test_e0_board).
-- NOT yet verified: the firmware builds with these changes. This check belongs to A6.
+### A1: gap table (done)
+- docs/baseline/e0-summary.md §10.1 classifies each gap as:
+  - do now (all of these are done);
+  - decision;
+  - not to do (destructive, or changes the boot logic);
+  - EABI;
+  - PENDING (physical);
+  - BLOCKED (1.75C).
 
-### A4: Safe Mode §9.4 diagnostics (in progress, uncommitted in working tree)
-Done:
-- components/roundie_boot_guard/diagnostics.c (new): an RTC session record holding the restart site and the battery, the previous session, and the cause.
-- persistence.c writes the NVS `cause` blob in the same commit as the latch.
-- The tests/test_boot_guard mocks and assertions are updated and pass.
+### A2: 1.75C runner support (864fc93)
+- RG1 BATTERY reports the board identity, RW1 STATUS the brightness, and run_e0.py v2 records the board, display and power context.
+- `e0_board.py` runs the whole E0 baseline with one command.
+- Verified: host tests, and all 6 firmware builds (0 warnings). The device run on the 1.75C is BLOCKED.
 
-Still to do:
-- Wire the calls in main/main.c:
-  - `roundie_boot_diag_begin(esp_reset_reason(), app_elf_sha256)` after `roundie_boot_begin`;
-  - `roundie_boot_diag_restart_site` before the unplanned `esp_restart` calls (LCD timeout, flush, GUI watchdog);
-  - `roundie_boot_diag_safe_site` before the `enter_safe` calls for the serial fd and for system_worker creation;
-  - `roundie_boot_diag_battery` in the sensor loop.
-- Copy the crash report to NVS after a panic or WDT, readable with `RS1 CRASH STORED`.
-- Add `previous` and `cause` to the RS1 HISTORY JSON, and update tools/roundie_safe.py and its tests.
-- Document it in docs/safe-mode.md.
-- Not implemented, described only:
-  - a coredump partition (destructive);
-  - whether the latch should clear after power-on (this changes the boot logic).
+### A3: runner vs Manager (01d9ab7)
+- Decision: the Python runner is the E0 executor, recorded in the roadmap.
 
-### Remaining in Stage A
-- A1: add a gap table to e0-summary.md §10. Planned classification:
-  - do now: A2–A4, RT1 SET on 1.85B, an "RP1 LIST alone" stall scenario, the CI layout check;
-  - PENDING (physical): current, touch, image, audibility, wake moment, brownout;
-  - BLOCKED: 1.75C.
-- A3: keep the Python runner and update the roadmap E0 text. Reasons: it runs unattended, it is testable on the host, it needs no Web Serial gesture, and it survives USB loss in light sleep.
-- A5: RT1 SET on 1.85B; the LIST-alone scenario in run_e0_stall plus a device run; the one-command instructions in e0-1.75c.md.
-- A6: six builds with 0 warnings; host tests (`python3 tools/ci/run_tests.py --check-coverage` in the IDF environment); OTA and run_e0 on 1.85B; update e0-summary.md.
-- A7: publish the stage, then Stage B (P1–P8, branch `eabi`).
+### A4: Safe Mode §9.4 diagnostics (469472c, e5746f8)
+- RTC session record holding:
+  - the code of the unplanned restart site;
+  - the last battery sample (mV, mA, SoC, flags, temperature, RTC time), at most once a minute.
+- Cause record (`boot_guard/cause`):
+  - written after the latch commit, in its own commit;
+  - the host test proves the latch trace is identical when the cause write fails (no space, damaged entry, commit failure).
+- Crash copy (`boot_guard/crash`, 224 B, limit 256 B), read with `RS1 CRASH STORED`. The cause is read with `RS1 CAUSE`.
+- Bounded store: a blob is written only while 126 NVS entries (one page) stay available, in its own commit, and touches only its own key. The full-NVS test passes (NO_ROOM, settings untouched).
+- Safe Mode/BootGuard logic is unchanged: the latch trace is the same with diagnostics on and off.
+- 1.85B, `run_e0_diag.py`: PASS.
+  - NVS used entries went 17 → 34 of 504 (+17), with 344 still available.
+  - Decision: the copy stays in NVS (docs/safe-mode.md).
+
+### A5: the other "do now" gaps
+- RTC on 1.85B: valid. `roundie_time.py verify --restart` passes after fixing the race with board publication (8cfa79f).
+- LIST alone under the stall probes: `RP1 STALL ARM/REPORT` plus the `listprobe` scenario (04834ab). LIST takes 122 ms and stalls the GUI for the same 122 ms. Details: e0-1.85b.md §14.
+- e0-1.75c.md has the one-command instructions (c4c67df).
+- The CI layout line appears in a clean rep-nodev configure.
+- The console line-loss mechanism is confirmed from the IDF source (e0-summary §10.1 #8).
+
+### A6: builds, host tests, gate on 1.85B (BLOCKED by a FAIL, under investigation)
+- 6 configs × 0 warnings: PASS.
+- Host tests: 333 tests, 0 coverage problems.
+- Gate on 1.85B with image 0.3.86-e0 (`build-ci/e0/a6-185b-gate/`):
+  - base (with light sleep): PASS, 0 unexpected resets;
+  - stall (all scenarios): PASS;
+  - **followup: FAIL in `worst_stack`**, twice (first run plus the one allowed retry, `followup` and `followup-2`). Every other followup step passed.
+- The failure:
+  - The stopwatch ends on its own with RESULT `[0,-1,-24]` before the runner sends EXIT. The launcher then refuses `EXIT <generation>` with 259 INVALID_STATE.
+  - `-24` comes from `show_state()` in examples/stopwatch_elf/stopwatch.c: one of its four `set()` calls was refused.
+  - Sequence: PRESS dial (start) → `bench_with_traces` (full-refresh bench) on the running stopwatch → HEALTH → PRESS dial (stop) → PRESS lap → settle 1 s.
+  - This is **not** the STOP race (§8.6), because EXIT had not been sent yet.
+  - The same scenario passed on 0.3.83/0.3.84-e0 (`build-ci/e0/followup-185b-3`).
+- Hypotheses (unverified):
+  - (a) a regression since 0.3.84 (A2 RW1 frame, A4 diagnostics, STALL commands);
+  - (b) the UI queue overflows after the bench while the 100 ms timer keeps queueing updates;
+  - (c) intermittent behaviour that 0.3.84 hid.
+- Next step (a new test, not a retry):
+  1. Run `run_e0_followup.py --only worst_stack` on 0.3.84-e0 (OTA from commit 3ef9c14 or the VALID slot) and on 0.3.86-e0, so the regression is attributed by comparison.
+  2. Read the refused set's error code (RW1 STATUS/`ui` counters after the failure).
+  3. Fix the cause, then repeat the followup gate.
+- A7 (publication) waits for this: every automatically checkable gate item must be PASS.
+
+### Next
+- A6: resolve the worst_stack FAIL (above), record the gate in e0-summary §10 and commit.
+- A7: publication.
+- Then Stage B:
+  - branch `eabi` from main;
+  - P1–P8 from the task;
+  - do not raise runtime limits;
+  - no later-stage services.

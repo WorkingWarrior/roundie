@@ -237,3 +237,36 @@ Zmiany runnera z punktów 2 i 3 weszły w jednym commicie (227cfeb), bo dotyczą
 ### 9.6. Ocena: E0 dla 1.85B
 
 **E0 dla 1.85B uważam za zamknięte**, z wyłączeniem prób fizycznych (PENDING) i całej 1.75C (BLOCKED). Wszystkie pozycje bramki mierzalne automatycznie mają PASS (§3). Otwarte pytania E0 (mechanizm przestoju GUI, wyścig STOP, przerwa w logach, Safe Mode na tyle, na ile pozwalają zachowane dane) są rozstrzygnięte albo przeniesione jako decyzje i testy akceptacyjne do EABI w roadmapie. CI kompiluje warianty z trybem deweloperskim i bez niego dla obu płytek. Zamknięcie nie obejmuje decyzji o semantyce STOP (EABI) ani implementacji `io_worker` (EABI/E2); to praca następnych etapów, nie braki bazy.
+
+## 10. Domknięcie E0: tabela braków i ich rozstrzygnięcie (2026-11-26, gałąź `e0-baseline`)
+
+Zasada domknięcia: wszystko, co da się zrobić bez 1.75C i bez fizycznej obecności użytkownika, zostało zrobione. Pozostają tylko BLOCKED (1.75C) i PENDING (próby fizyczne).
+
+### 10.1. Tabela braków (A1)
+
+| # | Brak z §5–§9 | Klasa | Rozstrzygnięcie | Dowód |
+|---|---|---|---|---|
+| 1 | Runner nie obsługuje 1.75C (AXP2101, tożsamość płytki, kontekst ekranu i zasilania) | zrobić teraz | RG1 BATTERY z nazwą płytki i danymi AXP2101/BQ27220, RW1 `brightness`, runner v2, `e0_board.py` | 864fc93; testy hosta. Na 1.75C BLOCKED |
+| 2 | Runner czy tryb deweloperski Managera | decyzja | runner w Pythonie, roadmapa E0 | 01d9ab7 |
+| 3 | Dane diagnostyczne Safe Mode (§9.4 e0-1.85b, propozycje 1, 2, 4) | zrobić teraz | rekord RTC sesji (miejsce restartu, bateria), rekord przyczyny latcha w osobnym commicie NVS, kopia crash w NVS z limitem 256 B i rezerwą 126 wpisów | 469472c, e5746f8; test hosta (izolacja latcha, pełne NVS); 1.85B: PASS, +17/504 wpisów |
+| 4 | Core dump w partycji Flash | nie robić | wymaga repartycjonowania, czyli operacji destrukcyjnej | `safe-mode.md` |
+| 5 | Kasowanie latcha po power-on | nie robić | zmienia logikę rozruchu, a A4 wymaga logiki bez zmian | — |
+| 6 | RTC 1.85B `RTC_INVALID` | zrobić teraz | RTC jest ważny, retencja przez restart programowy PASS. Błąd w `roundie_time.py verify --restart` (wyścig z publikacją płytki) poprawiony | 8cfa79f; `build-ci/e0/a5-rtc-verify-3.txt` |
+| 7 | Mechanizm inwersji LIST (e0-1.85b §14) | zrobić teraz | LIST bez I/O zajmuje CPU0 przez cały skan, 122 ms przerwy GUI | 04834ab; e0-1.85b §14 |
+| 8 | Mechanizm gubienia linii konsoli (§9.5) | zrobić teraz (źródło) | IDF v6.1 `usb_serial_jtag_vfs.c`, `usbjtag_tx_char_via_driver`: pierwszy bajt, który się nie mieści, czeka do `TX_FLUSH_TIMEOUT_US` = 50 ms, potem znaki są odrzucane bez czekania aż do udanego zapisu. Roundie używa ścieżki ze sterownikiem (`main.c` `usb_serial_jtag_vfs_use_driver`). Fakt ze źródła, zgodny z obserwacją §15 | kod IDF |
+| 9 | Linia „Roundie layout” w raporcie `rep-nodev` | zrobić teraz | czysty `reconfigure` `rep-nodev` wypisuje `Roundie layout: rep; image: roundie_rep.bin`, 0 opcji `ROUNDIE_DEV_PACKAGES=y` | ten przebieg |
+| 10 | Instrukcja jednego polecenia dla 1.75C | zrobić teraz | `e0-1.75c.md`: `e0_board.py --board 1.75c`, `--serial`/`--port`, warunek RO1 | c4c67df |
+| 11 | Test akceptacyjny `io_worker` (§9.5) | EABI | wymaga `io_worker`, czyli implementacji etapu EABI (P1) | roadmapa |
+| 12 | Semantyka odrzucenia `ui_update` przy STOP (§8.6) | EABI | decyzja przed zamrożeniem ABI (P2) | roadmapa |
+| 13 | Prąd, dotyk palcem, obraz, słyszalność, chwila wybudzenia, brownout | PENDING | próby fizyczne | §6 |
+| 14 | Cała baza E0 na 1.75C | BLOCKED | płytka niepodłączona | `e0-1.75c.md` |
+
+### 10.2. A6: weryfikacja (stan na 2026-11-26)
+
+- Kompilacja: 6 konfiguracji (1.85B i 1.75C × `legacy`, `rep`, `rep-nodev`), rc=0, 0 ostrzeżeń. Obraz E0 `0.3.86-e0`: 0 ostrzeżeń.
+- Testy hosta: `tools/ci/run_tests.py --check-coverage`, 333 testy, 0 problemów z pokryciem.
+- Urządzenie 1.85B (`0.3.86-e0`, `build-ci/e0/a6-185b-gate/`):
+  - base z light sleep: PASS;
+  - stall: PASS;
+  - **followup: FAIL w `worst_stack`** (2 z 2 przebiegów). Stoper kończy się sam wynikiem `-24` (`show_state`, odrzucone `set()`) przed EXIT, więc to nie jest wyścig STOP. Na `0.3.84-e0` ten scenariusz przeszedł. Analiza i następny krok: `docs/progress.md` A6.
+- E0 nie jest jeszcze gotowe do publikacji (A7), dopóki ten FAIL nie zostanie wyjaśniony.
