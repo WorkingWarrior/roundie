@@ -39,7 +39,7 @@ REQUIRED_NEEDS = (
 )
 
 FIRMWARE_BOARDS = ("waveshare_s3_touch_lcd_1_85b", "waveshare_s3_touch_amoled_1_75c")
-FIRMWARE_PROFILES = ("legacy", "rep")
+FIRMWARE_PROFILES = ("legacy", "rep", "rep-nodev")
 DESKTOP_TITLES = (
     "REP x86-64 native applications (ASan/UBSan)",
     "Desktop ASan/UBSan, virtual time",

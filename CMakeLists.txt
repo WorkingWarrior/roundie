@@ -37,6 +37,12 @@ elseif(ROUNDIE_PROFILE STREQUAL "legacy")
 else()
     message(FATAL_ERROR "Unknown ROUNDIE_PROFILE: ${ROUNDIE_PROFILE}")
 endif()
+# Extra defaults files appended last (CI rep-nodev: sdkconfig.nodev.defaults).
+# They only fill a fresh sdkconfig; an existing one keeps its values.
+set(ROUNDIE_EXTRA_DEFAULTS "" CACHE STRING "sdkconfig defaults files appended after the profile's")
+if(ROUNDIE_EXTRA_DEFAULTS)
+    list(APPEND SDKCONFIG_DEFAULTS ${ROUNDIE_EXTRA_DEFAULTS})
+endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # LVGL's default font is Google Sans Flex Medium with Polish letters
