@@ -1,9 +1,15 @@
 #include "stall_probe.h"
 #include "sdkconfig.h"
 #if CONFIG_ROUNDIE_DEV_PACKAGES
+#include <string.h>
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <inttypes.h>
+#include <stdio.h>
+#include "driver/usb_serial_jtag.h"
+#include "esp_err.h"
+#include "roundie_elf.h"
 
 #define PROBE_STACK 2048U
 #define PROBE_HIGH_PRIORITY 20U
@@ -112,4 +118,30 @@ void roundie_stall_disarm(roundie_stall_report_t *out)
     portEXIT_CRITICAL(&lock);
 }
 
+/* Bounded so the executor still answers lifecycle requests promptly. */
+#define ELF_DELAY_MAX_MS 1000U
+
+bool roundie_race_probe_command(const char *operation, const char *id, int parsed)
+{
+    if (strncmp(operation, "ELFDELAY ", 9) != 0) {
+        return false;
+    }
+    esp_err_t error = parsed;
+    unsigned ms = 0;
+    int consumed = 0;
+    if (error == ESP_OK && (sscanf(operation + 9, "%u%n", &ms, &consumed) != 1 ||
+                            operation[9 + consumed] != '\0' || ms > ELF_DELAY_MAX_MS)) {
+        error = ESP_ERR_INVALID_ARG;
+    }
+    if (error == ESP_OK) {
+        roundie_elf_debug_delivery_delay(ms);
+    }
+    char response[96];
+    int length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":1,\"elfdelay\":%u}\n",
+                          id, (int)error, error == ESP_OK ? ms : 0U);
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+    return true;
+}
 #endif

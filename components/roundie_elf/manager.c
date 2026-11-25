@@ -29,6 +29,14 @@ static bool lifecycle_stopped;
 static rep_descriptor_v2_t lifecycle;
 static bool ui_owned;
 static bool round_ui; /* descriptor required REP3_CAP_ROUND_UI */
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+static atomic_uint debug_delivery_delay_ms;
+
+void roundie_elf_debug_delivery_delay(uint32_t ms)
+{
+    atomic_store(&debug_delivery_delay_ms, ms);
+}
+#endif
 #if CONFIG_ROUNDIE_AUDIO
 /* rep_audio_v1: this instance's stream handle, 0 when none. Executor only. */
 static uint32_t audio_stream;
@@ -1059,6 +1067,15 @@ void roundie_elf_step(int64_t now_us)
             roundie_unlock(&lock);
             return;
         }
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        uint32_t delay_ms = atomic_load(&debug_delivery_delay_ms);
+        if (ui_event && delay_ms != 0) {
+            /* Development diagnostic only (E0 §8.6): widens the window between
+             * taking a UI event from the mailbox and on_event, so a STOP in
+             * that window is reproducible. No lock is held while sleeping. */
+            roundie_sleep_ms(delay_ms);
+        }
+#endif
         rep_context_v2_t context = {status.abi_version, sizeof(context), status.instance, 0};
         int64_t started = roundie_time_us();
         uint32_t latency = (uint32_t)((uint64_t)started - event.posted_us);
