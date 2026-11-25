@@ -117,3 +117,24 @@ python3 tools/hardware_validation/endurance.py --level stress --cycles 100 --ui-
 The PASS/FAIL criteria are fixed in `endurance.CRITERIA` and copied into every
 report. A criterion without data is UNTESTED, never PASS. Host tests:
 `python3 -m unittest tests.test_endurance`.
+
+## E0 baseline (`run_e0.py`)
+
+Collects the E0 baseline of one board without touch or manual checks
+(plan: `docs/baseline/e0-plan.md`, results: `docs/baseline/e0-<board>.md`).
+It needs a development (`rep`) image with `RP1 FSBENCH` and `RP1 HOME`.
+
+```bash
+python3 tools/hardware_validation/run_e0.py --board 1.85b --serial <MAC> --light-sleep
+```
+
+- `--board` is required, because the board is not detected from the RTC.
+- Scenarios in order: `home`, `stopwatch`, `after_close`, `full_refresh`, `littlefs` and `light_sleep`. Run a subset with `--only`.
+- During the scenarios the screen is held on with `RW1 SCREEN ON` and a diagnostics-owned DISPLAY_AWAKE inhibitor. The runner releases the inhibitor before light sleep and at the end.
+- `--ota <bin>` installs an image first and checks the rollback state. `--elf <elf>` compares the running image with a local build.
+- `littlefs` writes `/storage/dev/e0-{64,512,1024}.bin`, reads each one `--fs-repeats` times with SHA-256, and deletes it. It needs 1 MiB + 128 KiB free.
+- `light_sleep` runs only with `--light-sleep`. USB is expected to drop while the board sleeps. The USB return time is not the wake moment, so the wake time stays PENDING.
+- Current measurements and manual checks are always PENDING.
+- Exit codes: 0 PASS, 1 FAIL, 2 BLOCKED, 130 interrupted.
+
+Host tests: `python3 -m unittest tests.test_run_e0`.
