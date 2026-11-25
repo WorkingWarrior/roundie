@@ -154,8 +154,11 @@ class StallRunner(followup.FollowupRunner):
         self.settle(2.0)
         problems = []
         rows = []
+        # After a restart FSBENCH answers ESP_ERR_INVALID_STATE (259) until the
+        # runtime admits work; wait for that instead of measuring refusals.
+        self.wait_for("FSBENCH admission", lambda: self.call("xbench", "XWRITE 64 4096 0 W"),
+                      lambda reply: reply["code"] != 259, 120, interval=2.0)
         try:
-            self.xbench("XWRITE 64 4096 0 W", problems)
             rows.append(self.xbench(IDLE_REFERENCE, problems, e0.fs_pattern_sha256(64)))
             for kib in (64, 512):
                 for chunk, yield_ticks, core in WRITE_VARIANTS:
@@ -212,6 +215,8 @@ class StallRunner(followup.FollowupRunner):
 
     def race_attempt(self, delay_ms):
         generation, roles = self.open_stopwatch()
+        # Lap is accepted only while the stopwatch runs.
+        self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))
         self.settle(0.5)
         self.call("elfdelay", f"ELFDELAY {delay_ms}")
         try:
