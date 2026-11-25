@@ -167,6 +167,16 @@ that the sequence of latch records written is identical to the fault-free run.
   - 4 NVS unavailable or write failed.
 - `nvs` is read on every request, so it can be used to measure NVS occupancy
   before and after a copy.
+- Measured on 1.85B (0.3.85-e0, 2026-11-26,
+  `tools/hardware_validation/run_e0_diag.py`, PASS): before the panic
+  `nvs` = [1, 17, 361, 504]. After the panic copy and the core-latch cause
+  record it was [1, 34, 344, 504]. That is +17 used entries: the crash copy
+  takes 9 by the blob formula and the cause record the remaining 8. It was
+  unchanged after REBOOT, and the copy was not rewritten (`store` −1). Both
+  records together use 3.4 % of the 504 entries, and 344 entries stay
+  available, well above the 126-entry reserve. Decision: the copy stays in
+  NVS. A separate partition would need repartitioning, which is a
+  destructive change.
 
 Host tool: `tools/roundie_safe.py --port P cause|crash-stored|history`.
 
