@@ -2,13 +2,17 @@
 """E0 stall, race and boot-history measurements (docs/baseline/e0-1.85b.md §10-§12).
 
 Needs a development image with RP1 FSBENCH X*, RP1 ELFDELAY and RS1 HISTORY
-(0.3.82-e0 or later). Scenarios:
+(0.3.82-e0 or later; lowprio needs 0.3.83-e0). Scenarios:
 
   history      RS1 HISTORY: the diagnostic ring of reset reasons (read only).
   stall_write  On Home: FSBENCH XWRITE 64/512/1024 KiB with chunk, yield and
                core variants; GUI loop and probe-task gaps while writing.
   stall_read   With the stopwatch running: FSBENCH XREAD 1024 KiB variants
                (chunk, yield, core) and the stopwatch label updates meanwhile.
+  lowprio      With the stopwatch running: FSBENCH XREAD 1024 / XWRITE 512 in a
+               helper below the GUI (L unpinned, L0 on core 0, no yield)
+               against W 16384 y1; GUI and probe gaps, throughput and the
+               system worker's reply time to RS1 STATUS and RP1 LIST during I/O.
   race         ELFDELAY holds a UI event between the executor taking it and
                on_event; EXIT inside that window. Counts RESULT views (the
                STOP/on_event race) against the same sequence without delay.
@@ -35,10 +39,13 @@ from run_m8 import BLOCKED, FAIL, PASS, Blocked  # noqa: E402
 from roundie_time import DeviceError, TransportError, read_serial_reply, write_command  # noqa: E402
 
 STALL_VERSION = 1
-X_OPERATION = re.compile(r"X(READ|WRITE) (64|512|1024) ([0-9]{3,5}) ([0-9]{1,2}) (W|C0|C1)")
+X_OPERATION = re.compile(r"X(READ|WRITE) (64|512|1024) ([0-9]{3,5}) ([0-9]{1,2}) (W|C0|C1|L|L0)")
 # Nearly idle reference: 16 reads of 4 KiB, 100 ms (10 ticks) apart.
 IDLE_REFERENCE = "XREAD 64 4096 10 W"
 WRITE_VARIANTS = ((4096, 0, "W"), (4096, 1, "W"), (16384, 0, "W"), (4096, 0, "C0"), (4096, 0, "C1"))
+# Priority model (§14): a helper below the GUI without yield, against the
+# synchronous worker with 16 KiB chunks and one tick of yield.
+LOW_VARIANTS = ((16384, 1, "W"), (4096, 0, "L"), (4096, 0, "L0"), (16384, 0, "L0"))
 READ_VARIANTS = ((4096, 0, "W"), (4096, 1, "W"), (512, 0, "W"), (16384, 0, "W"), (16384, 1, "W"),
                  (32768, 0, "W"), (4096, 0, "C0"), (4096, 0, "C1"))
 
@@ -52,11 +59,18 @@ def xbench_request(port, operation, timeout=60.0):
     prefix = f"!RP1 {identity} ".encode()
     write_command(port, f"!RP1 {identity} FSBENCH {operation}")
     line = read_serial_reply(port, prefix, time.monotonic() + timeout, 1000)
+    return parse_x_reply(line, prefix, "X" + match.group(1))
+
+
+def parse_x_reply(line, prefix, kind=None):
+    """A full FSBENCH X reply line; kind checks XREAD/XWRITE when given."""
     try:
         code, payload = line[len(prefix):].split(b" ", 1)
         result = json.loads(payload)
-        if result["format"] != 1 or result["fsbench"] != "X" + match.group(1):
+        if result["format"] != 1 or result["fsbench"] not in ("XREAD", "XWRITE"):
             raise ValueError("format")
+        if kind is not None and result["fsbench"] != kind:
+            raise ValueError("kind")
         for key in ("io_us", "sha_us", "total_us", "chunk_max_us", "migrations", "mmap_remain"):
             if type(result[key]) is not int or result[key] < 0:
                 raise ValueError(key)
@@ -66,6 +80,57 @@ def xbench_request(port, operation, timeout=60.0):
     except (ValueError, KeyError, TypeError) as error:
         raise TransportError(f"malformed FSBENCH X reply: {error}") from error
     return result
+
+
+def exchange(port, protocol, operation, timeout, limit=2000):
+    """One addressed request; returns (code, payload bytes, seconds to reply)."""
+    identity = secrets.token_hex(4)
+    prefix = f"{protocol} {identity} ".encode()
+    started = time.monotonic()
+    write_command(port, f"{protocol} {identity} {operation}")
+    line = read_serial_reply(port, prefix, started + timeout, limit)
+    elapsed = time.monotonic() - started
+    try:
+        code, payload = line[len(prefix):].split(b" ", 1)
+        return int(code), payload, elapsed, line, prefix
+    except ValueError as error:
+        raise TransportError(f"malformed reply to {operation}") from error
+
+
+def low_session(port, operation, timeout=60.0, control=("STATUS", "LIST")):
+    """Starts an L/L0 job, then polls RS1 STATUS, RP1 LIST and XRESULT in turn
+    until the result arrives; every poll is a system-worker reply time."""
+    match = X_OPERATION.fullmatch(operation)
+    if match is None or match.group(5) not in ("L", "L0"):
+        raise TransportError("invalid low-priority FSBENCH X operation")
+    code, payload, start_s, _, _ = exchange(port, "!RP1", f"FSBENCH {operation}", 4.0)
+    if code != 0:
+        return {"code": code, "start_s": start_s}
+    if json.loads(payload).get("started") != 1:
+        raise TransportError("FSBENCH X start not acknowledged")
+    latency = {"STATUS": [], "LIST": [], "XRESULT": []}
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for name in control:
+            protocol = "!RS1" if name == "STATUS" else "!RP1"
+            _, _, seconds, _, _ = exchange(port, protocol, name, 8.0)
+            latency[name].append(seconds)
+        code, _, seconds, line, prefix = exchange(port, "!RP1", "FSBENCH XRESULT", 4.0)
+        latency["XRESULT"].append(seconds)
+        if code == 259:
+            continue
+        if code != 0:
+            raise TransportError(f"XRESULT failed ({code})")
+        result = parse_x_reply(line, prefix, "X" + match.group(1))
+        result["start_s"] = start_s
+        result["worker_reply_s"] = latency_summary(latency)
+        return result
+    raise TransportError("low-priority FSBENCH X did not finish")
+
+
+def latency_summary(latency):
+    return {name: {"n": len(values), "max": round(max(values), 4), "mean": round(sum(values) / len(values), 4)}
+            for name, values in latency.items() if values}
 
 
 def elfdelay_request(port, operation, timeout=4.0):
@@ -131,7 +196,7 @@ def race_verdict(nav):
 
 
 class StallRunner(followup.FollowupRunner):
-    SCENARIOS = ("history", "stall_write", "stall_read", "race")
+    SCENARIOS = ("history", "stall_write", "stall_read", "lowprio", "race")
 
     def xbench(self, operation, problems, expected=None):
         reply = self.call("xbench", operation)
@@ -211,6 +276,93 @@ class StallRunner(followup.FollowupRunner):
                 problems.append(f"DEL 1024 failed ({deleted['code']})")
         details.update(rows=rows, problems=problems,
                        note="label_updates spans the two RE1 UI reads around each XREAD reply")
+        return (FAIL if problems else PASS), details
+
+    def idle_worker_latency(self, repeats=5):
+        latency = {"STATUS": [], "LIST": []}
+        for _ in range(repeats):
+            for name in latency:
+                protocol = "!RS1" if name == "STATUS" else "!RP1"
+                _, _, seconds, _, _ = self.device.session(lambda port: exchange(port, protocol, name, 8.0))
+                latency[name].append(seconds)
+        return latency_summary(latency)
+
+    def low_row(self, operation, problems, expected):
+        """One L/L0 run, or the W baseline with RS1 STATUS sent 20 ms after it."""
+        ui_before = self.call("ui")
+        if operation.endswith(" W"):
+            timing, lines = self.device.session(lambda port: followup.timed_pair(
+                port, ("!RP1", f"FSBENCH {operation}"), ("!RS1", "STATUS"), 0.02, timeout=60.0))
+            prefix = lines[0].split(b" ", 2)
+            reply = parse_x_reply(lines[0], b" ".join(prefix[:2]) + b" ")
+            reply["worker_reply_s"] = {"STATUS": {"n": 1, "max": round(timing["second_reply_s"], 4),
+                                                  "mean": round(timing["second_reply_s"], 4)}}
+        else:
+            reply = self.device.session(lambda port: low_session(port, operation))
+            if reply["code"] != 0:
+                problems.append(f"{operation}: start refused ({reply['code']})")
+                return {"op": operation, "code": reply["code"]}
+        ui_after = self.call("ui")
+        row = stall_row(operation, reply)
+        kib = int(operation.split()[1])
+        row["kib_per_s"] = round(kib / (reply["total_us"] / 1e6), 1)
+        row["worker_reply_s"] = reply["worker_reply_s"]
+        row["label_updates"] = ui_after["applied"] - ui_before["applied"]
+        if reply["code"] != 0:
+            problems.append(f"{operation}: code {reply['code']}")
+        elif expected is not None and reply["sha256"] != expected:
+            problems.append(f"{operation}: SHA-256 mismatch")
+        if not reply["probes_armed"]:
+            problems.append(f"{operation}: probes not armed")
+        return row
+
+    def s_lowprio(self):
+        self.go_home()
+        self.settle(2.0)
+        problems = []
+        details = {}
+        self.wait_for("FSBENCH admission", lambda: self.call("xbench", "XWRITE 64 4096 0 W"),
+                      lambda reply: reply["code"] != 259, 120, interval=2.0)
+        self.call("fsbench", "DEL 64")
+        prep = self.call("xbench", "XWRITE 1024 4096 0 W")
+        if prep["code"] != 0:
+            raise Blocked(f"XWRITE 1024 refused ({prep['code']})")
+        expected = e0.fs_pattern_sha256(1024)
+        generation = None
+        reads = []
+        writes = []
+        try:
+            details["idle_worker_reply_s"] = self.idle_worker_latency()
+            generation, roles = self.open_stopwatch()
+            self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))
+            self.settle(1.0)
+            details["running_worker_reply_s"] = self.idle_worker_latency()
+            for _ in range(self.args.repeats):
+                for chunk, yield_ticks, where in LOW_VARIANTS:
+                    reads.append(self.low_row(f"XREAD 1024 {chunk} {yield_ticks} {where}", problems, expected))
+                    self.settle(0.5)
+            # Writes need an idle runtime (as PREP): stop and close the stopwatch first.
+            self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))
+            self.close_stopwatch(generation)
+            generation = None
+            self.go_home()
+            self.settle(1.0)
+            for _ in range(self.args.repeats):
+                for chunk, yield_ticks, where in LOW_VARIANTS:
+                    writes.append(self.low_row(f"XWRITE 512 {chunk} {yield_ticks} {where}", problems, None))
+                    self.settle(0.5)
+            check = self.xbench("XREAD 512 4096 0 W", problems, e0.fs_pattern_sha256(512))
+            details["write_check"] = check
+        finally:
+            if generation is not None:
+                self.close_stopwatch(generation)
+            for kib in (512, 1024):
+                deleted = self.call("fsbench", f"DEL {kib}")
+                if deleted["code"] not in (0, 261):
+                    problems.append(f"DEL {kib} failed ({deleted['code']})")
+        details.update(reads=reads, writes=writes, problems=problems,
+                       note=("worker_reply_s: request-to-reply seconds of system-worker commands sent while the "
+                             "I/O runs (L/L0: polled until XRESULT; W: RS1 STATUS 20 ms after the command)"))
         return (FAIL if problems else PASS), details
 
     def race_attempt(self, delay_ms):

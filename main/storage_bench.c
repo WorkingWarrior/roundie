@@ -214,20 +214,25 @@ static esp_err_t measure(const char *path, uint32_t bytes, bench_result_t *resul
  * "X<READ|WRITE> <kib> <chunk> <yield_ticks> <W|C0|C1>": the same file and
  * pattern as PREP/READ, in chunks of <chunk> bytes, with vTaskDelay(yield)
  * after each chunk, run in the system worker (W) or in a helper task of the
- * worker's priority pinned to core 0 or 1 (C0/C1) while the worker waits. */
+ * worker's priority pinned to core 0 or 1 (C0/C1) while the worker waits.
+ * L/L0: a helper below the GUI (priority 0), unpinned or pinned to core 0;
+ * the worker answers at once and keeps serving commands, and
+ * "FSBENCH XRESULT" collects the reply once the helper has finished. */
 #define X_CHUNK_MIN 512U
 #define X_CHUNK_MAX (32U * 1024U)
 #define X_YIELD_MAX 10U
 #define X_FEED_BYTES (64U * 1024U)
 #define X_HELPER_STACK 8192U
 #define X_HELPER_TIMEOUT_US (60LL * 1000000LL)
+#define X_LOW_PRIORITY 0U
 
 typedef struct {
     bool write;
     uint32_t bytes;
     uint32_t chunk;
     uint32_t yield_ticks;
-    int core; /* -1: in the system worker */
+    int core; /* -1: in the system worker, or unpinned when low */
+    bool low;
     bool feed;
     uint8_t *buffer;
     char path[48];
@@ -240,10 +245,15 @@ typedef struct {
     uint32_t on_core[2];
     uint32_t migrations;
     char digest[65];
+    uint32_t kib;
+    bool armed;
+    bool mmap_remain;
+    roundie_stall_report_t stall;
 } x_job_t;
 
 static x_job_t x_job;
 static volatile bool x_helper_running;
+static volatile bool x_low_result; /* a finished L/L0 job awaits XRESULT */
 
 static bool parse_x(const char *text, x_job_t *job, uint32_t *kib)
 {
@@ -278,6 +288,12 @@ static bool parse_x(const char *text, x_job_t *job, uint32_t *kib)
         job->core = 0;
     } else if (strcmp(where, "C1") == 0) {
         job->core = 1;
+    } else if (strcmp(where, "L") == 0) {
+        job->core = -1;
+        job->low = true;
+    } else if (strcmp(where, "L0") == 0) {
+        job->core = 0;
+        job->low = true;
     } else {
         return false;
     }
@@ -376,6 +392,14 @@ static void x_helper(void *argument)
 {
     x_job_t *job = argument;
     x_execute(job);
+    if (job->low) {
+        roundie_stall_disarm(&job->stall);
+        heap_caps_free(job->buffer);
+        job->buffer = NULL;
+        x_low_result = true;
+        x_helper_running = false;
+        vTaskDelete(NULL);
+    }
     TaskHandle_t waiter = job->waiter;
     x_helper_running = false;
     xTaskNotifyGive(waiter);
@@ -393,10 +417,14 @@ static esp_err_t x_run(x_job_t *job)
     job->feed = false;
     job->waiter = xTaskGetCurrentTaskHandle();
     x_helper_running = true;
-    if (xTaskCreatePinnedToCore(x_helper, "fsbench_x", X_HELPER_STACK, job, uxTaskPriorityGet(NULL), NULL,
-                                job->core) != pdPASS) {
+    UBaseType_t priority = job->low ? X_LOW_PRIORITY : uxTaskPriorityGet(NULL);
+    BaseType_t core = job->core < 0 ? tskNO_AFFINITY : job->core;
+    if (xTaskCreatePinnedToCore(x_helper, "fsbench_x", X_HELPER_STACK, job, priority, NULL, core) != pdPASS) {
         x_helper_running = false;
         return ESP_ERR_NO_MEM;
+    }
+    if (job->low) {
+        return ESP_OK;
     }
     int64_t deadline = esp_timer_get_time() + X_HELPER_TIMEOUT_US;
     while (x_helper_running) {
@@ -410,32 +438,89 @@ static esp_err_t x_run(x_job_t *job)
     return job->error;
 }
 
+static void x_reply(const char *id, esp_err_t error, const x_job_t *job)
+{
+    size_t total = 0;
+    size_t used = 0;
+    bool usage = roundie_storage_usage(&total, &used);
+    const roundie_stall_report_t *stall = &job->stall;
+    static char response[900];
+    int length = snprintf(response, sizeof(response),
+        "\n!RP1 %s %d {\"format\":1,\"fsbench\":\"%s\",\"kib\":%" PRIu32 ",\"chunk\":%" PRIu32
+        ",\"yield\":%" PRIu32 ",\"core\":%d,\"low\":%u,\"io_us\":%" PRId64 ",\"sha_us\":%" PRId64
+        ",\"total_us\":%" PRId64 ",\"chunk_max_us\":%" PRId64 ",\"on_core\":[%" PRIu32 ",%" PRIu32
+        "],\"migrations\":%" PRIu32 ",\"mmap_remain\":%u,\"probes_armed\":%u,\"gui\":[%" PRIu32 ",%" PRIu32
+        ",%" PRIu32 "],\"probes\":[",
+        id, (int)error, job->write ? "XWRITE" : "XREAD", job->kib, job->chunk, job->yield_ticks, job->core,
+        job->low ? 1U : 0U, job->io_us, job->sha_us, job->total_us, job->chunk_max_us, job->on_core[0],
+        job->on_core[1], job->migrations, job->mmap_remain ? 1U : 0U, job->armed ? 1U : 0U,
+        stall->gui_iterations, stall->gui_gap_max_us, stall->gui_late_max_us);
+    for (unsigned i = 0; i < ROUNDIE_STALL_PROBES && length > 0 && (size_t)length < sizeof(response); i++) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length, "%s[%u,%u,%" PRIu32 ",%" PRIu32 "]",
+            i == 0U ? "" : ",", stall->probe[i].core, stall->probe[i].priority, stall->probe[i].wakes,
+            stall->probe[i].gap_max_us);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length,
+            "],\"capacity\":[%u,%zu,%zu],\"sha256\":\"%s\"}\n", usage ? 1U : 0U, total, used, job->digest);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
+/* "XRESULT": the reply of a finished L/L0 job, once; 259 while it runs,
+ * 261 when there is none. */
+static void x_result_command(const char *id, int parsed)
+{
+    esp_err_t error = parsed;
+    if (error == ESP_OK && x_helper_running) {
+        error = ESP_ERR_INVALID_STATE;
+    } else if (error == ESP_OK && !x_low_result) {
+        error = ESP_ERR_NOT_FOUND;
+    }
+    if (error != ESP_OK) {
+        char response[48];
+        int length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":1}\n", id, (int)error);
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+        return;
+    }
+    x_low_result = false;
+    x_reply(id, x_job.error, &x_job);
+}
+
 static void x_command(const char *operation, const char *id, int parsed)
 {
     uint32_t kib = 0;
     esp_err_t error = parsed;
-    roundie_stall_report_t stall = {0};
-    bool armed = false;
     if (x_helper_running) {
         error = ESP_ERR_INVALID_STATE;
     }
     x_job_t *job = &x_job;
     if (error == ESP_OK) {
         memset(job, 0, sizeof(*job));
+        x_low_result = false;
         if (!parse_x(operation, job, &kib)) {
             error = ESP_ERR_INVALID_ARG;
         }
     }
+    if (x_helper_running) {
+        /* The running helper owns x_job: reply without touching it. */
+        char response[48];
+        int length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":1}\n", id, (int)error);
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+        return;
+    }
+    job->kib = kib;
     job->bytes = kib * 1024U;
     bench_path(job->path, sizeof(job->path), kib);
     size_t total = 0;
     size_t used = 0;
-    bool usage = false;
     if (error == ESP_OK && (!roundie_app_runtime_allowed() || !roundie_storage_available())) {
         error = ESP_ERR_INVALID_STATE;
     }
     if (error == ESP_OK) {
-        usage = roundie_storage_usage(&total, &used);
+        bool usage = roundie_storage_usage(&total, &used);
         if (job->write && roundie_app_runtime_busy()) {
             /* As PREP: no Flash write while native code runs. */
             error = ESP_ERR_INVALID_STATE;
@@ -451,41 +536,24 @@ static void x_command(const char *operation, const char *id, int parsed)
             error = ESP_ERR_NO_MEM;
         }
     }
-    bool mmap_remain = flash_mmap_remain();
+    job->mmap_remain = flash_mmap_remain();
     if (error == ESP_OK) {
-        armed = roundie_stall_arm();
+        job->armed = roundie_stall_arm();
         error = x_run(job);
-        roundie_stall_disarm(&stall);
+        if (job->low && error == ESP_OK) {
+            /* The helper disarms, frees the buffer and leaves the result. */
+            char response[64];
+            int length = snprintf(response, sizeof(response), "\n!RP1 %s 0 {\"format\":1,\"started\":1}\n", id);
+            usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+            return;
+        }
+        roundie_stall_disarm(&job->stall);
         if (error != ESP_ERR_TIMEOUT) {
             heap_caps_free(job->buffer);
             job->buffer = NULL;
         }
     }
-    if (job->write) {
-        usage = roundie_storage_usage(&total, &used);
-    }
-    static char response[900];
-    int length = snprintf(response, sizeof(response),
-        "\n!RP1 %s %d {\"format\":1,\"fsbench\":\"%s\",\"kib\":%" PRIu32 ",\"chunk\":%" PRIu32
-        ",\"yield\":%" PRIu32 ",\"core\":%d,\"io_us\":%" PRId64 ",\"sha_us\":%" PRId64 ",\"total_us\":%" PRId64
-        ",\"chunk_max_us\":%" PRId64 ",\"on_core\":[%" PRIu32 ",%" PRIu32 "],\"migrations\":%" PRIu32
-        ",\"mmap_remain\":%u,\"probes_armed\":%u,\"gui\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"probes\":[",
-        id, (int)error, job->write ? "XWRITE" : "XREAD", kib, job->chunk, job->yield_ticks, job->core,
-        job->io_us, job->sha_us, job->total_us, job->chunk_max_us, job->on_core[0], job->on_core[1],
-        job->migrations, mmap_remain ? 1U : 0U, armed ? 1U : 0U, stall.gui_iterations, stall.gui_gap_max_us,
-        stall.gui_late_max_us);
-    for (unsigned i = 0; i < ROUNDIE_STALL_PROBES && length > 0 && (size_t)length < sizeof(response); i++) {
-        length += snprintf(response + length, sizeof(response) - (size_t)length, "%s[%u,%u,%" PRIu32 ",%" PRIu32 "]",
-            i == 0U ? "" : ",", stall.probe[i].core, stall.probe[i].priority, stall.probe[i].wakes,
-            stall.probe[i].gap_max_us);
-    }
-    if (length > 0 && (size_t)length < sizeof(response)) {
-        length += snprintf(response + length, sizeof(response) - (size_t)length,
-            "],\"capacity\":[%u,%zu,%zu],\"sha256\":\"%s\"}\n", usage ? 1U : 0U, total, used, job->digest);
-    }
-    if (length > 0 && (size_t)length < sizeof(response)) {
-        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
-    }
+    x_reply(id, error, job);
 }
 
 bool roundie_storage_bench_command(const char *operation, const char *id, int parsed)
@@ -493,8 +561,20 @@ bool roundie_storage_bench_command(const char *operation, const char *id, int pa
     if (strncmp(operation, "FSBENCH ", 8) != 0) {
         return false;
     }
+    if (strcmp(operation + 8, "XRESULT") == 0) {
+        x_result_command(id, parsed);
+        return true;
+    }
     if (operation[8] == 'X') {
         x_command(operation + 8, id, parsed);
+        return true;
+    }
+    if (x_helper_running) {
+        /* PREP/READ/DEL would race the helper on the same file. */
+        char response[48];
+        int length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":1}\n", id,
+                              (int)ESP_ERR_INVALID_STATE);
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
         return true;
     }
     bench_operation_t kind = BENCH_READ;

@@ -66,6 +66,52 @@ class XbenchTest(unittest.TestCase):
             stall.xbench_request(FakePort(0, payload), "XREAD 64 4096 0 W", 1.0)
 
 
+class ScriptPort(FakePort):
+    """Answers by operation: XRESULT reports 259 `pending` times, then a result."""
+
+    def __init__(self, pending, start_code=0):
+        super().__init__(0, {})
+        self.pending = pending
+        self.start_code = start_code
+        self.operations = []
+
+    def write(self, data):
+        parts = data.split()
+        protocol, identity, operation = parts[0].decode(), parts[1].decode(), b" ".join(parts[2:]).decode()
+        self.operations.append(operation)
+        if operation.startswith("FSBENCH X") and operation != "FSBENCH XRESULT":
+            code, payload = self.start_code, {"format": 1, "started": 1}
+        elif operation == "FSBENCH XRESULT":
+            if self.pending > 0:
+                self.pending -= 1
+                code, payload = 259, {"format": 1}
+            else:
+                code, payload = 0, x_payload("XWRITE")
+        else:
+            code, payload = 0, {"format": 1}
+        self.out = f"{protocol} {identity} {code} {json.dumps(payload)}\n".encode()
+        return len(data)
+
+
+class LowSessionTest(unittest.TestCase):
+    def test_polls_until_result(self):
+        port = ScriptPort(pending=2)
+        result = stall.low_session(port, "XWRITE 512 4096 0 L0", timeout=5.0)
+        self.assertEqual(result["code"], 0)
+        self.assertEqual(result["worker_reply_s"]["XRESULT"]["n"], 3)
+        self.assertEqual(result["worker_reply_s"]["STATUS"]["n"], 3)
+        self.assertEqual(port.operations[:4], ["FSBENCH XWRITE 512 4096 0 L0", "STATUS", "LIST", "FSBENCH XRESULT"])
+
+    def test_refused_start_and_invalid(self):
+        self.assertEqual(stall.low_session(ScriptPort(0, start_code=259), "XREAD 1024 4096 0 L", 1.0)["code"], 259)
+        with self.assertRaises(TransportError):
+            stall.low_session(ScriptPort(0), "XREAD 1024 4096 0 W", 1.0)
+
+    def test_wrong_kind(self):
+        with self.assertRaises(TransportError):
+            stall.low_session(ScriptPort(0), "XREAD 1024 4096 0 L", 1.0)
+
+
 class HistoryTest(unittest.TestCase):
     def test_entries(self):
         payload = {"history": {"state": "ok", "boots": 5, "brownouts": 1,
