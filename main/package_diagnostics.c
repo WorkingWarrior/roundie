@@ -15,6 +15,7 @@
 #include "roundie_launcher.h"
 #include "gui_diagnostics.h"
 #include "storage_bench.h"
+#include "memory_probe.h"
 
 static esp_err_t transfer_command(const roundie_ota_command_t *command)
 {
@@ -157,6 +158,9 @@ void roundie_package_command(char *line, bool discard)
             return;
         }
         if (roundie_storage_bench_command(operation, command.id, parsed)) {
+            return;
+        }
+        if (roundie_memory_probe_command(operation, command.id, parsed)) {
             return;
         }
     }
