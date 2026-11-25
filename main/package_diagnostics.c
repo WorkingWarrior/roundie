@@ -14,6 +14,7 @@
 #include "storage_diagnostics.h"
 #include "roundie_launcher.h"
 #include "gui_diagnostics.h"
+#include "storage_bench.h"
 
 static esp_err_t transfer_command(const roundie_ota_command_t *command)
 {
@@ -70,7 +71,7 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
                                esp_err_t parsed)
 {
     if (strcmp(operation, "NAV") != 0 && strcmp(operation, "REFRESH") != 0 && strcmp(operation, "OPEN") != 0 &&
-        strncmp(operation, "SELECT ", 7) != 0 && strncmp(operation, "EXIT ", 5) != 0 &&
+        strcmp(operation, "HOME") != 0 && strncmp(operation, "SELECT ", 7) != 0 && strncmp(operation, "EXIT ", 5) != 0 &&
         strncmp(operation, "BACK ", 5) != 0) {
         return false;
     }
@@ -80,6 +81,9 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
     } else if (result == ESP_OK && strcmp(operation, "OPEN") == 0) {
         /* Development: Home to the list, as the swipe up (M10). */
         result = roundie_launcher_open_list();
+    } else if (result == ESP_OK && strcmp(operation, "HOME") == 0) {
+        /* Development (E0): the list to Home, as the gesture in render.c. */
+        result = roundie_launcher_home();
     } else if (result == ESP_OK && strncmp(operation, "SELECT ", 7) == 0) {
         uint32_t revision;
         const char *id = operation + 7;
@@ -150,6 +154,9 @@ void roundie_package_command(char *line, bool discard)
             return;
         }
         if (roundie_gui_command(operation, command.id, parsed)) {
+            return;
+        }
+        if (roundie_storage_bench_command(operation, command.id, parsed)) {
             return;
         }
     }
