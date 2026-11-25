@@ -10,11 +10,15 @@
 #include <unistd.h>
 #include "driver/usb_serial_jtag.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
+#include "esp_private/flash_mmap.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "psa/crypto.h"
 #include "app_runtime.h"
+#include "stall_probe.h"
 #include "storage_diagnostics.h"
 
 #define BENCH_DIRECTORY "/storage/dev"
@@ -206,10 +210,292 @@ static esp_err_t measure(const char *path, uint32_t bytes, bench_result_t *resul
     return error;
 }
 
+/* ---- XREAD/XWRITE: E0 follow-up stall experiments (docs/baseline/e0-1.85b.md §10).
+ * "X<READ|WRITE> <kib> <chunk> <yield_ticks> <W|C0|C1>": the same file and
+ * pattern as PREP/READ, in chunks of <chunk> bytes, with vTaskDelay(yield)
+ * after each chunk, run in the system worker (W) or in a helper task of the
+ * worker's priority pinned to core 0 or 1 (C0/C1) while the worker waits. */
+#define X_CHUNK_MIN 512U
+#define X_CHUNK_MAX (32U * 1024U)
+#define X_YIELD_MAX 10U
+#define X_FEED_BYTES (64U * 1024U)
+#define X_HELPER_STACK 8192U
+#define X_HELPER_TIMEOUT_US (60LL * 1000000LL)
+
+typedef struct {
+    bool write;
+    uint32_t bytes;
+    uint32_t chunk;
+    uint32_t yield_ticks;
+    int core; /* -1: in the system worker */
+    bool feed;
+    uint8_t *buffer;
+    char path[48];
+    TaskHandle_t waiter;
+    esp_err_t error;
+    int64_t io_us;
+    int64_t sha_us;
+    int64_t total_us;
+    int64_t chunk_max_us;
+    uint32_t on_core[2];
+    uint32_t migrations;
+    char digest[65];
+} x_job_t;
+
+static x_job_t x_job;
+static volatile bool x_helper_running;
+
+static bool parse_x(const char *text, x_job_t *job, uint32_t *kib)
+{
+    if (strncmp(text, "XREAD ", 6) == 0) {
+        job->write = false;
+        text += 6;
+    } else if (strncmp(text, "XWRITE ", 7) == 0) {
+        job->write = true;
+        text += 7;
+    } else {
+        return false;
+    }
+    unsigned size = 0;
+    unsigned chunk_bytes = 0;
+    unsigned yield_ticks = 0;
+    char where[3] = {0};
+    int consumed = 0;
+    if (sscanf(text, "%u %u %u %2s%n", &size, &chunk_bytes, &yield_ticks, where, &consumed) != 4 ||
+        text[consumed] != '\0') {
+        return false;
+    }
+    if (size != 64U && size != 512U && size != 1024U) {
+        return false;
+    }
+    if (chunk_bytes < X_CHUNK_MIN || chunk_bytes > X_CHUNK_MAX || (chunk_bytes & (chunk_bytes - 1U)) != 0U ||
+        yield_ticks > X_YIELD_MAX) {
+        return false;
+    }
+    if (strcmp(where, "W") == 0) {
+        job->core = -1;
+    } else if (strcmp(where, "C0") == 0) {
+        job->core = 0;
+    } else if (strcmp(where, "C1") == 0) {
+        job->core = 1;
+    } else {
+        return false;
+    }
+    *kib = size;
+    job->chunk = chunk_bytes;
+    job->yield_ticks = yield_ticks;
+    return true;
+}
+
+static void x_execute(x_job_t *job)
+{
+    int64_t started = esp_timer_get_time();
+    int previous_core = -1;
+    int descriptor = open(job->path, job->write ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY, 0600);
+    if (descriptor < 0) {
+        job->error = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+        return;
+    }
+    struct stat info;
+    if (!job->write && (fstat(descriptor, &info) != 0 || info.st_size != (off_t)job->bytes)) {
+        close(descriptor);
+        job->error = ESP_ERR_INVALID_SIZE;
+        return;
+    }
+    psa_hash_operation_t hash = psa_hash_operation_init();
+    if (!job->write && psa_hash_setup(&hash, PSA_ALG_SHA_256) != PSA_SUCCESS) {
+        job->error = ESP_FAIL;
+    }
+    uint32_t state = BENCH_SEED;
+    for (uint32_t offset = 0; offset < job->bytes && job->error == ESP_OK; offset += job->chunk) {
+        int core = xPortGetCoreID();
+        job->on_core[core]++;
+        if (previous_core >= 0 && core != previous_core) {
+            job->migrations++;
+        }
+        previous_core = core;
+        int64_t chunk_started = esp_timer_get_time();
+        if (job->write) {
+            fill_pattern(job->buffer, job->chunk, &state);
+            int64_t io_started = esp_timer_get_time();
+            if (write(descriptor, job->buffer, job->chunk) != (ssize_t)job->chunk) {
+                job->error = ESP_FAIL;
+            }
+            job->io_us += esp_timer_get_time() - io_started;
+        } else {
+            ssize_t count = read(descriptor, job->buffer, job->chunk);
+            int64_t read_done = esp_timer_get_time();
+            job->io_us += read_done - chunk_started;
+            if (count != (ssize_t)job->chunk || psa_hash_update(&hash, job->buffer, job->chunk) != PSA_SUCCESS) {
+                job->error = ESP_FAIL;
+            }
+            job->sha_us += esp_timer_get_time() - read_done;
+        }
+        int64_t chunk_us = esp_timer_get_time() - chunk_started;
+        if (chunk_us > job->chunk_max_us) {
+            job->chunk_max_us = chunk_us;
+        }
+        if (job->feed && (offset + job->chunk) % X_FEED_BYTES == 0U) {
+            esp_task_wdt_reset();
+        }
+        if (job->yield_ticks != 0U) {
+            vTaskDelay(job->yield_ticks);
+        }
+    }
+    if (job->write && job->error == ESP_OK) {
+        int64_t sync_started = esp_timer_get_time();
+        if (fsync(descriptor) != 0) {
+            job->error = ESP_FAIL;
+        }
+        job->io_us += esp_timer_get_time() - sync_started;
+    }
+    if (close(descriptor) != 0 && job->error == ESP_OK) {
+        job->error = ESP_FAIL;
+    }
+    if (job->write && job->error != ESP_OK) {
+        unlink(job->path);
+    }
+    if (!job->write) {
+        uint8_t digest[32];
+        size_t digest_size = 0;
+        if (job->error == ESP_OK &&
+            (psa_hash_finish(&hash, digest, sizeof(digest), &digest_size) != PSA_SUCCESS || digest_size != 32U)) {
+            job->error = ESP_FAIL;
+        }
+        psa_hash_abort(&hash);
+        if (job->error == ESP_OK) {
+            for (unsigned i = 0; i < 32U; i++) {
+                snprintf(job->digest + i * 2U, 3, "%02x", digest[i]);
+            }
+        }
+    }
+    job->total_us = esp_timer_get_time() - started;
+}
+
+static void x_helper(void *argument)
+{
+    x_job_t *job = argument;
+    x_execute(job);
+    TaskHandle_t waiter = job->waiter;
+    x_helper_running = false;
+    xTaskNotifyGive(waiter);
+    vTaskDelete(NULL);
+}
+
+/* Runs the job where requested; the worker keeps feeding its watchdog. */
+static esp_err_t x_run(x_job_t *job)
+{
+    if (job->core < 0) {
+        job->feed = true;
+        x_execute(job);
+        return job->error;
+    }
+    job->feed = false;
+    job->waiter = xTaskGetCurrentTaskHandle();
+    x_helper_running = true;
+    if (xTaskCreatePinnedToCore(x_helper, "fsbench_x", X_HELPER_STACK, job, uxTaskPriorityGet(NULL), NULL,
+                                job->core) != pdPASS) {
+        x_helper_running = false;
+        return ESP_ERR_NO_MEM;
+    }
+    int64_t deadline = esp_timer_get_time() + X_HELPER_TIMEOUT_US;
+    while (x_helper_running) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
+        esp_task_wdt_reset();
+        if (x_helper_running && esp_timer_get_time() > deadline) {
+            /* The helper still owns the job; later X commands are refused. */
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    return job->error;
+}
+
+static void x_command(const char *operation, const char *id, int parsed)
+{
+    uint32_t kib = 0;
+    esp_err_t error = parsed;
+    roundie_stall_report_t stall = {0};
+    bool armed = false;
+    if (x_helper_running) {
+        error = ESP_ERR_INVALID_STATE;
+    }
+    x_job_t *job = &x_job;
+    if (error == ESP_OK) {
+        memset(job, 0, sizeof(*job));
+        if (!parse_x(operation, job, &kib)) {
+            error = ESP_ERR_INVALID_ARG;
+        }
+    }
+    job->bytes = kib * 1024U;
+    bench_path(job->path, sizeof(job->path), kib);
+    size_t total = 0;
+    size_t used = 0;
+    bool usage = false;
+    if (error == ESP_OK && (!roundie_app_runtime_allowed() || !roundie_storage_available())) {
+        error = ESP_ERR_INVALID_STATE;
+    }
+    if (error == ESP_OK) {
+        usage = roundie_storage_usage(&total, &used);
+        if (job->write && roundie_app_runtime_busy()) {
+            /* As PREP: no Flash write while native code runs. */
+            error = ESP_ERR_INVALID_STATE;
+        } else if (job->write && (!usage || total < used || total - used < (size_t)job->bytes + BENCH_RESERVE)) {
+            error = ESP_ERR_NO_MEM;
+        } else if (job->write && mkdir(BENCH_DIRECTORY, 0700) != 0 && errno != EEXIST) {
+            error = ESP_FAIL;
+        }
+    }
+    if (error == ESP_OK) {
+        job->buffer = heap_caps_malloc(job->chunk, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (job->buffer == NULL) {
+            error = ESP_ERR_NO_MEM;
+        }
+    }
+    bool mmap_remain = flash_mmap_remain();
+    if (error == ESP_OK) {
+        armed = roundie_stall_arm();
+        error = x_run(job);
+        roundie_stall_disarm(&stall);
+        if (error != ESP_ERR_TIMEOUT) {
+            heap_caps_free(job->buffer);
+            job->buffer = NULL;
+        }
+    }
+    if (job->write) {
+        usage = roundie_storage_usage(&total, &used);
+    }
+    static char response[900];
+    int length = snprintf(response, sizeof(response),
+        "\n!RP1 %s %d {\"format\":1,\"fsbench\":\"%s\",\"kib\":%" PRIu32 ",\"chunk\":%" PRIu32
+        ",\"yield\":%" PRIu32 ",\"core\":%d,\"io_us\":%" PRId64 ",\"sha_us\":%" PRId64 ",\"total_us\":%" PRId64
+        ",\"chunk_max_us\":%" PRId64 ",\"on_core\":[%" PRIu32 ",%" PRIu32 "],\"migrations\":%" PRIu32
+        ",\"mmap_remain\":%u,\"probes_armed\":%u,\"gui\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"probes\":[",
+        id, (int)error, job->write ? "XWRITE" : "XREAD", kib, job->chunk, job->yield_ticks, job->core,
+        job->io_us, job->sha_us, job->total_us, job->chunk_max_us, job->on_core[0], job->on_core[1],
+        job->migrations, mmap_remain ? 1U : 0U, armed ? 1U : 0U, stall.gui_iterations, stall.gui_gap_max_us,
+        stall.gui_late_max_us);
+    for (unsigned i = 0; i < ROUNDIE_STALL_PROBES && length > 0 && (size_t)length < sizeof(response); i++) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length, "%s[%u,%u,%" PRIu32 ",%" PRIu32 "]",
+            i == 0U ? "" : ",", stall.probe[i].core, stall.probe[i].priority, stall.probe[i].wakes,
+            stall.probe[i].gap_max_us);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length,
+            "],\"capacity\":[%u,%zu,%zu],\"sha256\":\"%s\"}\n", usage ? 1U : 0U, total, used, job->digest);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+}
+
 bool roundie_storage_bench_command(const char *operation, const char *id, int parsed)
 {
     if (strncmp(operation, "FSBENCH ", 8) != 0) {
         return false;
+    }
+    if (operation[8] == 'X') {
+        x_command(operation + 8, id, parsed);
+        return true;
     }
     bench_operation_t kind = BENCH_READ;
     uint32_t kib = 0;

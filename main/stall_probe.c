@@ -1,0 +1,115 @@
+#include "stall_probe.h"
+#include "sdkconfig.h"
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#define PROBE_STACK 2048U
+#define PROBE_HIGH_PRIORITY 20U
+
+static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
+static bool armed;
+static bool created;
+static int64_t gui_last_us;
+static roundie_stall_report_t report;
+static int64_t probe_last_us[ROUNDIE_STALL_PROBES];
+
+static void probe_task(void *argument)
+{
+    unsigned index = (unsigned)(uintptr_t)argument;
+    while (true) {
+        vTaskDelay(1);
+        int64_t now = esp_timer_get_time();
+        portENTER_CRITICAL(&lock);
+        if (armed) {
+            uint32_t gap = (uint32_t)(now - probe_last_us[index]);
+            if (gap > report.probe[index].gap_max_us) {
+                report.probe[index].gap_max_us = gap;
+            }
+            report.probe[index].wakes++;
+            probe_last_us[index] = now;
+        }
+        portEXIT_CRITICAL(&lock);
+    }
+}
+
+void roundie_stall_gui_mark(int64_t iteration_at_us, uint32_t late_us)
+{
+    portENTER_CRITICAL(&lock);
+    if (armed) {
+        if (gui_last_us != 0) {
+            uint32_t gap = (uint32_t)(iteration_at_us - gui_last_us);
+            if (gap > report.gui_gap_max_us) {
+                report.gui_gap_max_us = gap;
+            }
+        }
+        if (late_us > report.gui_late_max_us) {
+            report.gui_late_max_us = late_us;
+        }
+        report.gui_iterations++;
+        gui_last_us = iteration_at_us;
+    }
+    portEXIT_CRITICAL(&lock);
+}
+
+static bool create_probes(void)
+{
+    for (unsigned i = 0; i < ROUNDIE_STALL_PROBES; i++) {
+        UBaseType_t priority = i < 2U ? 1U : PROBE_HIGH_PRIORITY;
+        BaseType_t core = (BaseType_t)(i % 2U);
+        if (xTaskCreatePinnedToCore(probe_task, "stall_probe", PROBE_STACK, (void *)(uintptr_t)i,
+                                    priority, NULL, core) != pdPASS) {
+            return false;
+        }
+        report.probe[i].core = (uint8_t)core;
+        report.probe[i].priority = (uint8_t)priority;
+    }
+    return true;
+}
+
+bool roundie_stall_arm(void)
+{
+    if (!created) {
+        /* Never deleted: a partial set stays unusable rather than retried. */
+        created = true;
+        if (!create_probes()) {
+            return false;
+        }
+    }
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&lock);
+    report.gui_iterations = 0;
+    report.gui_gap_max_us = 0;
+    report.gui_late_max_us = 0;
+    gui_last_us = 0;
+    for (unsigned i = 0; i < ROUNDIE_STALL_PROBES; i++) {
+        report.probe[i].wakes = 0;
+        report.probe[i].gap_max_us = 0;
+        probe_last_us[i] = now;
+    }
+    armed = true;
+    portEXIT_CRITICAL(&lock);
+    return report.probe[ROUNDIE_STALL_PROBES - 1U].priority != 0;
+}
+
+void roundie_stall_disarm(roundie_stall_report_t *out)
+{
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&lock);
+    armed = false;
+    /* A probe still stopped at disarm has an open gap up to now. */
+    for (unsigned i = 0; i < ROUNDIE_STALL_PROBES; i++) {
+        uint32_t open_gap = (uint32_t)(now - probe_last_us[i]);
+        if (open_gap > report.probe[i].gap_max_us) {
+            report.probe[i].gap_max_us = open_gap;
+        }
+    }
+    if (gui_last_us != 0 && (uint32_t)(now - gui_last_us) > report.gui_gap_max_us) {
+        report.gui_gap_max_us = (uint32_t)(now - gui_last_us);
+    }
+    *out = report;
+    portEXIT_CRITICAL(&lock);
+}
+
+#endif

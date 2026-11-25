@@ -39,6 +39,7 @@
 #include "face_diagnostics.h"
 #include "roundie_watchface.h"
 #include "gui_diagnostics.h"
+#include "stall_probe.h"
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #include "power_manager.h"
@@ -1434,6 +1435,9 @@ void app_main(void)
         int64_t iteration_at = esp_timer_get_time();
         uint32_t wake_us = expected_wake_us > 0 && iteration_at > expected_wake_us ?
             (uint32_t)(iteration_at - expected_wake_us) : 0;
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        roundie_stall_gui_mark(iteration_at, wake_us);
+#endif
 #if CONFIG_ROUNDIE_POWER
         portENTER_CRITICAL(&state.dma_lock);
         bool dma_idle = state.dma_completions == (uint32_t)state.transfer_id;
