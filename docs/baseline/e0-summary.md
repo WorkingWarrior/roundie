@@ -64,11 +64,11 @@ Kluczowe liczby 1.85B, szczegóły w [e0-1.85b.md](e0-1.85b.md):
 
 ## 5. Otwarte kwestie (do decyzji lub dalszej pracy)
 
-- **Przyczyna Safe Mode `reason=core` przed sesją** jest nieznana: brak zapisu crash, reset power-on, zresetowany gauge i RTC. **Hipoteza:** pełna utrata zasilania. Wymaga sprawdzenia, czy utrata zasilania po STABLE powinna w ogóle prowadzić do Safe Mode.
+- **Przyczyna Safe Mode `reason=core` przed sesją:** przeanalizowana w §7 i w [e0-1.85b.md §9](e0-1.85b.md). Bezpośrednia przyczyna nadal jest nierozstrzygnięta.
 - **RTC 1.85B ma stan `RTC_INVALID`** (czas nieustawiony po utracie zasilania). Nie ustawiano go, bo nie było to w zakresie.
-- **Trwały spadek PSRAM o 131076 B po pierwszym uruchomieniu aplikacji.** Hipoteza: leniwie tworzony wykonawca; do potwierdzenia w kodzie i do ujęcia w budżecie pamięci.
-- **Wpływ odczytu LittleFS na GUI pozostaje niezmierzony,** bo tarcza Home rzadko się przerysowuje. Propozycja: powtórzyć FSBENCH READ przy działającym stoperze.
-- **Zapas stosu GUI wynosi 2256 B** po pełnym odświeżeniu. Wartość jest mała, ale nie mieści się w zakresie E0 (nie podnosimy limitów). Warto ją obserwować w następnych etapach.
+- **Trwały spadek PSRAM o 131076 B po pierwszym uruchomieniu aplikacji:** rozstrzygnięty w §7 (jednorazowy blok stosu wykonawcy).
+- **Wpływ odczytu LittleFS na GUI:** zmierzony w §7. Odczyt zatrzymuje GUI, a mechanizm pozostaje otwarty.
+- **Zapas stosu GUI:** w najgorszym zmierzonym przypadku 2128 B (§7). Nie jest to ryzyko, ale trzeba go obserwować w następnych etapach.
 - **Tryb deweloperski Managera** (stoper, statusy, raport z GUI): nie wykonany, pozostaje propozycją.
 - **1.75C** jest BLOCKED, bo płytka nie była podłączona. Trzeba też sprawdzić obsługę AXP2101 w runnerze.
 - **„-dirty” w commicie źródeł raportu** pochodzi z niezacommitowanych w czasie przebiegu poprawek runnera (potem 584dcde) i z niezwiązanej zmiany użytkownika w `AGENTS.md`, której nie commitowano.
@@ -86,3 +86,48 @@ Kluczowe liczby 1.85B, szczegóły w [e0-1.85b.md](e0-1.85b.md):
 5. **Słyszalność.**
 6. **Chwila wybudzenia względem niezależnego zegara** (powrót USB nie jest pomiarem).
 7. **Baza E0 na 1.75C** po podłączeniu płytki.
+
+## 7. Kontynuacja 2026-11-25: pomiary uzupełniające 1.85B
+
+Szczegóły i dane: [e0-1.85b.md §7–§9](e0-1.85b.md). Obraz `0.3.81-e0` (dodaje RP1 MEMPROBE tylko w buildzie deweloperskim), OTA na `ota_0`, VALID, 0 nieoczekiwanych resetów. Wejścia wstrzyknięte, nie dotyk.
+
+### 7.1. Co zrobiono
+
+| Punkt | Wynik | Commit |
+|---|---|---|
+| 7. Diff konfiguracji względem CI `rep` | jedyna różnica sdkconfig to `GAUGE_DESIGN_CAPACITY_MAH` 0 → 600; poza nią tylko `PROJECT_VER` | 5237444 |
+| 1. Sonda pamięci | RP1 MEMPROBE i runner `run_e0_followup.py` | fbad70d |
+| 6. Safe Mode przed sesją | analiza ścieżek, hipotez i propozycja danych diagnostycznych, bez zmian w logice | 4f84ca3, 28f3db0 |
+| Runner | obsługa widoku ERROR launchera (brak migawki listy po starcie) | 5d86dee |
+| Runner | pomiar przerwy GUI wokół FSBENCH; przerwa przed EXIT w worst_stack | b4622cb |
+| 1–5. Wyniki | `e0-1.85b.md` §8 | 205bd24 |
+
+### 7.2. Weryfikacja
+
+- **Testy hosta:** `tests.test_run_e0_followup` i `tests.test_run_e0` → 29 testów, OK. Pełny zestaw wcześniej w sesji: 104 testy, OK.
+- **Kompilacja Xtensa:** `tools/ci/build_firmware.sh` `rep` dla 1.85B i 1.75C po dodaniu MEMPROBE → sukces, 0 ostrzeżeń. Obraz E0 `0.3.81-e0` → 0 ostrzeżeń.
+- **Urządzenie (1.85B):** przebiegi `followup-185b-2/3/4` → wszystkie scenariusze PASS w ostatnim przebiegu. Jedno niepowodzenie worst_stack w `-2` opisuje §8.6.
+- **Długie, endurance i fault-injection:** nie uruchamiane.
+
+### 7.3. Co rozstrzygnięto
+
+1. **Sonda pamięci działa:** każda kontrolowana alokacja (1 KiB i 16 KiB wewn., 4 KiB i 128 KiB PSRAM) dała spadek rozmiar + 4 B i dokładny powrót po zwolnieniu. Wcześniejsze „0 B” wewnętrznej przy stoperze było prawdziwe. Pomiarów nie trzeba powtarzać.
+2. **PSRAM −131076 B to jednorazowy blok, nie wyciek:** w 20 cyklach stopera zmiana wystąpiła tylko w pierwszym, potem 0 B/cykl, wszystkie zasoby zwolnione. Źródło: `components/roundie_elf/idf/executor_stack.c:90` (64 KiB strony ochronnej i 64 KiB stosu), celowo nigdy nie zwalniany (`:114`), tworzony leniwie z `executor.c:151`.
+3. **BENCH mierzy rasteryzację CPU, nie magistralę:** przesył pełnej klatki trwa 19,42 ms, czyli tyle co teoretyczne minimum QSPI 19,44 ms przy 26,667 MHz. Render to 51 ms (lista), 56–62 ms (stoper) i 95 ms (Home). 10 kl./s to wynik tarczy Home, nie limit wyświetlacza.
+4. **Stos GUI:** najgorszy zmierzony przypadek (BENCH na stoperze, nawigacja, BENCH na liście i Home) daje 2128 B zapasu, czyli powyżej progu ryzyka 1024 B.
+5. **FSBENCH READ 1 MiB przy działającym GUI:** system worker nie odpowiada przez cały odczyt (250 ms zamiast 10 ms). GUI i takty aplikacji zatrzymują się na 0,3–0,44 s (normalnie 100–110 ms). Iteracje, które się odbywają, mają normalny czas.
+6. **Safe Mode:** reset `core` wymaga nieprawidłowego resetu po STABLE. Sama utrata zasilania ani brownout nie ustawiają latcha. Bezpośredniej przyczyny nie da się ustalić z zachowanych danych.
+
+### 7.4. Co zmienia założenia roadmapy (roadmapy nie edytowano)
+
+- **E6 (UI):** płynność trzeba planować przez małe obszary unieważniania, nie przez szybszy zegar QSPI. Pełnoekranowe animacje to przy 160 MHz realnie 10–17 kl./s, zależnie od widoku. Do zmierzenia przed decyzjami: CPU 240 MHz, rozdzielczość ticka pętli GUI (okresy to wielokrotności 10 ms przy `CONFIG_FREERTOS_HZ=100`), koszt tarczy Home.
+- **E2 (pakiety, instalacja) i każda długa praca pamięci masowej:** synchroniczna praca w `system_worker` blokuje interaktywność na cały czas operacji. Odczyt, hash i kopiowanie trzeba dzielić na odcinki albo przenieść do osobnego workera, z kryterium przerwy GUI ≤ 130 ms.
+- **Budżet pamięci:** pierwsze uruchomienie aplikacji trwale zajmuje 128 KiB PSRAM z wyrównaniem do 64 KiB. Budżet należy liczyć od stanu po pierwszym uruchomieniu.
+- **Kontrakt zatrzymania aplikacji (runtime/SDK):** STOP zamyka admisję UI asynchronicznie wobec trwającego callbacku. Aplikacja, która traktuje odrzucenie `ui_update` jako błąd, kończy się wtedy widokiem błędu (raz na 9 prób w tej sekwencji, §8.6). Potrzebna jest decyzja o semantyce przed zamrożeniem ABI.
+
+### 7.5. PENDING / BLOCKED
+
+- **PENDING (sesja z użytkownikiem):** prąd i przyrząd pomiarowy, dotyk palcem, ocena wzrokowa, słyszalność, chwila wybudzenia względem niezależnego zegara (§6 wyżej).
+- **PENDING (eksperyment):** mechanizm zatrzymania GUI przy FSBENCH. Hipotezy: priorytet `system_worker`, dostęp do Flash i cache albo wspólna konsola. Metoda i kryterium w e0-1.85b.md §8.5.
+- **PENDING (decyzja):** semantyka odrzucenia `ui_update` podczas STOP (§8.6). Które dane diagnostyczne Safe Mode wdrożyć (§9.4: propozycje 1–4 bez zmian partycji; ring rozruchów wymaga decyzji; core dump do Flash wymaga repartycjonowania, czyli operacji destrukcyjnej).
+- **BLOCKED:** cała baza i pomiary uzupełniające na 1.75C, bo płytka nie była podłączona.
