@@ -409,7 +409,7 @@ static void x_helper(void *argument)
 /* Runs the job where requested; the worker keeps feeding its watchdog. */
 static esp_err_t x_run(x_job_t *job)
 {
-    if (job->core < 0) {
+    if (job->core < 0 && !job->low) {
         job->feed = true;
         x_execute(job);
         return job->error;
