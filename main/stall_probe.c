@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include "driver/usb_serial_jtag.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "roundie_elf.h"
 
 #define PROBE_STACK 2048U
@@ -121,8 +122,48 @@ void roundie_stall_disarm(roundie_stall_report_t *out)
 /* Bounded so the executor still answers lifecycle requests promptly. */
 #define ELF_DELAY_MAX_MS 1000U
 
+/* "TICKGAP": application timer posts and their longest gap since the last
+ * TICKGAP. "LOGLEVEL <0..5>": esp_log level of the rep_app tag (app_log). */
+static bool tick_command(const char *operation, const char *id, int parsed)
+{
+    esp_err_t error = parsed;
+    char response[96];
+    int length = 0;
+    if (strcmp(operation, "TICKGAP") == 0) {
+        uint32_t ticks = 0;
+        uint32_t gap_max_us = 0;
+        if (error == ESP_OK) {
+            roundie_elf_debug_tick_gap(&ticks, &gap_max_us);
+        }
+        length = snprintf(response, sizeof(response),
+                          "\n!RP1 %s %d {\"format\":1,\"ticks\":%" PRIu32 ",\"gap_max_us\":%" PRIu32 "}\n",
+                          id, (int)error, ticks, gap_max_us);
+    } else if (strncmp(operation, "LOGLEVEL ", 9) == 0) {
+        unsigned level = 0;
+        int consumed = 0;
+        if (error == ESP_OK && (sscanf(operation + 9, "%u%n", &level, &consumed) != 1 ||
+                                operation[9 + consumed] != '\0' || level > ESP_LOG_VERBOSE)) {
+            error = ESP_ERR_INVALID_ARG;
+        }
+        if (error == ESP_OK) {
+            esp_log_level_set("rep_app", (esp_log_level_t)level);
+        }
+        length = snprintf(response, sizeof(response), "\n!RP1 %s %d {\"format\":1,\"loglevel\":%u}\n",
+                          id, (int)error, error == ESP_OK ? level : 0U);
+    } else {
+        return false;
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+    return true;
+}
+
 bool roundie_race_probe_command(const char *operation, const char *id, int parsed)
 {
+    if (tick_command(operation, id, parsed)) {
+        return true;
+    }
     if (strncmp(operation, "ELFDELAY ", 9) != 0) {
         return false;
     }

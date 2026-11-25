@@ -174,3 +174,6 @@ bool roundie_elf_on_executor(void);
  * this long between taking a UI event from the mailbox and on_event; 0 is off.
  * A diagnostic for the STOP/on_event race (docs/baseline/e0-1.85b.md §11). */
 void roundie_elf_debug_delivery_delay(uint32_t ms);
+/* Development builds only: timer events posted by the executor and the longest
+ * gap between two of them (µs) since the previous call, which clears both. */
+void roundie_elf_debug_tick_gap(uint32_t *ticks, uint32_t *gap_max_us);

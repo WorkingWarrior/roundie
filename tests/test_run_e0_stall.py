@@ -96,20 +96,32 @@ class ScriptPort(FakePort):
 class LowSessionTest(unittest.TestCase):
     def test_polls_until_result(self):
         port = ScriptPort(pending=2)
-        result = stall.low_session(port, "XWRITE 512 4096 0 L0", timeout=5.0)
+        result = stall.low_session(port, "XWRITE 512 4096 0 L0", timeout=5.0, period=0, list_round=0)
         self.assertEqual(result["code"], 0)
         self.assertEqual(result["worker_reply_s"]["XRESULT"]["n"], 3)
         self.assertEqual(result["worker_reply_s"]["STATUS"]["n"], 3)
-        self.assertEqual(port.operations[:4], ["FSBENCH XWRITE 512 4096 0 L0", "STATUS", "LIST", "FSBENCH XRESULT"])
+        self.assertEqual(result["worker_reply_s"]["LIST"]["n"], 1)
+        self.assertEqual(port.operations[:5], ["FSBENCH XWRITE 512 4096 0 L0", "STATUS", "LIST", "FSBENCH XRESULT",
+                                               "STATUS"])
 
     def test_refused_start_and_invalid(self):
-        self.assertEqual(stall.low_session(ScriptPort(0, start_code=259), "XREAD 1024 4096 0 L", 1.0)["code"], 259)
+        self.assertEqual(stall.low_session(ScriptPort(0, start_code=259), "XREAD 1024 4096 0 L", 1.0, period=0)["code"], 259)
         with self.assertRaises(TransportError):
             stall.low_session(ScriptPort(0), "XREAD 1024 4096 0 W", 1.0)
 
     def test_wrong_kind(self):
         with self.assertRaises(TransportError):
-            stall.low_session(ScriptPort(0), "XREAD 1024 4096 0 L", 1.0)
+            stall.low_session(ScriptPort(0), "XREAD 1024 4096 0 L", 1.0, period=0)
+
+
+class TickTest(unittest.TestCase):
+    def test_tickgap_and_loglevel(self):
+        reply = stall.tick_request(FakePort(0, {"format": 1, "ticks": 30, "gap_max_us": 110000}), "TICKGAP")
+        self.assertEqual((reply["ticks"], reply["gap_max_us"]), (30, 110000))
+        self.assertEqual(stall.tick_request(FakePort(0, {"format": 1, "loglevel": 2}), "LOGLEVEL 2")["code"], 0)
+        for operation in ("LOGLEVEL 6", "TICKGAP 1"):
+            with self.assertRaises(TransportError):
+                stall.tick_request(FakePort(0, {"format": 1}), operation)
 
 
 class HistoryTest(unittest.TestCase):

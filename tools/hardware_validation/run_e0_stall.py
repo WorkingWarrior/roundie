@@ -2,7 +2,7 @@
 """E0 stall, race and boot-history measurements (docs/baseline/e0-1.85b.md §10-§12).
 
 Needs a development image with RP1 FSBENCH X*, RP1 ELFDELAY and RS1 HISTORY
-(0.3.82-e0 or later; lowprio needs 0.3.83-e0). Scenarios:
+(0.3.82-e0 or later; lowprio needs 0.3.84-e0, loggap 0.3.84-e0). Scenarios:
 
   history      RS1 HISTORY: the diagnostic ring of reset reasons (read only).
   stall_write  On Home: FSBENCH XWRITE 64/512/1024 KiB with chunk, yield and
@@ -13,6 +13,9 @@ Needs a development image with RP1 FSBENCH X*, RP1 ELFDELAY and RS1 HISTORY
                helper below the GUI (L unpinned, L0 on core 0, no yield)
                against W 16384 y1; GUI and probe gaps, throughput and the
                system worker's reply time to RS1 STATUS and RP1 LIST during I/O.
+  loggap       With the stopwatch running, rep_app at INFO and at WARN: the
+               longest gap between application timer posts (RP1 TICKGAP)
+               with the host port closed, open and read, and during XREAD.
   race         ELFDELAY holds a UI event between the executor taking it and
                on_event; EXIT inside that window. Counts RESULT views (the
                STOP/on_event race) against the same sequence without delay.
@@ -97,9 +100,11 @@ def exchange(port, protocol, operation, timeout, limit=2000):
         raise TransportError(f"malformed reply to {operation}") from error
 
 
-def low_session(port, operation, timeout=60.0, control=("STATUS", "LIST")):
-    """Starts an L/L0 job, then polls RS1 STATUS, RP1 LIST and XRESULT in turn
-    until the result arrives; every poll is a system-worker reply time."""
+def low_session(port, operation, timeout=180.0, period=0.2, list_round=2):
+    """Starts an L/L0 job, then every `period` s sends RS1 STATUS and XRESULT
+    (and RP1 LIST once, in round `list_round`) until the result arrives. Each
+    reply time is a system-worker response time during the I/O; the pause
+    keeps the polling itself from loading the worker."""
     match = X_OPERATION.fullmatch(operation)
     if match is None or match.group(5) not in ("L", "L0"):
         raise TransportError("invalid low-priority FSBENCH X operation")
@@ -110,11 +115,15 @@ def low_session(port, operation, timeout=60.0, control=("STATUS", "LIST")):
         raise TransportError("FSBENCH X start not acknowledged")
     latency = {"STATUS": [], "LIST": [], "XRESULT": []}
     deadline = time.monotonic() + timeout
+    rounds = 0
     while time.monotonic() < deadline:
-        for name in control:
-            protocol = "!RS1" if name == "STATUS" else "!RP1"
-            _, _, seconds, _, _ = exchange(port, protocol, name, 8.0)
-            latency[name].append(seconds)
+        time.sleep(period)
+        _, _, seconds, _, _ = exchange(port, "!RS1", "STATUS", 8.0)
+        latency["STATUS"].append(seconds)
+        if rounds == list_round:
+            _, _, seconds, _, _ = exchange(port, "!RP1", "LIST", 8.0)
+            latency["LIST"].append(seconds)
+        rounds += 1
         code, _, seconds, line, prefix = exchange(port, "!RP1", "FSBENCH XRESULT", 4.0)
         latency["XRESULT"].append(seconds)
         if code == 259:
@@ -126,6 +135,30 @@ def low_session(port, operation, timeout=60.0, control=("STATUS", "LIST")):
         result["worker_reply_s"] = latency_summary(latency)
         return result
     raise TransportError("low-priority FSBENCH X did not finish")
+
+
+def tick_request(port, operation, timeout=4.0):
+    """RP1 TICKGAP or RP1 LOGLEVEL <0..5>."""
+    if re.fullmatch(r"TICKGAP|LOGLEVEL [0-5]", operation) is None:
+        raise TransportError("invalid TICKGAP/LOGLEVEL operation")
+    code, payload, _, _, _ = exchange(port, "!RP1", operation, timeout, 200)
+    try:
+        result = json.loads(payload)
+        if result["format"] != 1:
+            raise ValueError("format")
+        if operation == "TICKGAP" and not (type(result["ticks"]) is int and type(result["gap_max_us"]) is int):
+            raise ValueError("fields")
+    except (ValueError, KeyError, TypeError) as error:
+        raise TransportError(f"malformed {operation} reply: {error}") from error
+    result["code"] = code
+    return result
+
+
+def drain(port, seconds):
+    """Keeps reading (and logging) the port for `seconds`."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        port.read(1)
 
 
 def latency_summary(latency):
@@ -174,6 +207,7 @@ def history_request(port, operation="HISTORY", timeout=8.0):
 
 e0.HANDLERS["xbench"] = lambda port, operation, timeout: xbench_request(port, operation, timeout or 60.0)
 e0.HANDLERS["elfdelay"] = lambda port, operation, timeout: elfdelay_request(port, operation, timeout or 4.0)
+e0.HANDLERS["tick"] = lambda port, operation, timeout: tick_request(port, operation, timeout or 4.0)
 e0.HANDLERS["history"] = lambda port, operation, timeout: history_request(port, operation, timeout or 8.0)
 
 
@@ -196,7 +230,7 @@ def race_verdict(nav):
 
 
 class StallRunner(followup.FollowupRunner):
-    SCENARIOS = ("history", "stall_write", "stall_read", "lowprio", "race")
+    SCENARIOS = ("history", "stall_write", "stall_read", "lowprio", "loggap", "race")
 
     def xbench(self, operation, problems, expected=None):
         reply = self.call("xbench", operation)
@@ -298,7 +332,7 @@ class StallRunner(followup.FollowupRunner):
             reply["worker_reply_s"] = {"STATUS": {"n": 1, "max": round(timing["second_reply_s"], 4),
                                                   "mean": round(timing["second_reply_s"], 4)}}
         else:
-            reply = self.device.session(lambda port: low_session(port, operation))
+            reply = self.device.session(lambda port: low_session(port, operation, list_round=self.args.list_round))
             if reply["code"] != 0:
                 problems.append(f"{operation}: start refused ({reply['code']})")
                 return {"op": operation, "code": reply["code"]}
@@ -365,6 +399,61 @@ class StallRunner(followup.FollowupRunner):
                              "I/O runs (L/L0: polled until XRESULT; W: RS1 STATUS 20 ms after the command)"))
         return (FAIL if problems else PASS), details
 
+    def tick_window(self, condition, seconds=3.0):
+        """Longest application timer gap while the host does `condition`."""
+        if condition == "closed":
+            self.call("tick", "TICKGAP")
+            time.sleep(seconds)
+            reply = self.call("tick", "TICKGAP")
+        elif condition == "open":
+            def run(port):
+                tick_request(port, "TICKGAP")
+                drain(port, seconds)
+                return tick_request(port, "TICKGAP")
+            reply = self.device.session(run)
+        else:
+            self.call("tick", "TICKGAP")
+            read = self.call("xbench", "XREAD 1024 4096 0 W")
+            reply = self.call("tick", "TICKGAP")
+            reply["read_ms"] = round(read["total_us"] / 1000, 1)
+        return {"condition": condition, "ticks": reply["ticks"], "gap_max_ms": round(reply["gap_max_us"] / 1000, 1),
+                **({"read_ms": reply["read_ms"]} if "read_ms" in reply else {})}
+
+    def s_loggap(self):
+        self.go_home()
+        problems = []
+        prep = self.call("xbench", "XWRITE 1024 4096 0 W")
+        if prep["code"] != 0:
+            raise Blocked(f"XWRITE 1024 refused ({prep['code']})")
+        generation = None
+        rows = []
+        try:
+            generation, roles = self.open_stopwatch()
+            self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))
+            self.settle(1.0)
+            for _ in range(self.args.repeats):
+                for level in (3, 2):
+                    if self.call("tick", f"LOGLEVEL {level}")["code"] != 0:
+                        problems.append(f"LOGLEVEL {level} refused")
+                    for condition in ("closed", "open", "xread"):
+                        row = self.tick_window(condition)
+                        row["loglevel"] = level
+                        rows.append(row)
+            self.call("tick", "LOGLEVEL 3")
+            self.call("ui", e0.semantic_operation("PRESS", generation, roles, "dial"))
+            self.close_stopwatch(generation)
+            generation = None
+        finally:
+            self.call("tick", "LOGLEVEL 3")
+            if generation is not None:
+                self.close_stopwatch(generation)
+            deleted = self.call("fsbench", "DEL 1024")
+            if deleted["code"] != 0:
+                problems.append(f"DEL 1024 failed ({deleted['code']})")
+        return (FAIL if problems else PASS), {"rows": rows, "problems": problems,
+                                             "note": "loglevel 3 = INFO (rep_app lines on), 2 = WARN (off); "
+                                                     "timer period 100 ms"}
+
     def race_attempt(self, delay_ms):
         generation, roles = self.open_stopwatch()
         # Lap is accepted only while the stopwatch runs.
@@ -418,6 +507,8 @@ def parse_args(argv):
     parser.add_argument("--race-delay", type=int, default=300)
     parser.add_argument("--race-repeats", type=int, default=10)
     parser.add_argument("--exit-after", type=float, default=0.05)
+    parser.add_argument("--list-round", type=int, default=2,
+                        help="lowprio: poll round that also sends RP1 LIST (-1: never)")
     args = parser.parse_args(argv)
     if args.commit is None:
         args.commit = e0.parse_args(["--board", args.board]).commit

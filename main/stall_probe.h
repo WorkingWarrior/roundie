@@ -28,7 +28,9 @@ void roundie_stall_gui_mark(int64_t iteration_at_us, uint32_t late_us);
 bool roundie_stall_arm(void);
 void roundie_stall_disarm(roundie_stall_report_t *out);
 
-/* RP1 ELFDELAY <ms> (development builds): sets the executor's diagnostic
+/* RP1 TICKGAP and RP1 LOGLEVEL <0..5> (development builds): application
+ * timer gaps and the rep_app log level (docs/baseline/e0-1.85b.md §15).
+ * RP1 ELFDELAY <ms> (development builds): sets the executor's diagnostic
  * delay before delivering a UI event (STOP/on_event race, e0-1.85b.md §11).
- * Returns false when the operation is not ELFDELAY. */
+ * Returns false when the operation is none of these. */
 bool roundie_race_probe_command(const char *operation, const char *id, int parsed);
