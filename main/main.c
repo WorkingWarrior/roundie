@@ -36,6 +36,8 @@
 #include "app_runtime.h"
 #include "elf_diagnostics.h"
 #include "package_diagnostics.h"
+#include "face_diagnostics.h"
+#include "roundie_watchface.h"
 #include "gui_diagnostics.h"
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
@@ -77,7 +79,6 @@ _Static_assert(ROUNDIE_BOARD_DISPLAY_ALIGN == 1, "the direct path sends LVGL are
 _Static_assert((ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_ROUND_DISPLAY) != 0,
                "the launcher and round UI need a round panel");
 #define GUI_DELAY_MAX_MS 10U
-#define HOME_PACKAGE ROUNDIE_LAUNCHER_HOME_PACKAGE
 
 static const char *TAG = "roundie";
 
@@ -327,6 +328,9 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
                 if (strncmp(frame->line, "!RP1 ", 5) == 0) {
                     roundie_package_command(frame->line, frame->discard);
                 } else
+                if (strncmp(frame->line, "!RF1 ", 5) == 0) {
+                    roundie_face_command(frame->line, frame->discard);
+                } else
                 if (strncmp(frame->line, "!RE1 ", 5) == 0) {
                     roundie_elf_command(frame->line, frame->discard);
                 } else
@@ -396,11 +400,13 @@ static void sensor_worker(void *argument)
         ESP_LOGE(TAG, "System worker watchdog: %s", esp_err_to_name(watchdog_error));
     }
 #if CONFIG_ROUNDIE_APP_RUNTIME
-    /* Home is the watch face (docs/system-navigation.md). The one normal trial
-     * after Safe Mode starts on the list, not in a package that may have failed. */
+    /* Home is the system WatchFaceHost (docs/watch-face-platform.md). The one
+     * normal trial after Safe Mode starts on the list and shows only the
+     * built-in face: no installed face may have caused the failure again. */
     roundie_boot_status_t boot_status;
     roundie_boot_status(&boot_status);
-    roundie_launcher_set_home(HOME_PACKAGE, !boot_status.trial);
+    roundie_app_runtime_faces_init(boot_status.trial);
+    roundie_launcher_set_home_face(!boot_status.trial);
 #endif
     int64_t next_sample_us = esp_timer_get_time() + 5000000;
     for (;;) {
@@ -945,10 +951,8 @@ static void cycle_backlight(lv_event_t *event)
     step_backlight(lv_event_get_user_data(event));
 }
 
-#if CONFIG_ROUNDIE_APP_RUNTIME && CONFIG_ROUNDIE_POWER
-/* Quick settings on the home application (docs/quick-settings.md). */
-static gui_state_t *quick_state;
-
+#if CONFIG_ROUNDIE_APP_RUNTIME
+/* Battery for quick settings and the watch faces. */
 static bool quick_battery(uint8_t *percent, bool *charging)
 {
     portENTER_CRITICAL(&sensors.lock);
@@ -964,6 +968,16 @@ static bool quick_battery(uint8_t *percent, bool *charging)
     *charging = battery.charging;
     return true;
 }
+
+/* WatchFaceHost data: fresh local time from the RTC-backed clock. */
+static const roundie_watchface_gui_platform_t face_gui = {
+    roundie_local_time_sample, roundie_local_time_zone, quick_battery,
+};
+#endif
+
+#if CONFIG_ROUNDIE_APP_RUNTIME && CONFIG_ROUNDIE_POWER
+/* Quick settings on Home (docs/quick-settings.md). */
+static gui_state_t *quick_state;
 
 static uint8_t quick_brightness(bool cycle)
 {
@@ -1334,6 +1348,7 @@ void app_main(void)
 #if CONFIG_ROUNDIE_APP_RUNTIME
     if (!roundie_recovery_active()) {
         roundie_launcher_gui_bind();
+        roundie_watchface_gui_bind(&face_gui);
     }
 #endif
     bool recovery_screen = roundie_recovery_active();

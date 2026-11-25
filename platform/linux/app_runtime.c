@@ -28,6 +28,7 @@
 #include "roundie_elf.h"
 #include "roundie_packages.h"
 #include "roundie_platform.h"
+#include "roundie_watchface.h"
 #include "vhw.h"
 
 /* An executor call running this long is reported as an application that does not return. */
@@ -237,6 +238,7 @@ static void persist_storage(void)
 void roundie_desktop_apps_poll(int64_t now_us)
 {
     roundie_elf_set_allowed(atomic_load(&native_apps) && !roundie_packages_busy());
+    roundie_watchface_poll(now_us);
     if (!roundie_elf_busy()) {
         clear_loaded();
         persist_storage();
@@ -384,4 +386,16 @@ const char *esp_err_to_name(esp_err_t code)
     default:
         return "UNKNOWN ERROR";
     }
+}
+
+/* The watch face store shares the package store's admission, capacity and
+ * buffers, as on the board (docs/watch-face-platform.md). */
+static const roundie_watchface_store_platform_t face_store = {
+    roundie_packages_allowed, roundie_packages_capacity, roundie_packages_allocate, roundie_packages_free,
+    roundie_packages_clock,
+};
+
+void roundie_desktop_faces_init(bool fallback_only)
+{
+    roundie_watchface_init(&face_store, fallback_only);
 }

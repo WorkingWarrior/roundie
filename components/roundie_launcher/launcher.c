@@ -23,6 +23,9 @@ static roundie_package_record_t record;
 static char home[ROUNDIE_PACKAGE_ID];
 static bool home_due; /* launch home once the list is shown */
 static bool home_parked; /* home unloaded for light sleep; relaunch on resume */
+static bool face_home; /* Home is the system watch face, not a package */
+/* Face Home shown before storage admission: scan once when admitted, keeping Home. */
+static bool home_scan_due;
 
 static void set_state(roundie_navigation_t state)
 {
@@ -40,7 +43,8 @@ void roundie_launcher_status(roundie_launcher_status_t *out)
 /* Locked. origin is TOUCH=1, INJECTED=2 or 0 for the system's home launch. */
 static bool admit(const char *id, uint32_t origin, int64_t started)
 {
-    bool valid = gui_ready && snapshot_valid && status.state == ROUNDIE_NAV_LIST &&
+    bool valid = gui_ready && snapshot_valid &&
+        (status.state == ROUNDIE_NAV_LIST || status.state == ROUNDIE_NAV_HOME) &&
         !refresh_pending && status.request != UINT32_MAX;
     bool found = false;
     for (unsigned i = 0; i < status.count; i++) {
@@ -110,6 +114,9 @@ esp_err_t roundie_launcher_select(const char *id, uint32_t revision, uint32_t or
 void roundie_launcher_set_home(const char *id, bool autostart)
 {
     roundie_lock(&lock);
+    face_home = false;
+    home_scan_due = false;
+    status.home_face = false;
     if (id != NULL && roundie_package_id_valid(id)) {
         strcpy(home, id);
         home_due = autostart;
@@ -120,11 +127,47 @@ void roundie_launcher_set_home(const char *id, bool autostart)
     roundie_unlock(&lock);
 }
 
+void roundie_launcher_set_home_face(bool autostart)
+{
+    roundie_lock(&lock);
+    face_home = true;
+    status.home_face = true;
+    home[0] = '\0';
+    home_due = autostart;
+    home_scan_due = true;
+    roundie_unlock(&lock);
+}
+
 esp_err_t roundie_launcher_home(void)
 {
     roundie_lock(&lock);
-    bool valid = home[0] != '\0' && admit(home, 0, roundie_time_us());
+    bool valid;
+    if (face_home) {
+        valid = gui_ready && !refresh_pending && !observing && !status.launch_pending &&
+            (status.state == ROUNDIE_NAV_LIST || status.state == ROUNDIE_NAV_ERROR);
+        if (valid) {
+            home_due = false;
+            set_state(ROUNDIE_NAV_HOME);
+        }
+    } else {
+        valid = home[0] != '\0' && admit(home, 0, roundie_time_us());
+    }
     if (!valid) {
+        status.rejected++;
+    }
+    roundie_unlock(&lock);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t roundie_launcher_open_list(void)
+{
+    roundie_lock(&lock);
+    bool valid = gui_ready && face_home && status.state == ROUNDIE_NAV_HOME && !status.launch_pending;
+    if (valid) {
+        /* Without a current list (no storage admission at boot, or a failed
+         * scan) the error view offers Refresh; the left edge returns Home. */
+        set_state(snapshot_valid ? ROUNDIE_NAV_LIST : ROUNDIE_NAV_ERROR);
+    } else {
         status.rejected++;
     }
     roundie_unlock(&lock);
@@ -306,11 +349,12 @@ static void publish(esp_err_t result)
         status.revision++;
         package_revision = packages.revision;
         snapshot_valid = true;
-        set_state(ROUNDIE_NAV_LIST);
+        /* A registry change while Home is shown keeps Home. */
+        set_state(status.state == ROUNDIE_NAV_HOME ? ROUNDIE_NAV_HOME : ROUNDIE_NAV_LIST);
     } else {
         snapshot_valid = false;
         status.launch_result = result == ESP_OK ? ESP_ERR_INVALID_SIZE : result;
-        set_state(ROUNDIE_NAV_ERROR);
+        set_state(status.state == ROUNDIE_NAV_HOME ? ROUNDIE_NAV_HOME : ROUNDIE_NAV_ERROR);
     }
     status.copy_us = (uint32_t)(roundie_time_us() - started);
     roundie_unlock(&lock);
@@ -328,6 +372,7 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     status.stack_min = roundie_thread_stack_unused();
     bool ready = gui_ready;
     bool refresh = refresh_pending || status.state == ROUNDIE_NAV_WAITING;
+    bool home_scan = face_home && home_scan_due && !snapshot_valid && status.state == ROUNDIE_NAV_HOME;
     bool launch = status.launch_pending;
     bool exiting = status.exit_pending;
     bool result_pending = status.state == ROUNDIE_NAV_RESULT;
@@ -410,6 +455,15 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
         roundie_unlock(&lock);
         return;
     }
+    roundie_lock(&lock);
+    if (face_home && home_due && !launch && !refresh_pending &&
+        (status.state == ROUNDIE_NAV_LIST || status.state == ROUNDIE_NAV_ERROR ||
+         (status.state == ROUNDIE_NAV_WAITING && !allowed))) {
+        /* The face needs no storage: Home also without admission (trial boot). */
+        home_due = false;
+        set_state(ROUNDIE_NAV_HOME);
+    }
+    roundie_unlock(&lock);
     if (!allowed || transfer_busy || busy) {
         if (launch) {
             roundie_lock(&lock);
@@ -464,9 +518,12 @@ void roundie_launcher_poll(bool allowed, bool transfer_busy)
     if (result_pending) {
         return; /* A registry publication must not dismiss a result. */
     }
-    if (refresh) {
+    if (refresh || home_scan) {
         roundie_lock(&lock);
-        set_state(ROUNDIE_NAV_REFRESHING);
+        home_scan_due = false;
+        if (refresh) {
+            set_state(ROUNDIE_NAV_REFRESHING);
+        } /* else Home stays shown; publish() keeps HOME. */
         roundie_unlock(&lock);
         uint32_t before = ui.flushes;
         esp_err_t result = roundie_packages_scan();

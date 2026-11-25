@@ -6,6 +6,7 @@
 #include "roundie_platform.h"
 #include "lvgl.h"
 #include "roundie_app_ui.h"
+#include "roundie_watchface.h"
 
 static roundie_thread_t gui_task;
 static lv_obj_t *screen;
@@ -239,11 +240,13 @@ static void swipe_released(uint32_t kind)
     if (kind == SWIPE_QUICK_PANEL) {
         quick_show(false);
     } else if (kind == SWIPE_TOP_EDGE) {
-        if (running && model.home_active && quick_actions != NULL) {
+        if (((running && model.home_active) || model.state == ROUNDIE_NAV_HOME) && quick_actions != NULL) {
             quick_show(true);
         }
-    } else if (kind == SWIPE_LEFT_EDGE && model.state == ROUNDIE_NAV_LIST) {
+    } else if (kind == SWIPE_LEFT_EDGE && (model.state == ROUNDIE_NAV_LIST || model.state == ROUNDIE_NAV_ERROR)) {
         roundie_launcher_home();
+    } else if (kind == SWIPE_BOTTOM_EDGE && model.state == ROUNDIE_NAV_HOME) {
+        roundie_launcher_open_list();
     } else if (running && (kind == SWIPE_BOTTOM_EDGE) == model.home_active) {
         roundie_launcher_exit(model.generation); /* home's exit shows the list */
     }
@@ -255,7 +258,9 @@ static void edge_swiped(lv_event_t *event)
     lv_indev_t *input = lv_indev_active();
     uint32_t kind = (uint32_t)(uintptr_t)lv_event_get_user_data(event);
     bool running = model.state == ROUNDIE_NAV_ACTIVE || model.state == ROUNDIE_NAV_LOADING;
-    if (disabled || (!running && model.state != ROUNDIE_NAV_LIST)) {
+    bool navigable = running || model.state == ROUNDIE_NAV_LIST || model.state == ROUNDIE_NAV_HOME ||
+        (model.home_face && model.state == ROUNDIE_NAV_ERROR);
+    if (disabled || !navigable) {
         return;
     }
     if (code == LV_EVENT_PRESS_LOST) {
@@ -273,7 +278,7 @@ static void edge_swiped(lv_event_t *event)
         swipe_armed = true;
         lv_label_set_text(lv_obj_get_child(exit_pill, 0), kind == SWIPE_TOP_EDGE ? LV_SYMBOL_SETTINGS " Ustawienia" :
             kind == SWIPE_BOTTOM_EDGE ? LV_SYMBOL_LIST " Aplikacje" :
-            model.state == ROUNDIE_NAV_LIST ? LV_SYMBOL_HOME " Zegarek" : LV_SYMBOL_CLOSE " Zamknij");
+            !running ? LV_SYMBOL_HOME " Zegarek" : LV_SYMBOL_CLOSE " Zamknij");
         swipe_feedback(kind, &point);
     } else if (code == LV_EVENT_PRESSING && swipe_armed) {
         swipe_feedback(kind, &point);
@@ -570,6 +575,7 @@ void roundie_launcher_gui_pump(bool safe)
             lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
         }
         /* Safe Mode may clean the active root; never dereference it afterward. */
+        roundie_watchface_gui_abandon();
         roundie_launcher_gui_report(false, false, 0, 0, 0, 0);
         return;
     }
@@ -708,13 +714,19 @@ void roundie_launcher_gui_pump(bool safe)
         lv_obj_add_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
         bool home_running = running && model.generation != 0 && model.state != ROUNDIE_NAV_EXITING &&
             model.home_active;
-        if (!home_running) {
+        bool face = model.state == ROUNDIE_NAV_HOME;
+        if (!home_running && !face) {
             lv_obj_add_flag(quick, LV_OBJ_FLAG_HIDDEN);
         }
-        if (home_running && quick_actions != NULL) {
+        if ((home_running || face) && quick_actions != NULL) {
             lv_obj_remove_flag(top, LV_OBJ_FLAG_HIDDEN);
         }
-        if (running && model.generation != 0 && model.state != ROUNDIE_NAV_EXITING) {
+        if (face) {
+            /* The WatchFaceHost screen is Home: the strips lie on the top
+             * layer above it, so no face can capture these gestures. */
+            lv_obj_remove_flag(bottom, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(pill_text, LV_SYMBOL_LIST " Aplikacje");
+        } else if (running && model.generation != 0 && model.state != ROUNDIE_NAV_EXITING) {
             /* Home has no Close: a swipe up from the bottom opens the list. */
             lv_obj_remove_flag(model.home_active ? bottom : edge, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(pill_text, model.home_active ? LV_SYMBOL_LIST " Aplikacje" : LV_SYMBOL_CLOSE " Zamknij");
@@ -723,11 +735,11 @@ void roundie_launcher_gui_pump(bool safe)
             lv_obj_set_pos(exit_pill, ROUNDIE_UI_CENTER - PILL_WIDTH / 2, 12);
             lv_label_set_text(pill_text, model.home_active ? "Aplikacje..." : "Zamykanie...");
             lv_obj_remove_flag(exit_pill, LV_OBJ_FLAG_HIDDEN);
-        } else if (model.state == ROUNDIE_NAV_LIST && model.home_available) {
+        } else if ((model.state == ROUNDIE_NAV_LIST && model.home_available) || (model.home_face && idle)) {
             lv_obj_remove_flag(edge, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(pill_text, LV_SYMBOL_HOME " Zegarek");
         }
-        if (!running || idle) {
+        if ((!running || idle) && !face) {
             lv_screen_load(screen);
         }
         if (result) {
@@ -744,6 +756,11 @@ void roundie_launcher_gui_pump(bool safe)
         int64_t applied_at = roundie_time_us();
         roundie_launcher_painted(model.state, model.request, model.generation, applied_at,
             elapsed_us(applied_at, model.changed_us));
+    }
+    /* After the paint: on entering Home it loads the face screen; on leaving
+     * it the launcher screen is already loaded and the face is hidden. */
+    if (model.home_face) {
+        roundie_watchface_gui_pump(model.state == ROUNDIE_NAV_HOME);
     }
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);

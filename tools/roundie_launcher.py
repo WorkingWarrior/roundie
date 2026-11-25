@@ -8,13 +8,13 @@ import time
 from roundie_time import DeviceError, TransportError, open_serial, read_serial_reply, write_command
 from roundie_package import valid_id
 
-STATES = ("WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT")
+STATES = ("WAITING", "REFRESHING", "LIST", "REQUESTED", "LOADING", "ACTIVE", "EXITING", "ERROR", "RESULT", "HOME")
 TIMINGS = ("refresh", "copy", "enqueue_max", "admission", "started", "exit_admission",
            "return", "gui_create", "gui_latency_max")
 
 
 def request(port, operation="NAV", timeout=4, allow_error=False):
-    if operation not in ("NAV", "REFRESH"):
+    if operation not in ("NAV", "REFRESH", "OPEN"):
         match = re.fullmatch(r"SELECT ([0-9]{1,10}) (.+)|(?:EXIT|BACK) ([0-9]{1,10})", operation)
         if match is None:
             raise DeviceError("invalid launcher diagnostic")
@@ -79,6 +79,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
     sub.add_parser("refresh")
+    sub.add_parser("open", help="INJECTED Home to list (M10), as the swipe up")
     select = sub.add_parser("select", help="INJECTED semantic launcher selection")
     select.add_argument("revision", type=int)
     select.add_argument("app_id")
@@ -87,7 +88,7 @@ def main():
     back = sub.add_parser("back", help="INJECTED dismissal of a copied completion")
     back.add_argument("request", type=int)
     args = parser.parse_args()
-    operation = {"status": "NAV", "refresh": "REFRESH"}.get(args.command)
+    operation = {"status": "NAV", "refresh": "REFRESH", "open": "OPEN"}.get(args.command)
     if args.command == "select":
         operation = f"SELECT {args.revision} {args.app_id}"
     elif args.command == "exit":

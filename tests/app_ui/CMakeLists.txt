@@ -15,6 +15,24 @@ add_library(roundie_fonts OBJECT "${ROOT}/components/roundie_fonts/roundie_font_
     "${ROOT}/components/roundie_fonts/roundie_font_28.c"
     "${ROOT}/components/roundie_fonts/roundie_font_48.c")
 target_link_libraries(roundie_fonts PRIVATE lvgl)
+# The watch face component as the firmware builds it; store.c hashes through
+# the OpenSSL-backed PSA mock (tests/ota_mocks/psa/crypto.h).
+add_library(roundie_watchface STATIC
+    "${ROOT}/components/roundie_watchface/format.c"
+    "${ROOT}/components/roundie_watchface/text.c"
+    "${ROOT}/components/roundie_watchface/host.c"
+    "${ROOT}/components/roundie_watchface/declarative.c"
+    "${ROOT}/components/roundie_watchface/fallback.c"
+    "${ROOT}/components/roundie_watchface/gui.c"
+    "${ROOT}/components/roundie_watchface/store.c")
+target_compile_options(roundie_watchface PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(roundie_watchface PRIVATE FACES_DIRECTORY="storage/faces")
+target_include_directories(roundie_watchface PRIVATE ../elf_mocks ../ota_mocks
+    "${ROOT}/components/roundie_platform/include" "${ROOT}/components/roundie_platform/idf"
+    "${ROOT}/components/roundie_fonts/include" "${ROOT}/components/roundie_watchface")
+target_include_directories(roundie_watchface PUBLIC "${ROOT}/components/roundie_watchface/include"
+    "${ROOT}/components/roundie_elf/include" "${ROOT}/include")
+target_link_libraries(roundie_watchface PRIVATE lvgl crypto)
 add_executable(ui_tests ../test_app_ui.c
     "${ROOT}/components/roundie_app_ui/bridge.c"
     "${ROOT}/components/roundie_app_ui/render.c"
@@ -29,7 +47,7 @@ target_include_directories(ui_tests PRIVATE ../elf_mocks "${ROOT}/components/rou
     "${ROOT}/components/roundie_launcher/include" "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include"
     "${ROOT}/components/roundie_audio/include")
-target_link_libraries(ui_tests PRIVATE roundie_fonts lvgl m pthread)
+target_link_libraries(ui_tests PRIVATE roundie_watchface roundie_fonts lvgl m pthread crypto)
 add_executable(round_tests ../test_app_round.c
     "${ROOT}/components/roundie_app_ui/bridge.c"
     "${ROOT}/components/roundie_app_ui/render.c"
@@ -61,7 +79,12 @@ target_include_directories(launcher_tests PRIVATE ../elf_mocks "${ROOT}/componen
     "${ROOT}/components/roundie_packages/include"
     "${ROOT}/components/roundie_app_ui/include" "${ROOT}/components/roundie_elf/include"
     "${ROOT}/components/roundie_audio/include")
-target_link_libraries(launcher_tests PRIVATE roundie_fonts lvgl m pthread)
+target_link_libraries(launcher_tests PRIVATE roundie_watchface roundie_fonts lvgl m pthread crypto)
 add_executable(display_tests ../test_display_render.c)
 target_compile_options(display_tests PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(display_tests PRIVATE roundie_fonts lvgl m pthread)
+add_executable(watchface_tests ../test_watchface_gui.c)
+target_compile_options(watchface_tests PRIVATE -Wall -Wextra -Werror)
+target_include_directories(watchface_tests PRIVATE ../elf_mocks "${ROOT}/components/roundie_platform/include"
+    "${ROOT}/components/roundie_platform/idf")
+target_link_libraries(watchface_tests PRIVATE roundie_watchface roundie_fonts lvgl m pthread crypto)

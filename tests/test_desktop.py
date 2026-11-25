@@ -32,16 +32,18 @@ LVGL_KCONFIG = {
 }
 
 FLOW = """\
-wait-nav RESULT 5000
-screenshot result.png
-tap {back}
-wait-nav LIST 5000
+wait-nav HOME 5000
+screenshot home.png
+{home_to_list}wait-nav LIST 5000
 screenshot list.png
 mark
 tap {refresh}
 wait-refreshed 5000
 tap {first}
 wait-nav RESULT 5000
+screenshot result.png
+tap {back}
+wait-nav LIST 5000
 key boot
 swipe {swipe}
 """
@@ -71,18 +73,24 @@ NATIVE_APPS = (
     ("event-debug", "event_elf/event.c", "rep_app_entry_v2", "org.roundie.events", "Events", ("--debug",)),
 )
 
-# On the 1.85B panel: a swipe up from the home application's bottom strip
-# opens the list, and a swipe right from the left-edge strip closes an
-# application (components/roundie_launcher/render.c).
+# On the 1.85B panel: a swipe up from Home's bottom strip opens the list, and
+# a swipe right from the left-edge strip closes an application or returns
+# from the list to Home (components/roundie_launcher/render.c).
 HOME_TO_LIST = "down 180 320\nwait 50\nmove 180 250\nwait 50\nmove 180 150\nwait 50\nup\n"
 CLOSE_APP = "down 10 180\nwait 50\nmove 60 182\nwait 50\nmove 150 185\nwait 50\nup\n"
+# M10: Home is the watch face. Boot and the end of an application show it;
+# the list is one swipe up away (docs/watch-face-platform.md).
+TO_LIST = "wait-nav HOME 5000\n" + HOME_TO_LIST + "wait-nav LIST 5000\n"
+# The Watch application, second on the list with Hello (1.85B).
+OPEN_WATCH = TO_LIST + "tap 180 218\n"
 
 # Canvas points of the controls, in panel pixels of each profile.
 BOARDS = {
     "1.85b": {"size": 360, "back": "180 295", "refresh": "180 295", "first": "180 135",
-              "swipe": "180 300 180 120 300"},
+              "swipe": "180 300 180 120 300", "home_to_list": HOME_TO_LIST},
     "1.75c": {"size": 466, "back": "233 382", "refresh": "233 382", "first": "233 175",
-              "swipe": "233 388 233 155 300"},
+              "swipe": "233 388 233 155 300",
+              "home_to_list": "down 233 414\nwait 50\nmove 233 324\nwait 50\nmove 233 194\nwait 50\nup\n"},
 }
 
 
@@ -213,8 +221,9 @@ class DesktopRunTests(unittest.TestCase):
             cls.temporary.cleanup()
 
     def run_desktop(self, board, script, *, install=True, packages=None, native=False, timeout=60,
-                    environment=None, virtual=False, directory=None):
-        """directory: reuse an earlier run's data directory (a process restart)."""
+                    environment=None, virtual=False, directory=None, arguments=()):
+        """directory: reuse an earlier run's data directory (a process restart);
+        arguments: further command-line arguments, such as --install-face."""
         if directory is None:
             directory = Path(tempfile.mkdtemp(dir=self.work))
         (directory / "script.txt").write_text(script)
@@ -224,6 +233,7 @@ class DesktopRunTests(unittest.TestCase):
             command.append("--native-apps")
         if virtual:
             command.append("--virtual-time")
+        command += list(arguments)
         if install:
             for package in self.packages if packages is None else packages:
                 command += ["--install", str(package)]
@@ -243,15 +253,17 @@ class DesktopRunTests(unittest.TestCase):
                 # The emulated BOOT key reaches the firmware's power menu (M2).
                 self.assertIn("boot pressed", result.stderr)
                 size = points["size"]
-                for name in ("result.png", "list.png"):
+                for name in ("home.png", "result.png", "list.png"):
                     self.assertEqual(png_size(directory / name), (size, size))
                 self.assertNotEqual((directory / "result.png").read_bytes(),
+                                    (directory / "list.png").read_bytes())
+                self.assertNotEqual((directory / "home.png").read_bytes(),
                                     (directory / "list.png").read_bytes())
                 # The home package went through the real installer.
                 self.assertTrue((directory / "data/storage/packages/org.roundie.watch/active").exists())
 
     def test_touch_off_the_button_does_nothing(self):
-        script = "wait-nav LIST 5000\nmark\ntap 180 60\nwait-refreshed 1000\n"
+        script = TO_LIST + "mark\ntap 180 60\nwait-refreshed 1000\n"
         result, _ = self.run_desktop("1.85b", script, install=False)
         self.assertEqual(result.returncode, 1)
         self.assertIn("timed out", result.stderr)
@@ -260,7 +272,8 @@ class DesktopRunTests(unittest.TestCase):
         """Production behaviour, not a desktop artefact: LVGL keeps a pressed
         button pressed when the finger slides off (LV_OBJ_FLAG_PRESS_LOCK), so
         the release still clicks it, on the board's touch panel as here."""
-        script = "wait-nav RESULT 5000\nswipe 233 382 465 400 400\nwait-nav LIST 3000\n"
+        script = ("wait-nav HOME 5000\n" + BOARDS["1.75c"]["home_to_list"] +
+                  "wait-nav LIST 5000\ntap 233 175\nwait-nav RESULT 5000\nswipe 233 382 465 400 400\nwait-nav LIST 3000\n")
         result, _ = self.run_desktop("1.75c", script)
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -268,7 +281,7 @@ class DesktopRunTests(unittest.TestCase):
         """M2: the firmware's power GUI (main/power_gui.c) on the emulated board.
         Menu buttons are canvas points of main/power_gui.c on the 1.85B panel."""
         script = """\
-wait-nav RESULT 5000
+wait-nav HOME 5000
 screenshot before.png
 key boot
 wait 300
@@ -288,7 +301,7 @@ screenshot off.png
 tap 180 295
 wait-power active 2000
 wait 300
-expect-nav RESULT
+expect-nav HOME
 key boot
 wait 300
 tap 180 75
@@ -299,7 +312,7 @@ wait-power active 3000
 wait 300
 power
 screenshot woke.png
-expect-nav RESULT
+expect-nav HOME
 """
         result, directory = self.run_desktop("1.85b", script)
         output = result.stdout + result.stderr
@@ -311,7 +324,7 @@ expect-nav RESULT
         self.assertIn('power state=active lit=1 sleeps=0 screen_offs=0 message="Niedostępne na komputerze"',
                       output)
         self.assertEqual((directory / "closed.png").read_bytes(), before)
-        # The waking tap lands on Back but only wakes the screen (expect-nav RESULT).
+        # The waking tap lands on the Home strip but only wakes the screen (expect-nav HOME).
         self.assertIn("power state=screen_off lit=0", output)
         self.assertNotEqual((directory / "off.png").read_bytes(), before)
         self.assertIn("light sleep (emulated)", output)
@@ -500,42 +513,49 @@ echo "exit $?" >> app.log
         self.assertIn("vulkan: swapchain 700x500, panel shown 466x466 at 117,17", log)
         return log, directory
 
+    # Home's bottom strip dragged up, in window pixels (the 1.75C panel at 117,17).
+    GAMESCOPE_HOME_TO_LIST = "press 350 431; drag 350 431 350 211 10; release\n"
+
     def test_window_in_gamescope(self):
         """Vulkan presentation, mouse, keys and resizing through a real
-        compositor. The application checks every transition; the driver clicks."""
+        compositor. The application checks every transition; the driver drags
+        and clicks."""
         log, directory = self.run_in_gamescope(
-            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait-nav RESULT 15000\nwait 500\nstatus\nquit\n",
-            "gamescopectl screenshot $PWD/resized.png\nsleep 1\nclick 350 399\nsleep 2\nclick 350 153\n")
+            "wait-nav HOME 15000\nwait-nav LIST 15000\nwait-nav RESULT 15000\nwait 500\nstatus\nquit\n",
+            "gamescopectl screenshot $PWD/resized.png\nsleep 1\n" + self.GAMESCOPE_HOME_TO_LIST +
+            "sleep 2\nclick 350 153\n")
         self.assertIn("launcher state=RESULT", log)
-        self.assertIn("request=2", log)  # the second launch came from the mouse
+        self.assertIn("request=1", log)  # the launch came from the mouse
         self.assertEqual(png_size(directory / "resized.png"), (700, 500))  # the resized window
 
     def test_drag_gestures_in_gamescope(self):
-        """A drag on the list scrolls it without launching; a drag from the
-        left-edge strip goes home (the launcher's own edge handler)."""
+        """A drag up from Home's bottom strip opens the list; a drag on the list
+        scrolls it without launching; a drag from the left-edge strip goes back
+        to Home (the launcher's own edge handler)."""
         log, _ = self.run_in_gamescope(
-            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait 6000\nexpect-nav LIST\n"
-            "wait-nav RESULT 15000\nwait 300\nstatus\nquit\n",
-            "click 350 399\nsleep 1\n"
+            "wait-nav HOME 15000\nwait-nav LIST 15000\nwait 6000\nexpect-nav LIST\n"
+            "wait-nav HOME 15000\nwait 300\nstatus\nquit\n",
+            self.GAMESCOPE_HOME_TO_LIST + "sleep 1\n"
             "press 350 192; drag 350 192 350 40 10; release\nsleep 4.5\n"
             "press 127 250; drag 127 250 347 255 12; release\n")
-        self.assertIn("launcher state=RESULT", log)
-        self.assertIn("request=2", log)
+        self.assertIn("launcher state=HOME", log)
+        self.assertIn("request=0", log)
 
     def test_pointer_outside_the_panel_in_gamescope(self):
         """A release outside the window still arrives (no stuck press), and a
         press in the letterbox around the panel is not a touch."""
         log, _ = self.run_in_gamescope(
-            "wait-nav RESULT 15000\nwait-nav LIST 15000\nwait 4000\nexpect-nav LIST\n"
+            "wait-nav HOME 15000\nwait-nav LIST 15000\nmark\nwait-refreshed 15000\nwait 4000\nexpect-nav LIST\n"
             "wait-nav RESULT 15000\nwait 300\nstatus\nquit\n",
-            # Back, dragged off the right side of the window: still a click (see
-            # test_slide_off_a_button_still_clicks).
+            self.GAMESCOPE_HOME_TO_LIST + "sleep 1\n"
+            # Refresh, dragged off the right side of the window: still a click
+            # (see test_slide_off_a_button_still_clicks).
             "press 350 399; drag 350 399 900 420 12; release\nsleep 1\n"
             # From the letterbox onto the first entry: ignored.
             "press 40 250; drag 40 250 350 192 8; release\nsleep 4.5\n"
             "click 350 192\n")
         self.assertIn("launcher state=RESULT", log)
-        self.assertIn("request=2", log)
+        self.assertIn("request=1", log)
 
     def test_window_in_nested_kwin_at_scale_2(self):
         """HiDPI: a virtual KWin output at scale 2 in its own D-Bus session and
@@ -569,17 +589,21 @@ echo "exit $?" >> app.log
         def point(x, y):
             events.append(f"move {100 + x} {50 + y}")
         # The panel shows at zoom 2 in 932x932 device pixels: one logical point per panel pixel.
-        point(233, 382)
-        events += ["sleep 200", "down", "sleep 150", "up", "sleep 1500"]  # Back -> list
+        point(233, 414)
+        events += ["sleep 200", "down", "sleep 100"]
+        for step in range(1, 13):
+            point(233, 414 - step * 18)
+            events.append("sleep 40")
+        events += ["sleep 150", "up", "sleep 1500"]  # swipe up from Home's bottom strip -> list
         point(10, 233)
         events += ["sleep 200", "down", "sleep 100"]
         for step in range(1, 13):
             point(10 + step * 18, 233 + step // 4)
             events.append("sleep 40")
-        events += ["sleep 150", "up", "sleep 500"]  # left-edge swipe -> home
+        events += ["sleep 150", "up", "sleep 500"]  # left-edge swipe -> Home
         (directory / "input.txt").write_text("\n".join(events) + "\n")
         (directory / "script.txt").write_text(
-            "wait-nav RESULT 15000\nwait-nav LIST 20000\nwait-nav RESULT 20000\nwait 300\nstatus\nquit\n")
+            "wait-nav HOME 15000\nwait-nav LIST 20000\nwait-nav HOME 20000\nwait 300\nstatus\nquit\n")
         installs = " ".join(f"--install {package}" for package in self.packages)
         (directory / "inner.sh").write_text(f"""#!/bin/bash
 cd {directory}
@@ -620,10 +644,72 @@ echo "exit $?" >> app.log
         self.assertNotIn("runtime error", log)
         self.assertIn("466x466, 932x932 pixels, density 2.00", log)
         self.assertIn("vulkan: swapchain 932x932, panel shown 932x932 at 0,0", log)
-        self.assertIn("request=2", log)
+        self.assertIn("launcher state=HOME", log)
+        self.assertIn("request=0", log)  # both gestures navigated; nothing launched
+
+    def test_watch_faces_on_home(self):
+        """M10 on the emulated 1.85B, virtual time: two faces installed apart
+        from activation, switching, 100 switches, Home left for the list and an
+        application and back, a light sleep, persistence across a restart, and a
+        corrupt preferred face falling back to the system face. VHL model, not
+        hardware evidence (docs/watch-face-platform.md)."""
+        faces = {}
+        for name in ("classic_analog", "minimal_digital"):
+            output = Path(tempfile.mkdtemp(dir=self.work)) / (name + ".rwf")
+            subprocess.run(["python3", str(ROOT / "tools/roundie_face.py"), "build",
+                            str(ROOT / "faces" / name / "face.xml"), "--output", str(output)],
+                           check=True, capture_output=True)
+            faces[name] = output
+        analog, minimal = "org.roundie.face.analog", "org.roundie.face.minimal"
+        switches = "".join(f"face-select {face}\nwait-face {face} 3000\n" for face in (minimal, analog) * 50)
+        script = (
+            "wait-nav HOME 5000\nwait-face system 5000\nface-status\n"
+            f"face-select {analog}\nwait-face {analog} 3000\nscreenshot analog.png\n"
+            f"face-select {minimal}\nwait-face {minimal} 3000\nscreenshot minimal.png\n"
+            + switches + "face-status\n"
+            # Home to the list (the face parks), an application, back to Home.
+            + HOME_TO_LIST + "wait-nav LIST 5000\nface-status\n"
+            "tap 180 135\nwait-nav RESULT 5000\ntap 180 295\nwait-nav LIST 5000\n"
+            + CLOSE_APP + f"wait-nav HOME 5000\nwait-face {analog} 3000\n"
+            # Light sleep: parked while asleep, resumed after the wake.
+            "power-sleep 30\nwait-power light_sleep 3000\nface-status\nwait 500\nkey boot\n"
+            f"wait-power active 3000\nwait-face {analog} 3000\nface-status\nquit\n")
+        installs = ["--install-face", str(faces["classic_analog"]), "--install-face", str(faces["minimal_digital"])]
+        first, directory = self.run_desktop("1.85b", script, virtual=True, timeout=180,
+                                            arguments=installs)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        statuses = [dict(re.findall(r'(\w+)=("[^"]*"|\S+)', line)) for line in first.stdout.splitlines()
+                    if line.startswith("face active=")]
+        self.assertEqual(len(statuses), 5, first.stdout)
+        self.assertEqual((statuses[0]["active"], statuses[0]["count"]), ("system", "2"))
+        self.assertEqual(statuses[1]["active"], analog)
+        self.assertEqual(int(statuses[1]["switches"]), 102)
+        self.assertEqual((statuses[1]["failures"], statuses[1]["refused"]), ("0", "0"))
+        self.assertEqual(statuses[2]["parked"], "1")  # the list is shown
+        self.assertEqual(statuses[3]["parked"], "1")  # asleep
+        self.assertEqual(statuses[4]["parked"], "0")
+        self.assertGreater(int(statuses[4]["resumes"]), int(statuses[3]["resumes"]))
+        self.assertNotEqual((directory / "analog.png").read_bytes(), (directory / "minimal.png").read_bytes())
+        self.assertNotIn("runtime error", first.stderr)
+        # Restart: the preference and the installed faces persist.
+        second, _ = self.run_desktop("1.85b", f"wait-nav HOME 5000\nwait-face {analog} 5000\nface-status\nquit\n",
+                                     install=False, virtual=True, directory=directory)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn(f"preferred={analog}", second.stdout)
+        self.assertIn("count=2", second.stdout)
+        # A corrupt preferred face is never shown: the system face, with the error.
+        package = directory / "data/storage/faces" / (analog + ".rwf")
+        data = bytearray(package.read_bytes())
+        data[300] ^= 0x01
+        package.write_bytes(bytes(data))
+        third, _ = self.run_desktop("1.85b", "wait-nav HOME 5000\nwait-face system 5000\nwait 500\nface-status\n"
+                                    "quit\n", install=False, virtual=True, directory=directory)
+        self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+        self.assertIn('error="package-digest"', third.stdout)
+        self.assertIn(f"preferred={analog}", third.stdout)
 
     def test_empty_registry_lists_no_packages(self):
-        script = "wait-nav LIST 5000\nscreenshot empty.png\n"
+        script = "wait-nav HOME 5000\n" + BOARDS["1.75c"]["home_to_list"] + "wait-nav LIST 5000\nscreenshot empty.png\n"
         result, directory = self.run_desktop("1.75c", script, install=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(png_size(directory / "empty.png"), (466, 466))
@@ -631,10 +717,11 @@ echo "exit $?" >> app.log
     # ---- Native linux-x64.rep1 applications (docs/native-apps.md, M5a) ----------
 
     def test_native_apps_through_the_launcher(self):
-        """The real launcher starts the home Watch (ABI 3, UI bridge), closes it
-        and runs Hello (ABI 1) from the list; both unload completely."""
-        script = ("wait-app RUNNING 5000\nwait 500\nscreenshot watch.png\napp\n" + HOME_TO_LIST +
-                  "wait-app UNLOADED 5000\nwait-nav LIST 5000\napp\ntap 180 135\nwait-nav RESULT 5000\n"
+        """The real launcher starts Watch (ABI 3, UI bridge) from the list,
+        closes it back to the Home face and runs Hello (ABI 1) from the list;
+        both unload completely."""
+        script = (OPEN_WATCH + "wait-app RUNNING 5000\nwait 500\nscreenshot watch.png\napp\n" + CLOSE_APP +
+                  "wait-app UNLOADED 5000\n" + TO_LIST + "app\ntap 180 135\nwait-nav RESULT 5000\n"
                   "app\nresources\nquit\n")
         result, directory = self.run_desktop("1.85b", script, native=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -651,7 +738,7 @@ echo "exit $?" >> app.log
     def test_sound_plays_through_sdl_audio(self):
         """Sound (ABI 3) streams its 16 kHz mono tune through the desktop's SDL3
         backend of the REP Audio contract; SDL's disk driver records the output."""
-        script = ("wait-nav LIST 5000\naudio\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\n"
+        script = (TO_LIST + "audio\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\n"
                   "wait 1000\naudio\nwait 9000\naudio\n" + CLOSE_APP +
                   "wait-app UNLOADED 5000\napp\naudio\nresources\nquit\n")
         result, directory = self.run_desktop("1.85b", script, packages=[self.native["sound"]], native=True,
@@ -690,8 +777,8 @@ echo "exit $?" >> app.log
         """Closing Sound mid-tune: the manager releases the instance's stream
         before unload and the next instance can open one."""
         cycle = ("tap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\nwait 700\naudio\n" + CLOSE_APP +
-                 "wait-app UNLOADED 5000\nwait-nav LIST 5000\naudio\n")
-        script = "wait-nav LIST 5000\n" + cycle * 3 + "app\nresources\nquit\n"
+                 "wait-app UNLOADED 5000\n" + TO_LIST + "audio\n")
+        script = TO_LIST + cycle * 3 + "app\nresources\nquit\n"
         result, _ = self.run_desktop("1.85b", script, packages=[self.native["sound"]], native=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("runtime error", result.stderr)
@@ -706,12 +793,13 @@ echo "exit $?" >> app.log
     def test_native_cycles_release_everything(self):
         """Repeated load/start/stop/unload: no image mapping, descriptor or
         runtime resource outlives an instance (ASan leak check at exit)."""
+        # Home to list costs 7 script lines per stopwatch cycle; 30 cycles fit the 512-line limit.
         cycles = [("hello", "tap 180 135\nwait-nav RESULT 5000\ntap 180 295\nwait-nav LIST 5000\n", 100),
-                  ("stopwatch", "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 100\n" +
-                   CLOSE_APP + "wait-app UNLOADED 5000\nwait-nav LIST 5000\n", 36)]
+                  ("stopwatch", "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 100\n"
+                   "swipe 10 180 150 185 150\nwait-app UNLOADED 5000\n" + TO_LIST, 30)]
         for stem, cycle, count in cycles:
             with self.subTest(app=stem):
-                script = "wait-nav LIST 5000\nresources\n" + cycle * count + "app\nresources\nquit\n"
+                script = TO_LIST + "resources\n" + cycle * count + "app\nresources\nquit\n"
                 result, _ = self.run_desktop("1.85b", script, packages=[self.native[stem]], native=True,
                                              timeout=300)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -728,7 +816,7 @@ echo "exit $?" >> app.log
     def test_hung_application_does_not_block_the_gui(self):
         """A callback that never returns keeps the executor; the GUI keeps
         running, the exit request is admitted, and the limitation is reported."""
-        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 300\n" +
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 300\n" +
                   CLOSE_APP + "wait 6000\nstatus\napp\nscreenshot hung.png\ntap 180 180\nwait 200\nstatus\n"
                   "quit\n")
         result, directory = self.run_desktop("1.85b", script, packages=[self.native["hang"]], native=True)
@@ -767,7 +855,7 @@ echo "exit $?" >> app.log
     def test_events_lifecycle_in_virtual_time(self):
         """Events (ABI 2): a 250 ms timer, a user event, suspend and resume
         (RE1 commands), and the instance's resources reclaimed at unload."""
-        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\napp-stats\nwait 1000\napp-stats\n"
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\napp-stats\nwait 1000\napp-stats\n"
                   "app-event 7\nwait 10\napp-stats\napp-control suspend\nwait-app SUSPENDED 1000\nwait 1000\n"
                   "app-stats\napp-control resume\nwait-app RUNNING 1000\nwait 500\napp-stats\nscreenshot events.png\n"
                   + CLOSE_APP + "wait-app UNLOADED 5000\nwait 200\napp\napp-stats\nresources\nquit\n")
@@ -786,7 +874,7 @@ echo "exit $?" >> app.log
     def test_ui_bridge_input_in_virtual_time(self):
         """UI (ABI 3): two touches and one injected press reach the counter;
         a press of an unknown widget is refused; the UI is destroyed at stop."""
-        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 3000\n"
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 3000\n"
                   "tap 180 236\nwait 100\ntap 180 236\nwait 100\nui-press 5\nwait 100\nui-press 99\nwait 100\n"
                   "app-stats\nscreenshot ui.png\n" + CLOSE_APP +
                   "wait-app UNLOADED 5000\napp\napp-stats\nresources\nquit\n")
@@ -804,7 +892,7 @@ echo "exit $?" >> app.log
     def test_round_widgets_in_virtual_time(self):
         """Round (ABI 3): list choice, slider value, edge button and dialog
         through the RE1 value injection, one injection at a time."""
-        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\n"
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\n"
                   "screenshot r0.png\nui-value 4 2\nwait 100\nui-value 5 75\nwait 1200\nscreenshot r1.png\n"
                   "ui-press 6\nwait 300\nscreenshot r2.png\nui-value 7 1\nwait 1200\nscreenshot r3.png\n"
                   "app-stats\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\nresources\nquit\n")
@@ -821,7 +909,7 @@ echo "exit $?" >> app.log
     def test_stopwatch_timing_in_virtual_time(self):
         """Stopwatch: start, lap after 2.5 s, stop after 1.2 s more; the
         display and the lap are the same on every run."""
-        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 200\n"
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 200\n"
                   "tap 180 300\nwait 2500\ntap 180 96\nwait 1000\ntap 180 300\nwait 500\nscreenshot stopwatch.png\n"
                   "app-stats\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\nresources\nquit\n")
         result, _ = self.run_deterministic("stopwatch", script, ["stopwatch.png"])
@@ -832,7 +920,7 @@ echo "exit $?" >> app.log
     def test_watch_follows_the_emulated_rtc(self):
         """Watch: the 1.85B RTC set through RT1 and a wall-clock jump move the
         hands; the system worker's RTC check runs in virtual time too."""
-        script = ("wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nscreenshot unset.png\n"
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nscreenshot unset.png\n"
                   "rt1 SET 1792314126\nrt1 TZ CET-1CEST,M3.5.0,M10.5.0/3\nwait 1500\nscreenshot set.png\n"
                   "wall-jump 3600\nwait 1500\nscreenshot jumped.png\nclock\nquit\n")
         shots = ["unset.png", "set.png", "jumped.png"]
@@ -845,7 +933,7 @@ echo "exit $?" >> app.log
         """Sound: the stream opens, plays and is released at close. SDL takes
         samples in real time, so only the common prefix of two recordings is
         compared; it carries the same tune."""
-        script = ("wait-nav LIST 5000\naudio\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\n"
+        script = (TO_LIST + "audio\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\n"
                   "wait 1000\naudio\nwait 9000\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\naudio\nresources\nquit\n")
         result, directory = self.run_deterministic("sound", script, [], real_time_fields=("ring", "underruns"),
                                                    environment={"SDL_AUDIO_DRIVER": "disk"})
@@ -878,10 +966,10 @@ echo "exit $?" >> app.log
         unloads, is there after a process restart; a change made before the
         process ends with the application still running is lost, as after a
         board reset."""
-        change = "wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nscreenshot {0}0.png\nui-press 2\nwait 500\n" \
+        change = TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nscreenshot {0}0.png\nui-press 2\nwait 500\n" \
                  "screenshot {0}1.png\n"
-        first, directory = self.run_desktop("1.85b", change.format("a") + HOME_TO_LIST +
-                                            "wait-app UNLOADED 5000\nwait-nav LIST 5000\nwait 200\nquit\n",
+        first, directory = self.run_desktop("1.85b", change.format("a") + CLOSE_APP +
+                                            "wait-app UNLOADED 5000\n" + TO_LIST + "wait 200\nquit\n",
                                             packages=[self.native["watch"]], native=True, virtual=True)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         blob = (directory / "data/storage/packages/org.roundie.watch/data").read_bytes()
@@ -893,7 +981,7 @@ echo "exit $?" >> app.log
         second, _ = self.run_desktop("1.85b", change.format("b") + "quit\n", install=False, native=True,
                                      virtual=True, directory=directory)
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
-        third, _ = self.run_desktop("1.85b", "wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\n"
+        third, _ = self.run_desktop("1.85b", TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\n"
                                     "screenshot c0.png\nquit\n", install=False, native=True, virtual=True,
                                     directory=directory)
         self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
@@ -911,15 +999,14 @@ echo "exit $?" >> app.log
     def test_application_fault_is_named_and_the_next_session_starts_on_the_list(self):
         """A fault in application code ends the process (nothing can recover
         the address space) after a report naming the package; the next
-        session warns as the firmware does and does not start the home
-        application, like the board's trial boot after Safe Mode."""
+        session warns as the firmware does, shows only the built-in face and
+        stays on the list, like the board's trial boot after Safe Mode."""
         faults = {"fault-load": ("org.roundie.fault.load", "SIGSEGV at image+"),
                   "fault-store": ("org.roundie.fault.store", "SIGSEGV at image+"),
                   "fault-fetch": ("org.roundie.fault.fetch", "SIGSEGV outside its image"),
                   "fault-stack": ("org.roundie.fault.stack", "SIGSEGV at image+"),
                   "fault-undefined": ("org.roundie.fault.undefined", "SIGILL at image+")}
-        launch = ("wait-app RUNNING 5000\nwait 500\n" + HOME_TO_LIST +
-                  "wait-app UNLOADED 5000\nwait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait 3000\nquit\n")
+        launch = TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait 3000\nquit\n"
         for stem, (app_id, report) in faults.items():
             with self.subTest(fault=stem):
                 crashed, directory = self.run_desktop("1.85b", launch, packages=[self.native[stem],
@@ -927,14 +1014,15 @@ echo "exit $?" >> app.log
                 self.assertNotEqual(crashed.returncode, 0, crashed.stdout + crashed.stderr)
                 self.assertIn(f"E elf: application {app_id} faulted: {report}", crashed.stderr)
                 self.assertEqual((directory / "data/app-loaded").read_text(), app_id)
-                restarted, _ = self.run_desktop("1.85b", "wait 1500\napp\nexpect-nav LIST\nquit\n", install=False,
+                restarted, _ = self.run_desktop("1.85b", "wait 1500\napp\nface-status\nexpect-nav LIST\nquit\n", install=False,
                                                 native=True, virtual=True, directory=directory)
                 self.assertEqual(restarted.returncode, 0, restarted.stdout + restarted.stderr)
                 self.assertIn(f"Previous session failed with package {app_id} loaded", restarted.stderr)
                 self.assertIn("app state=UNLOADED instance=0", restarted.stdout)
+                self.assertIn("fallback_only=1", restarted.stdout)
                 self.assertFalse((directory / "data/app-loaded").exists())
-                # A clean session after that starts the home application again.
-                normal, _ = self.run_desktop("1.85b", "wait-app RUNNING 5000\nquit\n", install=False, native=True,
+                # A clean session after that starts on the face Home again.
+                normal, _ = self.run_desktop("1.85b", "wait-nav HOME 5000\nquit\n", install=False, native=True,
                                              virtual=True, directory=directory)
                 self.assertEqual(normal.returncode, 0, normal.stdout + normal.stderr)
                 self.assertNotIn("Previous session", normal.stderr)
@@ -952,7 +1040,7 @@ echo "exit $?" >> app.log
         if shutil.which("gdb") is None:
             self.skipTest("gdb not installed")
         directory = Path(tempfile.mkdtemp(dir=self.work))
-        (directory / "script.txt").write_text("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\n"
+        (directory / "script.txt").write_text(TO_LIST + "tap 180 135\nwait-app RUNNING 5000\n"
                                               "wait 1000\nquit\n")
         commands = ["set pagination off", "set debuginfod enabled off", "set breakpoint pending on",
                     "break event.c:event", "run", "bt", "kill", "quit"]
@@ -970,7 +1058,7 @@ echo "exit $?" >> app.log
 
     def test_native_apps_are_opt_in(self):
         """Without --native-apps every launch is refused and nothing is loaded."""
-        script = "wait-nav LIST 5000\ntap 180 135\nwait-nav RESULT 5000\napp\nresources\nquit\n"
+        script = TO_LIST + "tap 180 135\nwait-nav RESULT 5000\napp\nresources\nquit\n"
         result, _ = self.run_desktop("1.85b", script, packages=[self.native["hello"]])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("native applications are disabled", result.stderr)
@@ -995,7 +1083,7 @@ echo "exit $?" >> app.log
             rejected.append((esp, "package-incompatible"))
         for package, error in rejected:
             with self.subTest(package=package.name):
-                result, directory = self.run_desktop("1.85b", "wait-nav LIST 5000\nquit\n", packages=[package],
+                result, directory = self.run_desktop("1.85b", TO_LIST + "quit\n", packages=[package],
                                                      native=True)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn(f"install {package}", result.stderr)
@@ -1021,7 +1109,7 @@ echo "exit $?" >> app.log
         subprocess.run(["python3", str(ROOT / "tools/roundie_package.py"), "build", str(binary), "--output",
                         str(package), "--id", "org.roundie.interpose", "--name", "Interpose", "--version", "1.0.0",
                         "--target", "linux-x64.rep1"], check=True, capture_output=True)
-        script = "wait-nav LIST 5000\ntap 180 135\nwait-nav RESULT 5000\napp\nresources\nquit\n"
+        script = TO_LIST + "tap 180 135\nwait-nav RESULT 5000\napp\nresources\nquit\n"
         result, _ = self.run_desktop("1.85b", script, packages=[package], native=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("binding at", result.stderr)
@@ -1056,8 +1144,8 @@ echo "exit $?" >> app.log
         """A 100 mAh cell at 6 % under 600 mA runs flat in 36 s: the gauge's
         state of charge falls, the board loses power and stays off; USB starts
         it and charges the cell at 250 mA; unplugged, it runs on the battery."""
-        script = ("wait-nav LIST 5000\nbattery capacity 100\nbattery soc 6\nbattery load 600 10\nhw\nwait 20000\nhw\n"
-                  "wait 20000\nhw\nusb 1\nwait-nav LIST 5000\nhw\nwait 60000\nhw\nusb 0\nwait 1000\nhw\nquit\n")
+        script = (TO_LIST + "battery capacity 100\nbattery soc 6\nbattery load 600 10\nhw\nwait 20000\nhw\n"
+                  "wait 20000\nhw\nusb 1\nwait-nav HOME 5000\nhw\nwait 60000\nhw\nusb 0\nwait 1000\nhw\nquit\n")
         result, _, states = self.run_lab(script, install=False)
         summary = [(state["powered"], state["off"], state["soc"], state["current"]) for state in states]
         self.assertEqual(summary, [("1", "none", "6", "-600"), ("1", "none", "3", "-600"), ("0", "depleted", "0", "0"),
@@ -1077,7 +1165,8 @@ echo "exit $?" >> app.log
         estimate (UNCALIBRATED, not initialized); the status flags carry VBUS,
         presence and the charge direction, and standby on a full cell is not
         charging."""
-        script = ("wait-nav LIST 5000\nhw\nusb 1\nwait 6000\nhw\nbattery soc 100\nwait 6000\nhw\n"
+        script = ("wait-nav HOME 5000\n" + BOARDS["1.75c"]["home_to_list"] + "wait-nav LIST 5000\n"
+                  "hw\nusb 1\nwait 6000\nhw\nbattery soc 100\nwait 6000\nhw\n"
                   "usb 0\nwait 6000\nhw\nquit\n")
         result, _, states = self.run_lab(script, board="1.75c", install=False)
         self.assertEqual([state["usb"] for state in states], ["0", "1", "1", "0"])
@@ -1092,7 +1181,8 @@ echo "exit $?" >> app.log
         """The power menu's screen off and BOOT wake; a failed display
         re-initialisation is reported and the GUI's repaint restores the panel."""
         off_and_wake = "key boot\nwait 300\ntap 180 116\nwait-power screen_off 2000\n{shot}key boot\nwait 300\n"
-        script = ("wait-nav LIST 5000\nscreenshot on.png\n" + off_and_wake.format(shot="screenshot off.png\n") +
+        # The list fades in after the swipe from Home; let it settle first.
+        script = (TO_LIST + "wait 500\nscreenshot on.png\n" + off_and_wake.format(shot="screenshot off.png\n") +
                   "screenshot woke.png\ndisplay-fault restore\n" + off_and_wake.format(shot="") +
                   "power\nscreenshot lost.png\ndisplay-fault none\n" + off_and_wake.format(shot="") +
                   "power\nscreenshot restored.png\nquit\n")
@@ -1112,7 +1202,7 @@ echo "exit $?" >> app.log
         (leaked) inhibitor and a refused second request. VHL model, not
         hardware evidence (docs/power-management-m8-b.md)."""
         script = (
-            "wait-nav LIST 5000\npm\n"
+            "wait-nav HOME 5000\npm\n"
             # 1: screen off and on.
             "key boot\nwait 300\ntap 180 116\nwait-power screen_off 2000\npm\nkey boot\nwait-power active 2000\n"
             # 2, 12: a timed light sleep; the pure timer wake keeps the screen off.
@@ -1156,10 +1246,10 @@ echo "exit $?" >> app.log
     def test_lab_rtc_failure_and_restore(self):
         """The PCF85063 missing, then back; a power cut keeps its time on the
         backup cell and loses it without one."""
-        script = ("wait-nav LIST 5000\nrt1 SET 1792314126\nrtc-fault absent\nwait-clock invalid 7000\nrt1 GET\n"
+        script = (TO_LIST + "rt1 SET 1792314126\nrtc-fault absent\nwait-clock invalid 7000\nrt1 GET\n"
                   "rtc-fault none\nrt1 SET 1792314126\nwait-clock valid 7000\nclock\npower-cut\nwait 2000\nhw\n"
-                  "power-restore\nwait-nav LIST 5000\nclock\nrtc-backup 0\npower-cut\nwait 1000\npower-restore\n"
-                  "wait-nav LIST 5000\nrt1 GET\nclock\nquit\n")
+                  "power-restore\nwait-nav HOME 5000\nclock\nrtc-backup 0\npower-cut\nwait 1000\npower-restore\n"
+                  "wait-nav HOME 5000\nrt1 GET\nclock\nquit\n")
         result, _, states = self.run_lab(script, install=False)
         replies = [line for line in result.stdout.splitlines() if line.startswith("!RT1 ")]
         clocks = [dict(field.split("=", 1) for field in line.split()[1:])
@@ -1178,7 +1268,7 @@ echo "exit $?" >> app.log
         """A touch controller that times out: one log line, no input, and
         touch works again at the firmware's retry 5 s after the failure. A gauge that times out reports an
         I2C error at the next sample and valid data once it answers."""
-        script = ("wait-nav LIST 5000\ntouch-fault timeout\nmark\ntap 180 135\nwait 500\nexpect-nav LIST\n"
+        script = (TO_LIST + "touch-fault timeout\nmark\ntap 180 135\nwait 500\nexpect-nav LIST\n"
                   "touch-fault none\nwait 4000\ntap 180 135\nwait 500\nexpect-nav LIST\nwait 1000\ntap 180 135\n"
                   "wait-nav RESULT 5000\ngauge-fault timeout\nwait 6000\n"
                   "gauge-fault none\nwait 6000\nquit\n")
@@ -1192,8 +1282,9 @@ echo "exit $?" >> app.log
         error fails a launch, a missing medium refuses package work; with the
         fault cleared the same application starts."""
         back = "tap 180 295\nwait-nav LIST 3000\n"
-        script = ("wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nui-press 2\nwait 500\nstorage-limit 8\n" +
-                  HOME_TO_LIST + "wait-app UNLOADED 5000\nwait-nav LIST 5000\nwait 200\nstorage-limit 0\n"
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nui-press 2\n"
+                  "wait 500\nstorage-limit 8\n" +
+                  CLOSE_APP + "wait-app UNLOADED 5000\n" + TO_LIST + "wait 200\nstorage-limit 0\n"
                   "storage-fault io\ntap 180 135\nwait 1000\nstatus\nscreenshot io.png\n" + back +
                   "storage-fault absent\ntap 180 135\nwait 1000\nstatus\n" + back +
                   "storage-fault none\ntap 180 135\nwait-app RUNNING 5000\napp\nquit\n")
@@ -1209,10 +1300,10 @@ echo "exit $?" >> app.log
         theme when it closes; an open, write, fsync or rename that fails during
         that save is reported, the application unloads normally, no temporary
         file is left and the theme saved before stays; once the fault clears,
-        the next save replaces it. Each attempt starts after a software reset,
-        with Watch as the home application."""
-        change = "wait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nui-press 2\nwait 500\n"
-        close = HOME_TO_LIST + "wait-app UNLOADED 5000\nwait-nav LIST 5000\nwait 200\napp\n"
+        the next save replaces it. Each attempt starts after a software reset
+        and opens Watch from the list."""
+        change = TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 500\nui-press 2\nwait 500\n"
+        close = CLOSE_APP + "wait-app UNLOADED 5000\n" + TO_LIST + "wait 200\napp\n"
         calls = ("write", "fsync", "rename", "open")
         script = change + close + "reboot sw\n"
         for call in calls:
@@ -1269,9 +1360,9 @@ echo "exit $?" >> app.log
         """Sound: an underrun is counted; an output device that fails mid-tune
         releases the stream with an error; the closed application leaves
         nothing behind and the next instance plays."""
-        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\nwait 1000\n"
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait 300\ntap 180 224\nwait 1000\n"
                   "audio-underrun\nwait 200\naudio\naudio-fault unavailable\nwait 200\naudio\n" + CLOSE_APP +
-                  "wait-app UNLOADED 5000\naudio-fault none\nwait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\n"
+                  "wait-app UNLOADED 5000\naudio-fault none\n" + TO_LIST + "tap 180 135\nwait-app RUNNING 5000\n"
                   "wait 300\ntap 180 224\nwait 500\naudio\n" + CLOSE_APP + "wait-app UNLOADED 5000\napp\naudio\n"
                   "resources\nquit\n")
         result, _, _ = self.run_lab(script, packages=[self.native["sound"]], native=True, real_time_fields=("ring", "phase"))
@@ -1300,10 +1391,10 @@ echo "exit $?" >> app.log
         sleep draws the sleep current; PWR held 2 s on battery switches the
         board off and 1 s switches it on; with USB the latch cannot; a watchdog
         reset restarts it."""
-        script = ("wait-nav LIST 5000\nkey boot\nwait 300\ntap 180 157\nwait-nav LIST 5000\nhw\nkey boot\nwait 300\n"
+        script = (TO_LIST + "key boot\nwait 300\ntap 180 157\nwait-nav HOME 5000\nhw\nkey boot\nwait 300\n"
                   "tap 180 75\nwait-power light_sleep 3000\nwait 1000\nhw\nkey boot\nwait-power active 3000\nhw\n"
-                  "key pwr 2500\nhw\nwait 100\nkey pwr 1200\nwait-nav LIST 5000\nhw\nusb 1\nkey pwr 3000\nwait 100\n"
-                  "hw\nreboot wdt\nwait-nav LIST 5000\nhw\nquit\n")
+                  "key pwr 2500\nhw\nwait 100\nkey pwr 1200\nwait-nav HOME 5000\nhw\nusb 1\nkey pwr 3000\nwait 100\n"
+                  "hw\nreboot wdt\nwait-nav HOME 5000\nhw\nquit\n")
         result, _, states = self.run_lab(script, install=False)
         summary = [(state["powered"], state["off"], state["sleeping"], state["current"], state["cycles"])
                    for state in states]
@@ -1320,7 +1411,7 @@ echo "exit $?" >> app.log
         """A callback that never returns: after a second of real time, virtual
         time moves on without it, so the stall is reported at 5000 ms and the
         script runs on, the same on every run."""
-        script = ("wait-nav LIST 5000\ntap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 300\n" +
+        script = (TO_LIST + "tap 180 135\nwait-app RUNNING 5000\nwait-nav ACTIVE 5000\nwait 300\n" +
                   CLOSE_APP + "wait 6000\nstatus\napp\nscreenshot hung.png\nquit\n")
         result, _, _ = self.run_lab(script, packages=[self.native["hang"]], native=True)
         self.assertIn("instance 1 has not returned for 5000 ms", result.stderr)
@@ -1329,7 +1420,7 @@ echo "exit $?" >> app.log
     def test_lab_panel_controls(self):
         """Each control of the panel is a lab command: clicks at frame pixels
         give the command and its effect, and the frame shows the state."""
-        script = ("wait-nav LIST 5000\npanel-screenshot before.png\npanel-click 100 73\npanel-click 120 290\n"
+        script = (TO_LIST + "panel-screenshot before.png\npanel-click 100 73\npanel-click 120 290\n"
                   "panel-click 92 64\nhw\npanel-screenshot after.png\nquit\n")
         result, directory, states = self.run_lab(script, install=False)
         self.assertEqual(re.findall(r"panel-click (.+)", result.stdout),
@@ -1338,7 +1429,7 @@ echo "exit $?" >> app.log
         self.assertNotEqual((directory / "before.png").read_bytes(), (directory / "after.png").read_bytes())
         self.assertEqual(png_size(directory / "after.png"), (360, 392))
         # Off a control: the script stops.
-        failed, _ = self.run_desktop("1.85b", "wait-nav LIST 5000\npanel-click 5 5\nquit\n", install=False)
+        failed, _ = self.run_desktop("1.85b", TO_LIST + "panel-click 5 5\nquit\n", install=False)
         self.assertEqual(failed.returncode, 1)
         self.assertIn("no panel control there", failed.stderr)
 

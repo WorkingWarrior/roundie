@@ -69,7 +69,7 @@ static bool navigation_number(const char **text, uint32_t *value)
 static bool navigation_command(const char *operation, const roundie_ota_command_t *command,
                                esp_err_t parsed)
 {
-    if (strcmp(operation, "NAV") != 0 && strcmp(operation, "REFRESH") != 0 &&
+    if (strcmp(operation, "NAV") != 0 && strcmp(operation, "REFRESH") != 0 && strcmp(operation, "OPEN") != 0 &&
         strncmp(operation, "SELECT ", 7) != 0 && strncmp(operation, "EXIT ", 5) != 0 &&
         strncmp(operation, "BACK ", 5) != 0) {
         return false;
@@ -77,6 +77,9 @@ static bool navigation_command(const char *operation, const roundie_ota_command_
     esp_err_t result = parsed;
     if (result == ESP_OK && strcmp(operation, "REFRESH") == 0) {
         result = roundie_launcher_refresh();
+    } else if (result == ESP_OK && strcmp(operation, "OPEN") == 0) {
+        /* Development: Home to the list, as the swipe up (M10). */
+        result = roundie_launcher_open_list();
     } else if (result == ESP_OK && strncmp(operation, "SELECT ", 7) == 0) {
         uint32_t revision;
         const char *id = operation + 7;

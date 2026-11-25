@@ -5,6 +5,7 @@ typedef enum {
     ROUNDIE_NAV_WAITING, ROUNDIE_NAV_REFRESHING, ROUNDIE_NAV_LIST,
     ROUNDIE_NAV_REQUESTED, ROUNDIE_NAV_LOADING, ROUNDIE_NAV_ACTIVE,
     ROUNDIE_NAV_EXITING, ROUNDIE_NAV_ERROR, ROUNDIE_NAV_RESULT,
+    ROUNDIE_NAV_HOME, /* the system watch face (WatchFaceHost) is the foreground */
 } roundie_navigation_t;
 
 typedef struct {
@@ -62,6 +63,7 @@ typedef struct {
     bool foreground;
     bool home_active;    /* the observed application is the home package */
     bool home_available; /* the home package is listed and healthy */
+    bool home_face;      /* Home is the system watch face (set_home_face) */
     char selected[ROUNDIE_PACKAGE_ID];
     roundie_launcher_entry_t entries[ROUNDIE_PACKAGES_MAX];
 } roundie_launcher_status_t;
@@ -79,8 +81,17 @@ esp_err_t roundie_launcher_refresh(void);
  * appears (autostart) and after any other application exits normally. Its
  * exit shows the list. Call once, before the worker polls; "" disables. */
 void roundie_launcher_set_home(const char *id, bool autostart);
-/* From the list: launch the home package. Same admission as a selection. */
+/* Home is the system WatchFaceHost instead of a package (M10,
+ * docs/watch-face-platform.md): HOME is shown when the list first appears
+ * (autostart, also without storage admission) and after any application
+ * exits normally. Call once, before the worker polls; replaces set_home. */
+void roundie_launcher_set_home_face(bool autostart);
+/* From the list: show Home (the face) or launch the home package. Same
+ * admission as a selection for a package. */
 esp_err_t roundie_launcher_home(void);
+/* From Home (the face): show the application list; scans first when no
+ * current list exists. */
+esp_err_t roundie_launcher_open_list(void);
 /* Sole worker, for light sleep and power-menu restarts: end the foreground
  * application through its normal lifecycle (ESP_OK also while that unload is
  * in progress); resume launches home, also when another application was
