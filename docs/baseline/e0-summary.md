@@ -118,7 +118,7 @@ Szczegóły i dane: [e0-1.85b.md §7–§9](e0-1.85b.md). Obraz `0.3.81-e0` (dod
 5. **FSBENCH READ 1 MiB przy działającym GUI:** system worker nie odpowiada przez cały odczyt (250 ms zamiast 10 ms). GUI i takty aplikacji zatrzymują się na 0,3–0,44 s (normalnie 100–110 ms). Iteracje, które się odbywają, mają normalny czas.
 6. **Safe Mode:** reset `core` wymaga nieprawidłowego resetu po STABLE. Sama utrata zasilania ani brownout nie ustawiają latcha. Bezpośredniej przyczyny nie da się ustalić z zachowanych danych.
 
-### 7.4. Co zmienia założenia roadmapy (roadmapy nie edytowano)
+### 7.4. Co zmienia założenia roadmapy (stan przed §8; roadmapę zaktualizowano w §8)
 
 - **E6 (UI):** płynność trzeba planować przez małe obszary unieważniania, nie przez szybszy zegar QSPI. Pełnoekranowe animacje to przy 160 MHz realnie 10–17 kl./s, zależnie od widoku. Do zmierzenia przed decyzjami: CPU 240 MHz, rozdzielczość ticka pętli GUI (okresy to wielokrotności 10 ms przy `CONFIG_FREERTOS_HZ=100`), koszt tarczy Home.
 - **E2 (pakiety, instalacja) i każda długa praca pamięci masowej:** synchroniczna praca w `system_worker` blokuje interaktywność na cały czas operacji. Odczyt, hash i kopiowanie trzeba dzielić na odcinki albo przenieść do osobnego workera, z kryterium przerwy GUI ≤ 130 ms.
@@ -128,6 +128,54 @@ Szczegóły i dane: [e0-1.85b.md §7–§9](e0-1.85b.md). Obraz `0.3.81-e0` (dod
 ### 7.5. PENDING / BLOCKED
 
 - **PENDING (sesja z użytkownikiem):** prąd i przyrząd pomiarowy, dotyk palcem, ocena wzrokowa, słyszalność, chwila wybudzenia względem niezależnego zegara (§6 wyżej).
-- **PENDING (eksperyment):** mechanizm zatrzymania GUI przy FSBENCH. Hipotezy: priorytet `system_worker`, dostęp do Flash i cache albo wspólna konsola. Metoda i kryterium w e0-1.85b.md §8.5.
+- **ROZSTRZYGNIĘTE w §8:** mechanizm zatrzymania GUI przy FSBENCH. Hipotezy: priorytet `system_worker`, dostęp do Flash i cache albo wspólna konsola. Metoda i kryterium w e0-1.85b.md §8.5.
 - **PENDING (decyzja):** semantyka odrzucenia `ui_update` podczas STOP (§8.6). Które dane diagnostyczne Safe Mode wdrożyć (§9.4: propozycje 1–4 bez zmian partycji; ring rozruchów wymaga decyzji; core dump do Flash wymaga repartycjonowania, czyli operacji destrukcyjnej).
 - **BLOCKED:** cała baza i pomiary uzupełniające na 1.75C, bo płytka nie była podłączona.
+
+## 8. Mechanizm przestoju, wyścig STOP i historia rozruchów (2026-11-25, druga sesja)
+
+Tryb autonomiczny na gałęzi `e0-baseline`: bez push i merge, z flashowaniem i testami automatycznymi, bez kasowania Flash, storage i NVS. Szczegóły i tabele: `e0-1.85b.md` §10–§12.
+
+### 8.1. Commity
+
+| Punkt | Zakres | Commit |
+|---|---|---|
+| 1. Przestój GUI | sondy przestoju, `FSBENCH XREAD/XWRITE` (build deweloperski), runner `run_e0_stall.py` z testami | 985a244 |
+| 2. Wyścig STOP | `RP1 ELFDELAY` w wykonawcy (build deweloperski), bez zmiany runtime | 4fd6086 |
+| 3. Safe Mode | pierścień 8 rozruchów w NVS (przyczyna resetu, Vbat przy starcie, licznik brownoutów), `RS1 HISTORY`, test hosta | 052c1cc |
+| Runner | oczekiwanie na admisję FSBENCH po OTA; start stopera przed `PRESS lap` | d54d76a |
+| Wyniki | `e0-1.85b.md` §10–§12, `safe-mode.md` „Boot history” | 3b3ffd8 |
+| 4. Roadmapa | EABI: lifecycle STOPPING i reguła I/O; E6: bufory rysowania | 3a0b9fa |
+
+### 8.2. Weryfikacja
+
+- **Testy hosta:** pełny `unittest discover` daje 298 testów. Bez środowiska IDF były 2 błędy środowiskowe: brak `IDF_PATH` i `gen_esp32part`. Oba moduły powtórzone w środowisku IDF v6.1 → 19 testów, OK. Nowe testy: `test_boot_history` (ASan i UBSan), `test_run_e0_stall`.
+- **Kompilacja Xtensa:** obraz E0 1.85B `0.3.82-e0`, `build_firmware.sh` 1.85B `legacy` i 1.75C `rep` → sukces, 0 ostrzeżeń. Wszystkie konfiguracje mają `ROUNDIE_DEV_PACKAGES=y`. Gałąź bez tej opcji nie była kompilowana. Commity pośrednie (985a244, 4fd6086) nie były budowane osobno, zbudowano tylko stan końcowy.
+- **Urządzenie (1.85B):** OTA `0.3.82-e0` → PASS. `stall-185b-1`: odczyt PASS. Zapis i wyścig dały FAIL przez błędy runnera, poprawione w d54d76a. `stall-185b-2`: history, stall_write i race PASS. Zero nieoczekiwanych resetów, pliki testowe usunięte.
+- **Długie, endurance, fault-injection, prąd:** nie uruchamiane.
+
+### 8.3. Co rozstrzygnięto
+
+1. **Mechanizm przestoju GUI to zagłodzenie CPU, nie cache.** Niepinowany `system_worker` (prio 4) wykonuje odczyt na CPU0, gdzie działa GUI (prio 1).
+   - Przez cały odczyt 1 MiB (234 ms) GUI nie ma ani jednej iteracji. Zadania prio 20 na obu rdzeniach i prio 1 na CPU1 działają co tick.
+   - Rozmiar kawałka (512 B–32 KiB) bez oddania CPU niczego nie zmienia. `vTaskDelay(1)` po kawałku daje 30 ms (4 KiB, czas ×11) albo 40 ms (16 KiB, czas ×2,8).
+   - Przypięcie do CPU1 uwalnia GUI, ale głodzi rdzeń wykonawcy (241 ms).
+2. **Zapis 64/512/1024 KiB** (na Home) daje przerwy GUI 33–51 ms. Nie wyłącza cache (`mmap_remain=0`). Trwa 0,26–0,45 s, 3,7–5,1 s i 7,7 s.
+3. **Bufory rysowania LVGL** leżą w wewnętrznej SRAM z DMA (1.85B: 2 × 14 400 B). Kod GUI wykonuje się z PSRAM (XIP).
+4. **Wyścig STOP vs `on_event`** występuje deterministycznie: z `ELFDELAY 300` 10 na 10 prób kończy się RESULT `[0,-1,-23]`, bez opóźnienia 0 na 10. Runtime bez zmian, poprawka należy do EABI.
+5. **Historia rozruchów działa na urządzeniu.** Pierwszy wpis po OTA to `[1, ESP_RST_SW, 4105 mV]`. Logika Safe Mode bez zmian.
+
+### 8.4. Decyzje podjęte w trybie autonomicznym
+
+- **Próg przerwy GUI dla systemowego I/O: 50 ms** (zastępuje 130 ms z §7.4). To górna wartość zmierzona dla zapisu i 16 KiB z oddaniem CPU.
+- Proponowany mechanizm to oddanie CPU najpóźniej po 20 ms pracy, z kawałkami do 16 KiB. Jego wariant czasowy jest eksperymentem bramki EABI. Przypięcie I/O do CPU1 odrzucone.
+- Z §9.4 wdrożono tylko tani pierścień rozruchów: co najwyżej 2 małe zapisy NVS na rozruch, uszkodzony rekord pozostaje nietknięty. Rekord przyczyny latcha, kod miejsca restartu, kopia crash do NVS i próbka baterii w RTC pozostają propozycjami.
+- `ELFDELAY` jest ograniczone do 1000 ms i istnieje tylko w buildzie deweloperskim, podobnie jak `FSBENCH X*`.
+
+### 8.5. PENDING
+
+- **Eksperyment (EABI):** wariant czasowy oddawania CPU w odczycie i hashu. Kryterium: przerwa GUI i sondy prio 1 na CPU1 ≤ 50 ms przy 1 MiB. Obniżenie priorytetu workera nie było mierzone.
+- **Niewyjaśnione:** przerwa 410–440 ms logów `rep_app` z §8.5 raportu (CPU1 nie był głodzony w nowych pomiarach). Hipoteza: synchroniczny log na wspólnej konsoli.
+- **Próba ręczna:** brownout i licznik brownoutów na urządzeniu. Historia przy prawdziwym wejściu w Safe Mode.
+- **Bez zmian:** prąd, dotyk, ocena wzrokowa i słyszalność (§7.5). Cała 1.75C nadal BLOCKED.
+- **Uwaga do metody:** przy braku iteracji GUI raport `gui` pokazuje przerwę 0. Miarą jest wtedy sonda prio 1 na CPU0.
