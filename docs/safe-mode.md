@@ -55,6 +55,7 @@ and may exclude RTC writes/uploads without losing recovery status/control.
 !RS1 <id> REBOOT
 !RS1 <id> SLOT STATUS
 !RS1 <id> HEALTH
+!RS1 <id> HISTORY
 !RS1 <id> SELECT ota_0|ota_1 <exact-64-hex-target-ELF>
 !RS1 <id> <decimal-esp_err> <bounded-JSON-status>
 ```
@@ -84,6 +85,31 @@ HEALTH is read-only. It returns the STATUS fields and appends:
 
 It needs no FreeRTOS trace facility. Added in 0.3.55 for the M8.1 endurance
 runs.
+
+### Boot history
+
+HISTORY is read-only. It returns a diagnostic ring of the last eight boots,
+kept in NVS (namespace `boot_history`, one CRC-checked blob), newest first:
+
+```text
+!RS1 <id> 0 {"history":{"state":"ok","boots":N,"brownouts":N,"entries":[[boot,raw_reset,vbat_mv],...]}}
+```
+
+- `raw_reset` is the pinned IDF `esp_reset_reason_t`; `brownouts` counts
+  `ESP_RST_BROWNOUT`.
+- `vbat_mv` is the gauge voltage of the first startup reading, or 0 when there
+  was no battery reading (always 0 in Safe Mode, which does not start the gauge).
+- The entry is written right after BootGuard's persistence initialization, so
+  Safe Mode boots are recorded too. There are at most two small NVS writes per
+  boot: the reason and, later, the voltage.
+- `state` is `unavailable` without NVS or after a write error, and `malformed`
+  when the stored blob fails its checks. A malformed blob is left as found and
+  nothing is recorded over it; no erase or reset happens.
+- BootGuard and Safe Mode never read the history; it exists so that the next
+  unexplained Safe Mode entry can be matched with the resets and supply voltage
+  before it (docs/baseline/e0-1.85b.md §9 and §12).
+
+Added in 0.3.82-e0 (development image).
 
 `reset` class values are 0 unknown, 1 power, 2 software, 3 sleep, 4 watchdog,
 5 panic, 6 brownout and 7 external; `raw_reset` is the pinned IDF
