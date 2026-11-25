@@ -124,6 +124,31 @@ class TickTest(unittest.TestCase):
                 stall.tick_request(FakePort(0, {"format": 1}), operation)
 
 
+class StallTest(unittest.TestCase):
+    def test_report_and_row(self):
+        payload = {"format": 1, "stall": "REPORT", "gui": [12, 35000, 2000],
+                   "probes": [[0, 1, 20, 12000], [1, 1, 2, 230000], [0, 20, 23, 10100], [1, 20, 23, 10200]]}
+        port = FakePort(0, payload)
+        reply = stall.stall_request(port, "STALL REPORT")
+        self.assertIn(b"STALL REPORT", port.written)
+        row = stall.probe_row(reply)
+        self.assertEqual(row["gui_gap_ms"], 35.0)
+        self.assertEqual(row["cpu1_p1_gap_ms"], 230.0)
+        self.assertEqual(row["cpu0_p20_gap_ms"], 10.1)
+
+    def test_refused_arm_keeps_code(self):
+        payload = {"format": 1, "stall": "ARM", "gui": [0, 0, 0], "probes": [[0, 1, 0, 0]] * 4}
+        self.assertEqual(stall.stall_request(FakePort(259, payload), "STALL ARM")["code"], 259)
+
+    def test_invalid_operation_and_malformed(self):
+        port = FakePort(0, {})
+        with self.assertRaises(TransportError):
+            stall.stall_request(port, "STALL NOW")
+        self.assertEqual(port.written, b"")
+        with self.assertRaises(TransportError):
+            stall.stall_request(FakePort(0, {"format": 1, "gui": [1, 2, 3], "probes": []}), "STALL ARM")
+
+
 class HistoryTest(unittest.TestCase):
     def test_entries(self):
         payload = {"history": {"state": "ok", "boots": 5, "brownouts": 1,

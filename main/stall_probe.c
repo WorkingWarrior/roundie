@@ -159,9 +159,62 @@ static bool tick_command(const char *operation, const char *id, int parsed)
     return true;
 }
 
+/* "STALL ARM" / "STALL REPORT" (E0 closure, inversion experiment): the
+ * host arms the probes, sends other commands (RP1 LIST) and reads the gaps.
+ * ARM is refused while an FSBENCH X job holds the probes. */
+static bool host_armed;
+
+static bool stall_command(const char *operation, const char *id, int parsed)
+{
+    bool arm = strcmp(operation, "STALL ARM") == 0;
+    if (!arm && strcmp(operation, "STALL REPORT") != 0) {
+        return false;
+    }
+    esp_err_t error = parsed;
+    roundie_stall_report_t stall = {0};
+    if (error == ESP_OK) {
+        portENTER_CRITICAL(&lock);
+        bool busy = armed;
+        portEXIT_CRITICAL(&lock);
+        if (arm) {
+            if (busy) {
+                error = ESP_ERR_INVALID_STATE;
+            } else if (!roundie_stall_arm()) {
+                error = ESP_FAIL;
+            } else {
+                host_armed = true;
+            }
+        } else if (!host_armed || !busy) {
+            error = ESP_ERR_INVALID_STATE;
+        } else {
+            roundie_stall_disarm(&stall);
+            host_armed = false;
+        }
+    }
+    char response[320];
+    int length = snprintf(response, sizeof(response),
+        "\n!RP1 %s %d {\"format\":1,\"stall\":\"%s\",\"gui\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"probes\":[",
+        id, (int)error, arm ? "ARM" : "REPORT", stall.gui_iterations, stall.gui_gap_max_us, stall.gui_late_max_us);
+    for (unsigned i = 0; i < ROUNDIE_STALL_PROBES && length > 0 && (size_t)length < sizeof(response); i++) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length,
+            "%s[%u,%u,%" PRIu32 ",%" PRIu32 "]", i == 0U ? "" : ",", stall.probe[i].core,
+            stall.probe[i].priority, stall.probe[i].wakes, stall.probe[i].gap_max_us);
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        length += snprintf(response + length, sizeof(response) - (size_t)length, "]}\n");
+    }
+    if (length > 0 && (size_t)length < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));
+    }
+    return true;
+}
+
 bool roundie_race_probe_command(const char *operation, const char *id, int parsed)
 {
     if (tick_command(operation, id, parsed)) {
+        return true;
+    }
+    if (stall_command(operation, id, parsed)) {
         return true;
     }
     if (strncmp(operation, "ELFDELAY ", 9) != 0) {

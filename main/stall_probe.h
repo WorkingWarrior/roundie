@@ -32,5 +32,7 @@ void roundie_stall_disarm(roundie_stall_report_t *out);
  * timer gaps and the rep_app log level (docs/baseline/e0-1.85b.md §15).
  * RP1 ELFDELAY <ms> (development builds): sets the executor's diagnostic
  * delay before delivering a UI event (STOP/on_event race, e0-1.85b.md §11).
+ * RP1 STALL ARM / STALL REPORT (development builds): arm the stall probes
+ * from the host and read their gaps, around other commands such as RP1 LIST.
  * Returns false when the operation is none of these. */
 bool roundie_race_probe_command(const char *operation, const char *id, int parsed);

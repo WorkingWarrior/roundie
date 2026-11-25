@@ -154,6 +154,29 @@ def tick_request(port, operation, timeout=4.0):
     return result
 
 
+def stall_request(port, operation, timeout=4.0):
+    """RP1 STALL ARM / STALL REPORT: host-armed stall probes."""
+    if operation not in ("STALL ARM", "STALL REPORT"):
+        raise TransportError("invalid STALL operation")
+    code, payload, _, _, _ = exchange(port, "!RP1", operation, timeout, 400)
+    try:
+        result = json.loads(payload)
+        if result["format"] != 1 or len(result["gui"]) != 3 or len(result["probes"]) != 4:
+            raise ValueError("fields")
+    except (ValueError, KeyError, TypeError) as error:
+        raise TransportError(f"malformed {operation} reply: {error}") from error
+    result["code"] = code
+    return result
+
+
+def probe_row(report):
+    """Gaps in ms: GUI and each probe as core/priority."""
+    row = {"gui_gap_ms": round(report["gui"][1] / 1000, 1), "gui_iterations": report["gui"][0]}
+    for core, priority, wakes, gap in report["probes"]:
+        row[f"cpu{core}_p{priority}_gap_ms"] = round(gap / 1000, 1)
+    return row
+
+
 def drain(port, seconds):
     """Keeps reading (and logging) the port for `seconds`."""
     deadline = time.monotonic() + seconds
@@ -207,6 +230,7 @@ def history_request(port, operation="HISTORY", timeout=8.0):
 
 e0.HANDLERS["xbench"] = lambda port, operation, timeout: xbench_request(port, operation, timeout or 60.0)
 e0.HANDLERS["elfdelay"] = lambda port, operation, timeout: elfdelay_request(port, operation, timeout or 4.0)
+e0.HANDLERS["stall"] = lambda port, operation, timeout: stall_request(port, operation, timeout or 4.0)
 e0.HANDLERS["tick"] = lambda port, operation, timeout: tick_request(port, operation, timeout or 4.0)
 e0.HANDLERS["history"] = lambda port, operation, timeout: history_request(port, operation, timeout or 8.0)
 
@@ -230,7 +254,7 @@ def race_verdict(nav):
 
 
 class StallRunner(followup.FollowupRunner):
-    SCENARIOS = ("history", "stall_write", "stall_read", "lowprio", "loggap", "race")
+    SCENARIOS = ("history", "stall_write", "stall_read", "lowprio", "loggap", "race", "listprobe")
 
     def xbench(self, operation, problems, expected=None):
         reply = self.call("xbench", operation)
@@ -398,6 +422,48 @@ class StallRunner(followup.FollowupRunner):
                        note=("worker_reply_s: request-to-reply seconds of system-worker commands sent while the "
                              "I/O runs (L/L0: polled until XRESULT; W: RS1 STATUS 20 ms after the command)"))
         return (FAIL if problems else PASS), details
+
+    def s_listprobe(self):
+        """Inversion experiment (e0-1.85b.md §15): RP1 LIST alone, without any
+        LittleFS I/O, under the stall probes, against an idle window of the same
+        length. A GUI/prio-1 gap near the idle one means LIST does not stall CPU0
+        by itself, so the 145-228 ms gap seen with LIST during a prio 0 write
+        needs the write (priority inheritance through the LittleFS lock)."""
+        self.go_home()
+        self.settle(2.0)
+        problems = []
+        rows = []
+        for _ in range(self.args.repeats * 2):
+            for kind in ("idle", "list"):
+                if self.call("stall", "STALL ARM")["code"] != 0:
+                    raise Blocked("stall probes busy or unavailable")
+                started = time.monotonic()
+                if kind == "list":
+                    code, payload, seconds, _, _ = self.device.session(lambda port: exchange(port, "!RP1", "LIST", 8.0))
+                    row = {"kind": kind, "list_ms": round(seconds * 1000, 1), "list_code": code}
+                    try:
+                        row["list_count"] = json.loads(payload)["count"]
+                    except (ValueError, KeyError, TypeError):
+                        row["list_count"] = None
+                    if code != 0 or row["list_count"] is None:
+                        problems.append(f"RP1 LIST failed ({code})")
+                else:
+                    time.sleep(0.25)
+                    row = {"kind": kind}
+                report = self.call("stall", "STALL REPORT")
+                if report["code"] != 0:
+                    problems.append(f"STALL REPORT failed ({report['code']})")
+                row["window_ms"] = round((time.monotonic() - started) * 1000, 1)
+                row.update(probe_row(report))
+                rows.append(row)
+                self.settle(0.5)
+        summary = {}
+        for kind in ("idle", "list"):
+            selected = [row for row in rows if row["kind"] == kind]
+            summary[kind] = {key: max(row[key] for row in selected)
+                             for key in selected[0] if key.endswith("_ms") and key != "window_ms"}
+        summary["list_count"] = sorted({row["list_count"] for row in rows if row["kind"] == "list"}, key=str)
+        return (FAIL if problems else PASS), {"rows": rows, "max": summary, "problems": problems}
 
     def tick_window(self, condition, seconds=3.0):
         """Longest application timer gap while the host does `condition`."""
