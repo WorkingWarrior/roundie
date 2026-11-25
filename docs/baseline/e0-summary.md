@@ -115,7 +115,7 @@ Szczegóły i dane: [e0-1.85b.md §7–§9](e0-1.85b.md). Obraz `0.3.81-e0` (dod
 2. **PSRAM −131076 B to jednorazowy blok, nie wyciek:** w 20 cyklach stopera zmiana wystąpiła tylko w pierwszym, potem 0 B/cykl, wszystkie zasoby zwolnione. Źródło: `components/roundie_elf/idf/executor_stack.c:90` (64 KiB strony ochronnej i 64 KiB stosu), celowo nigdy nie zwalniany (`:114`), tworzony leniwie z `executor.c:151`.
 3. **BENCH mierzy rasteryzację CPU, nie magistralę:** przesył pełnej klatki trwa 19,42 ms, czyli tyle co teoretyczne minimum QSPI 19,44 ms przy 26,667 MHz. Render to 51 ms (lista), 56–62 ms (stoper) i 95 ms (Home). 10 kl./s to wynik tarczy Home, nie limit wyświetlacza.
 4. **Stos GUI:** najgorszy zmierzony przypadek (BENCH na stoperze, nawigacja, BENCH na liście i Home) daje 2128 B zapasu, czyli powyżej progu ryzyka 1024 B.
-5. **FSBENCH READ 1 MiB przy działającym GUI:** system worker nie odpowiada przez cały odczyt (250 ms zamiast 10 ms). GUI i takty aplikacji zatrzymują się na 0,3–0,44 s (normalnie 100–110 ms). Iteracje, które się odbywają, mają normalny czas.
+5. **FSBENCH READ 1 MiB przy działającym GUI:** system worker nie odpowiada przez cały odczyt (250 ms zamiast 10 ms). GUI zatrzymuje się na 0,3–0,34 s (normalnie 100–110 ms). ~~Takty aplikacji zatrzymują się na 0,3–0,44 s~~ **błędne (§9):** takty wykonawcy nie stają; przerwa w logu to utrata linii na hoście. Iteracje, które się odbywają, mają normalny czas.
 6. **Safe Mode:** reset `core` wymaga nieprawidłowego resetu po STABLE. Sama utrata zasilania ani brownout nie ustawiają latcha. Bezpośredniej przyczyny nie da się ustalić z zachowanych danych.
 
 ### 7.4. Co zmienia założenia roadmapy (stan przed §8; roadmapę zaktualizowano w §8)
@@ -175,7 +175,65 @@ Tryb autonomiczny na gałęzi `e0-baseline`: bez push i merge, z flashowaniem i 
 ### 8.5. PENDING
 
 - **Eksperyment (EABI):** wariant czasowy oddawania CPU w odczycie i hashu. Kryterium: przerwa GUI i sondy prio 1 na CPU1 ≤ 50 ms przy 1 MiB. Obniżenie priorytetu workera nie było mierzone.
-- **Niewyjaśnione:** przerwa 410–440 ms logów `rep_app` z §8.5 raportu (CPU1 nie był głodzony w nowych pomiarach). Hipoteza: synchroniczny log na wspólnej konsoli.
+- **Wyjaśnione w §9 (artefakt hosta):** przerwa 410–440 ms logów `rep_app` z §8.5 raportu (CPU1 nie był głodzony w nowych pomiarach). Hipoteza: synchroniczny log na wspólnej konsoli.
 - **Próba ręczna:** brownout i licznik brownoutów na urządzeniu. Historia przy prawdziwym wejściu w Safe Mode.
 - **Bez zmian:** prąd, dotyk, ocena wzrokowa i słyszalność (§7.5). Cała 1.75C nadal BLOCKED.
 - **Uwaga do metody:** przy braku iteracji GUI raport `gui` pokazuje przerwę 0. Miarą jest wtedy sonda prio 1 na CPU0.
+
+## 9. Domknięcie E0 na 1.85B (2026-11-25, trzecia sesja)
+
+Tryb autonomiczny na gałęzi `e0-baseline`: bez push i merge, z flashowaniem (OTA) i testami automatycznymi, bez kasowania Flash, storage i NVS. Szczegóły: `e0-1.85b.md` §13–§15.
+
+### 9.1. Commity
+
+| Punkt | Zakres | Commit |
+|---|---|---|
+| 1. Inwentaryzacja tasków | tabela zadań FreeRTOS obrazu `rep` i `CONFIG_FREERTOS_HZ=100` (`e0-1.85b.md` §13) | 88b6c1f |
+| 2. Model priorytetów | `FSBENCH X… L/L0` (pomocnik z prio 0, `XRESULT`) | cddc9bb |
+| 2. Model priorytetów | poprawka `L` (core −1 wykonywany w workerze) + `e0-1.85b.md` §14 | 801998a |
+| 2–3. Narzędzia | `RP1 TICKGAP`, `RP1 LOGLEVEL` (build deweloperski), scenariusze `lowprio` i `loggap` w `run_e0_stall.py`, testy | 227cfeb |
+| 3. Przerwa w logach | `e0-1.85b.md` §15 i oznaczenie §8.5/§10 | 3ef9c14 |
+| 4. CI bez trybu deweloperskiego | profil `rep-nodev` (`sdkconfig.nodev.defaults`), macierz CI, `gate.py`, `docs/ci.md` | 643d30e |
+| 5. Roadmapa | EABI: model priorytetów I/O z progiem 33 ms, test wyścigu STOP z −23/−24, postęp instalacji w Managerze | 6bc8081 |
+
+Zmiany runnera z punktów 2 i 3 weszły w jednym commicie (227cfeb), bo dotyczą tego samego pliku i były rozwijane równolegle.
+
+### 9.2. Weryfikacja
+
+- **Testy hosta:** `unittest discover` w środowisku IDF v6.1 → 315 testów, OK (1 pominięty). W tym `test_run_e0_stall` (11) i `test_ci_gate`.
+- **Kompilacja Xtensa:** sześć konfiguracji CI (`build_firmware.sh`): 1.85B i 1.75C × `legacy`, `rep`, `rep-nodev` → rc=0, 0 ostrzeżeń. W obu `rep-nodev` żadna opcja `ROUNDIE_DEV_*`, `BOOT_GUARD_TEST` ani `OTA_TEST_UNCONFIRMED_RESET` nie jest ustawiona. Obraz deweloperski 1.85B `0.3.84-e0` → sukces. Workflow CI na GitHub nie był uruchamiany (brak push).
+- **Urządzenie (1.85B):** OTA `0.3.84-e0` → `ota_0`, VALID. Przebiegi `lowprio-185b-3` (z jednym LIST w trakcie I/O) i `lowprio-185b-4` (bez LIST) po 2 powtórzenia → PASS i spójne. `loggap` 2 powtórzenia → PASS. Pliki testowe usunięte, 0 nieoczekiwanych resetów. Przebiegi `lowprio-185b-1` (błąd `L`, poprawiony) i `-2` (przeciążenie przez odpytywanie bez przerw; runner poprawiony) → FAIL, odrzucone.
+- **Długie, endurance, fault-injection, prąd:** nie uruchamiane.
+
+### 9.3. Co rozstrzygnięto
+
+1. **Zadania i zegar (fakt z kodu i obrazu):** pełna tabela w §13. GUI to zadanie główne z prio 1 na CPU0, `system_worker` ma prio 4 bez przypięcia, wykonawca prio 1 na CPU1. Tick wynosi 10 ms.
+2. **I/O poniżej GUI działa (fakt):** pomocnik z prio 0 bez `vTaskDelay` daje przerwę GUI 20–30 ms przy odczycie i 10,5 ms przy zapisie. Sonda prio 1 na CPU1 ≤ 14 ms. `system_worker` odpowiada w ≤ 13,4 ms (wcześniej 0,69 s i 4,27 s). Odczyt jest szybszy od wariantu „16 KiB + oddanie CPU” (2,5 wobec 1,6 MiB/s), zapis wolniejszy (83–98 wobec 122 KiB/s).
+3. **Ryzyko inwersji jest realne (fakt + hipoteza mechanizmu):** jedno wywołanie LittleFS z `system_worker` (RP1 LIST) w trakcie zapisu z prio 0 dało przerwę GUI 145–228 ms. Mutex `esp_littlefs` jest wspólny i dziedziczy priorytet. GUI nie wywołuje VFS. Dokładny przebieg (dziedziczenie vs własny czas CPU LIST) nie był śledzony planistą.
+4. **Przerwa 410–440 ms w logach `rep_app` to artefakt hosta (fakt):** takty wykonawcy co 110 ms przy logach INFO i WARN, przy porcie zamkniętym, otwartym i w trakcie odczytu 1 MiB. Linie giną, gdy runner zamyka port. H3 obalona.
+5. **Zawyżone lub błędne wartości E0:**
+   - „odstęp logów `rep_app` 410–440 ms” (§8.5) i „takty aplikacji zatrzymują się” (§8.5, tu §7.3 pkt 5): **błędne**;
+   - czasy odpowiedzi przez `self.call` (np. RS1 STATUS 10,2 ms w spoczynku): zawyżone o ok. 3–4 ms otwarcia portu, rzeczywiście 6,6 ms;
+   - czasy na urządzeniu (io_us, sha_us, GUI, sondy, przerwy GUI 308/339 ms): **bez zmian**.
+
+### 9.4. Decyzje podjęte w trybie autonomicznym
+
+- **`io_worker` z prio 0 bez przypięcia** wykonuje cały dostęp do `/storage`. `system_worker` wykonuje tylko krótkie operacje i nie bierze blokad LittleFS; korzysta ze stanu w pamięci. Wybór bez przypięcia ze względu na odczyt (2,5 MiB/s) i prostotę; przypięcie do CPU0 (zapis +17%) zostaje otwartą optymalizacją.
+- **Rozmiar wywołania VFS w `io_worker`: 4 KiB**, bo ogranicza czas trzymania blokady LittleFS (`chunk_max` 58–80 ms wobec 184–240 ms przy 16 KiB) przy tej samej przepustowości ±5%.
+- **Próg przerwy GUI: 33 ms** (jedna klatka LVGL, `CONFIG_LV_DEF_REFR_PERIOD=33`). Zastępuje 50 ms z §8.4. Ten sam próg dla sondy prio 1 na CPU1 i odpowiedzi `system_worker`.
+- **Profil CI `rep-nodev`** jako warstwa `sdkconfig.nodev.defaults` nad `rep`, przez zmienną `ROUNDIE_EXTRA_DEFAULTS`. Nie zmienia domyślnych buildów ani formatu obrazu.
+- `TICKGAP` i `LOGLEVEL` tylko w buildzie deweloperskim (`CONFIG_ROUNDIE_DEV_PACKAGES`).
+- Dokument przebiegu lowprio podaje zakres z 2 powtórzeń; przebiegi FAIL z błędów runnera odrzucono, a nie uśredniono.
+
+### 9.5. PENDING i otwarte
+
+- **Eksperyment (EABI, przy implementacji `io_worker`):** test akceptacyjny `run_e0_stall.py --only lowprio` na docelowym `io_worker` z rejestrem z pamięci. Kryterium: przerwa GUI, sonda prio 1 CPU1 i odpowiedź `system_worker` ≤ 33 ms, także ze skanem rejestru w trakcie zapisu.
+- **Niezweryfikowane:** mechanizm inwersji (ślad planisty); mechanizm gubienia linii konsoli (`TX_FLUSH_TIMEOUT_US`, hipoteza).
+- **Uwaga do raportu CI:** lokalny raport `rep-nodev` nie zawiera linii „Roundie layout”, bo katalog builda był już skonfigurowany i komunikat CMake nie został wypisany ponownie. W czystym CI wystąpi.
+- **PENDING (próby fizyczne):** prąd i przyrząd, dotyk palcem, ocena wzrokowa, słyszalność, chwila wybudzenia vs niezależny zegar, brownout na urządzeniu (§7.5, §8.5).
+- **PENDING (decyzja):** dane diagnostyczne Safe Mode poza pierścieniem rozruchów (§8.4).
+- **BLOCKED:** cała baza i pomiary uzupełniające na 1.75C.
+
+### 9.6. Ocena: E0 dla 1.85B
+
+**E0 dla 1.85B uważam za zamknięte**, z wyłączeniem prób fizycznych (PENDING) i całej 1.75C (BLOCKED). Wszystkie pozycje bramki mierzalne automatycznie mają PASS (§3). Otwarte pytania E0 (mechanizm przestoju GUI, wyścig STOP, przerwa w logach, Safe Mode na tyle, na ile pozwalają zachowane dane) są rozstrzygnięte albo przeniesione jako decyzje i testy akceptacyjne do EABI w roadmapie. CI kompiluje warianty z trybem deweloperskim i bez niego dla obu płytek. Zamknięcie nie obejmuje decyzji o semantyce STOP (EABI) ani implementacji `io_worker` (EABI/E2); to praca następnych etapów, nie braki bazy.
