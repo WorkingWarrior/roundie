@@ -57,14 +57,14 @@ static bool read_selection(const char *id, uint8_t selection[SELECTION_SIZE])
     if (!path_for(path, id, "active")) {
         return false;
     }
-    int file = open(path, O_RDONLY);
+    int file = roundie_io_open(path, O_RDONLY, 0);
     if (file < 0) {
         return false;
     }
     struct stat info;
-    bool valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) &&
+    bool valid = roundie_io_fstat(file, &info) == 0 && S_ISREG(info.st_mode) &&
         info.st_size == SELECTION_SIZE && roundie_io_read_exact(file, selection, SELECTION_SIZE);
-    int closed = close(file);
+    int closed = roundie_io_close(file);
     return valid && closed == 0 && memcmp(selection, "RPA1", 4) == 0 &&
         selection[4] <= 1 && selection[5] == 0 && selection[6] == 0 && selection[7] == 0;
 }
@@ -74,13 +74,13 @@ static bool read_selection(const char *id, uint8_t selection[SELECTION_SIZE])
 static bool inspect_file(const char *path, const uint8_t digest[32],
                          roundie_package_metadata_t *metadata)
 {
-    int file = open(path, O_RDONLY);
+    int file = roundie_io_open(path, O_RDONLY, 0);
     if (file < 0) {
         return false;
     }
     uint8_t prefix[ROUNDIE_PACKAGE_PREFIX];
     struct stat info;
-    bool valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= 0 &&
+    bool valid = roundie_io_fstat(file, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= 0 &&
         info.st_size <= ROUNDIE_PACKAGE_MAX && roundie_io_read_exact(file, prefix, sizeof(prefix)) &&
         roundie_package_decode(prefix, sizeof(prefix), (size_t)info.st_size, metadata, status.error);
     psa_hash_operation_t hash = psa_hash_operation_init();
@@ -102,7 +102,7 @@ static bool inspect_file(const char *path, const uint8_t digest[32],
             length == 32 && memcmp(actual, digest, 32) == 0;
     }
     psa_hash_abort(&hash);
-    int closed = close(file);
+    int closed = roundie_io_close(file);
     return valid && closed == 0;
 }
 
@@ -121,15 +121,15 @@ static uint8_t *validate_file(const char *path, const uint8_t digest[32],
         failed(ESP_ERR_NOT_SUPPORTED, "package-incompatible");
         goto done;
     }
-    int file = open(path, O_RDONLY);
+    int file = roundie_io_open(path, O_RDONLY, 0);
     if (file < 0) {
         failed(ESP_FAIL, "package-open");
         goto done;
     }
     elf = roundie_packages_allocate(metadata->elf_size);
-    bool valid = elf != NULL && lseek(file, ROUNDIE_PACKAGE_PREFIX, SEEK_SET) == ROUNDIE_PACKAGE_PREFIX &&
+    bool valid = elf != NULL && roundie_io_lseek(file, ROUNDIE_PACKAGE_PREFIX, SEEK_SET) == ROUNDIE_PACKAGE_PREFIX &&
         roundie_io_read_exact(file, elf, metadata->elf_size);
-    int closed = close(file);
+    int closed = roundie_io_close(file);
     uint8_t actual[32];
     size_t length = 0;
     roundie_elf_info_t info;
@@ -167,9 +167,9 @@ void roundie_packages_status(roundie_packages_status_t *out)
 
 static esp_err_t cancel(void)
 {
-    int closed = transfer >= 0 ? close(transfer) : 0;
+    int closed = transfer >= 0 ? roundie_io_close(transfer) : 0;
     transfer = -1;
-    int removed = unlink(TRANSFER);
+    int removed = roundie_io_unlink(TRANSFER);
     bool okay = closed == 0 && (removed == 0 || errno == ENOENT);
     status.phase = ROUNDIE_PACKAGES_IDLE;
     status.session = 0;
@@ -199,14 +199,14 @@ esp_err_t roundie_packages_begin(uint32_t session, size_t size, const uint8_t di
     if (!roundie_packages_capacity(&free_bytes) || free_bytes < ROUNDIE_PACKAGES_RESERVE + size + 16384) {
         return failed(ESP_ERR_NO_MEM, "package-storage-reserve");
     }
-    if (mkdir(PACKAGES_DIRECTORY, 0700) != 0 && errno != EEXIST) {
+    if (roundie_io_mkdir(PACKAGES_DIRECTORY, 0700) != 0 && errno != EEXIST) {
         return failed(ESP_FAIL, "package-directory");
     }
     /* Explicit BEGIN retires only the one known interrupted transfer. */
-    if (unlink(TRANSFER) != 0 && errno != ENOENT) {
+    if (roundie_io_unlink(TRANSFER) != 0 && errno != ENOENT) {
         return failed(ESP_FAIL, "temporary-cleanup");
     }
-    transfer = open(TRANSFER, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    transfer = roundie_io_open(TRANSFER, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (transfer < 0) {
         return failed(ESP_FAIL, "transfer-open");
     }
@@ -229,7 +229,7 @@ esp_err_t roundie_packages_write(uint32_t session, size_t offset, const void *da
     if (offset != status.received || size == 0 || size > 512 || size > status.total - status.received) {
         return failed(ESP_ERR_INVALID_SIZE, "transfer-offset-or-length");
     }
-    if (write(transfer, data, size) != (ssize_t)size) {
+    if (roundie_io_write(transfer, data, size) != (ssize_t)size) {
         cancel();
         return failed(ESP_FAIL, "transfer-write");
     }
@@ -246,8 +246,8 @@ esp_err_t roundie_packages_finish(uint32_t session)
     if (status.received != status.total) {
         return failed(ESP_ERR_INVALID_SIZE, "transfer-incomplete");
     }
-    int synced = fsync(transfer);
-    int closed = close(transfer);
+    int synced = roundie_io_fsync(transfer);
+    int closed = roundie_io_close(transfer);
     transfer = -1;
     status.upload_us = (uint32_t)(roundie_packages_clock() - upload_started);
     status.phase = ROUNDIE_PACKAGES_STAGED;
@@ -292,7 +292,7 @@ esp_err_t roundie_packages_scan(void)
     int64_t started = roundie_packages_clock();
     status.count = 0;
     status.orphans = 0;
-    DIR *directory = opendir(PACKAGES_DIRECTORY);
+    DIR *directory = roundie_io_opendir(PACKAGES_DIRECTORY);
     if (directory == NULL) {
         status.enumeration_us = (uint32_t)(roundie_packages_clock() - started);
         if (errno == ENOENT) {
@@ -304,7 +304,7 @@ esp_err_t roundie_packages_scan(void)
     unsigned visited = 0;
     struct dirent *entry;
     errno = 0;
-    while ((entry = readdir(directory)) != NULL) {
+    while ((entry = roundie_io_readdir(directory)) != NULL) {
         if (++visited > 32) {
             result = failed(ESP_ERR_INVALID_SIZE, "registry-directory-limit");
             break;
@@ -315,7 +315,7 @@ esp_err_t roundie_packages_scan(void)
         char path[PATH_SIZE];
         path_for(path, entry->d_name, "active");
         struct stat info;
-        if (stat(path, &info) != 0 && errno == ENOENT) {
+        if (roundie_io_stat(path, &info) != 0 && errno == ENOENT) {
             status.orphans++;
             errno = 0;
             continue;
@@ -344,7 +344,7 @@ esp_err_t roundie_packages_scan(void)
     if (errno != 0 && result == ESP_OK) {
         result = failed(ESP_FAIL, "registry-read");
     }
-    if (closedir(directory) != 0) {
+    if (roundie_io_closedir(directory) != 0) {
         result = failed(ESP_FAIL, "registry-close");
     }
     if (result != ESP_OK) {
@@ -422,29 +422,29 @@ esp_err_t roundie_packages_install(const uint8_t digest[32])
     char temporary[PATH_SIZE];
     char directory[PATH_SIZE];
     path_for(directory, metadata.id, "");
-    if (mkdir(directory, 0700) != 0 && errno != EEXIST) {
+    if (roundie_io_mkdir(directory, 0700) != 0 && errno != EEXIST) {
         result = failed(ESP_FAIL, "install-directory");
         goto done;
     }
     unsigned slot = exists ? 1U - previous.slot : 0;
     path_for(path, metadata.id, slot == 0 ? "0.rpk" : "1.rpk");
-    if (rename(TRANSFER, path) != 0) {
+    if (roundie_io_rename(TRANSFER, path) != 0) {
         result = failed(ESP_FAIL, "install-artifact-rename");
         goto done;
     }
     uint8_t selection[SELECTION_SIZE] = {'R', 'P', 'A', '1', (uint8_t)slot, 0, 0, 0};
     memcpy(selection + 8, digest, 32);
     path_for(temporary, metadata.id, "active.tmp");
-    int file = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int file = roundie_io_open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (file < 0) {
         result = failed(ESP_FAIL, "selection-open");
         goto done;
     }
-    bool written = write(file, selection, sizeof(selection)) == sizeof(selection);
-    int synced = written ? fsync(file) : -1;
-    int closed = close(file);
+    bool written = roundie_io_write(file, selection, sizeof(selection)) == sizeof(selection);
+    int synced = written ? roundie_io_fsync(file) : -1;
+    int closed = roundie_io_close(file);
     path_for(path, metadata.id, "active");
-    if (!written || synced != 0 || closed != 0 || rename(temporary, path) != 0) {
+    if (!written || synced != 0 || closed != 0 || roundie_io_rename(temporary, path) != 0) {
         result = failed(ESP_FAIL, "selection-commit");
         goto done;
     }
@@ -504,13 +504,13 @@ esp_err_t roundie_packages_remove(const char *id)
     char path[PATH_SIZE];
     for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         path_for(path, id, names[i]);
-        if (unlink(path) != 0 && errno != ENOENT) {
+        if (roundie_io_unlink(path) != 0 && errno != ENOENT) {
             roundie_packages_scan();
             return failed(ESP_FAIL, "remove-file");
         }
     }
     path_for(path, id, "");
-    if (rmdir(path) != 0 && errno != ENOENT) {
+    if (roundie_io_rmdir(path) != 0 && errno != ENOENT) {
         roundie_packages_scan();
         return failed(ESP_FAIL, "remove-directory");
     }
@@ -529,13 +529,13 @@ esp_err_t roundie_packages_data_read(const char *id, void *buffer, size_t capaci
     if (!roundie_packages_allowed() || !path_for(path, id, "data")) {
         return failed(ESP_ERR_INVALID_STATE, "data-admission");
     }
-    int file = open(path, O_RDONLY);
+    int file = roundie_io_open(path, O_RDONLY, 0);
     if (file < 0) {
         return errno == ENOENT ? ESP_OK : failed(ESP_FAIL, "data-open");
     }
     uint8_t header[DATA_HEADER];
     struct stat info;
-    bool valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= (off_t)DATA_HEADER &&
+    bool valid = roundie_io_fstat(file, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= (off_t)DATA_HEADER &&
         (size_t)info.st_size - DATA_HEADER <= capacity && roundie_io_read_exact(file, header, sizeof(header));
     uint32_t size = 0;
     if (valid) {
@@ -544,7 +544,7 @@ esp_err_t roundie_packages_data_read(const char *id, void *buffer, size_t capaci
         valid = memcmp(header, "RPD1", 4) == 0 && size == (size_t)info.st_size - DATA_HEADER &&
             roundie_io_read_exact(file, buffer, size);
     }
-    int closed = close(file);
+    int closed = roundie_io_close(file);
     uint8_t actual[32];
     size_t digest_length = 0;
     if (valid) {
@@ -565,12 +565,12 @@ esp_err_t roundie_packages_data_write(const char *id, const void *data, size_t l
     char path[PATH_SIZE];
     char temporary[PATH_SIZE];
     struct stat info;
-    if (!admitted() || roundie_packages_busy() || !path_for(path, id, "active") || stat(path, &info) != 0) {
+    if (!admitted() || roundie_packages_busy() || !path_for(path, id, "active") || roundie_io_stat(path, &info) != 0) {
         return failed(ESP_ERR_INVALID_STATE, "data-admission");
     }
     path_for(path, id, "data");
     if (length == 0) {
-        return unlink(path) == 0 || errno == ENOENT ? ESP_OK : failed(ESP_FAIL, "data-remove");
+        return roundie_io_unlink(path) == 0 || errno == ENOENT ? ESP_OK : failed(ESP_FAIL, "data-remove");
     }
     size_t free_bytes;
     if (!roundie_packages_capacity(&free_bytes) || free_bytes < 16384U + DATA_HEADER + length) {
@@ -584,15 +584,15 @@ esp_err_t roundie_packages_data_write(const char *id, const void *data, size_t l
         return failed(ESP_FAIL, "data-digest");
     }
     path_for(temporary, id, "data.tmp");
-    int file = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int file = roundie_io_open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (file < 0) {
         return failed(ESP_FAIL, "data-open");
     }
     bool written = roundie_io_write_exact(file, header, sizeof(header)) && roundie_io_write_exact(file, data, length);
-    int synced = written ? fsync(file) : -1;
-    int closed = close(file);
-    if (!written || synced != 0 || closed != 0 || rename(temporary, path) != 0) {
-        unlink(temporary);
+    int synced = written ? roundie_io_fsync(file) : -1;
+    int closed = roundie_io_close(file);
+    if (!written || synced != 0 || closed != 0 || roundie_io_rename(temporary, path) != 0) {
+        roundie_io_unlink(temporary);
         return failed(ESP_FAIL, "data-commit");
     }
     return ESP_OK;

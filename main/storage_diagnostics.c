@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "roundie_bounded_io.h"
 #include "roundie_storage.h"
 
 static const char *TAG = "storage";
@@ -47,26 +48,26 @@ static void migration_filesystem_test(void)
     uint8_t expected[256];
     uint8_t actual[257];
     struct stat info;
-    int descriptor = open(request, O_RDONLY);
+    int descriptor = roundie_io_open(request, O_RDONLY, 0);
     if (descriptor < 0) {
         if (errno != ENOENT) {
             ESP_LOGE(TAG, "M2B request open failed: errno=%d", errno);
         }
         return;
     }
-    ssize_t count = read(descriptor, actual, sizeof(actual));
-    int close_result = close(descriptor);
+    ssize_t count = roundie_io_read(descriptor, actual, sizeof(actual));
+    int close_result = roundie_io_close(descriptor);
     if (count != (ssize_t)(sizeof(token) - 1) || close_result != 0 ||
         memcmp(actual, token, sizeof(token) - 1) != 0) {
         ESP_LOGE(TAG, "M2B request invalid; no test writes performed");
         return;
     }
     errno = 0;
-    if (stat(claimed, &info) == 0 || errno != ENOENT) {
+    if (roundie_io_stat(claimed, &info) == 0 || errno != ENOENT) {
         ESP_LOGE(TAG, "M2B previous test state exists or cannot be checked; stopped");
         return;
     }
-    if (rename(request, claimed) != 0) {
+    if (roundie_io_rename(request, claimed) != 0) {
         ESP_LOGE(TAG, "M2B request claim failed: errno=%d", errno);
         return;
     }
@@ -74,14 +75,14 @@ static void migration_filesystem_test(void)
         expected[index] = (uint8_t)(index ^ 0xa5);
     }
     const char *stage = "create";
-    descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    descriptor = roundie_io_open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (descriptor < 0) {
         goto failed;
     }
     stage = "write/sync/close";
-    count = write(descriptor, expected, sizeof(expected));
-    int sync_result = fsync(descriptor);
-    close_result = close(descriptor);
+    count = roundie_io_write(descriptor, expected, sizeof(expected));
+    int sync_result = roundie_io_fsync(descriptor);
+    close_result = roundie_io_close(descriptor);
     if (count != (ssize_t)sizeof(expected) || sync_result != 0 || close_result != 0) {
         goto failed;
     }
@@ -91,18 +92,18 @@ static void migration_filesystem_test(void)
         goto failed;
     }
     stage = "read/integrity";
-    descriptor = open(path, O_RDONLY);
+    descriptor = roundie_io_open(path, O_RDONLY, 0);
     if (descriptor < 0) {
         goto failed;
     }
-    count = read(descriptor, actual, sizeof(actual));
-    close_result = close(descriptor);
+    count = roundie_io_read(descriptor, actual, sizeof(actual));
+    close_result = roundie_io_close(descriptor);
     if (count != (ssize_t)sizeof(expected) || close_result != 0 ||
         memcmp(actual, expected, sizeof(expected)) != 0) {
         goto failed;
     }
     stage = "delete";
-    if (unlink(path) != 0 || unlink(claimed) != 0) {
+    if (roundie_io_unlink(path) != 0 || roundie_io_unlink(claimed) != 0) {
         goto failed;
     }
     stage = "deletion persistence";
@@ -113,7 +114,7 @@ static void migration_filesystem_test(void)
     const char *removed[] = {path, request, claimed};
     for (size_t index = 0; index < sizeof(removed) / sizeof(removed[0]); index++) {
         errno = 0;
-        if (stat(removed[index], &info) == 0 || errno != ENOENT) {
+        if (roundie_io_stat(removed[index], &info) == 0 || errno != ENOENT) {
             goto failed;
         }
     }

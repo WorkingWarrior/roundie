@@ -302,7 +302,7 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
         frame->discard = true; /* Never execute a suffix of an expired frame. */
     }
     char bytes[256];
-    ssize_t count = read(serial_fd, bytes, sizeof(bytes));
+    ssize_t count = read(serial_fd, bytes, sizeof(bytes)); /* vfs-ok: /dev/secondary */
     for (ssize_t i = 0; i < count; i++) {
         if (frame->used == 0) {
             *started_us = now;
@@ -387,7 +387,7 @@ static void sensor_worker(void *argument)
     } else if (usb_error == ESP_OK) {
         usb_serial_jtag_vfs_use_driver();
         usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
-        serial_fd = open("/dev/secondary", O_RDWR | O_NONBLOCK);
+        serial_fd = open("/dev/secondary", O_RDWR | O_NONBLOCK); /* vfs-ok: /dev/secondary */
     } else {
         ESP_LOGE(TAG, "Development RTC USB driver: %s", esp_err_to_name(usb_error));
     }

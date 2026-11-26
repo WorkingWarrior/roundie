@@ -116,13 +116,26 @@ void roundie_storage_owner_set(void)
     atomic_store(&owner, roundie_thread_self());
 }
 
+static _Atomic roundie_thread_t guest = ROUNDIE_THREAD_NONE;
+
+void roundie_storage_guest_set(void)
+{
+    atomic_store(&guest, roundie_thread_self());
+}
+
+void roundie_storage_guest_clear(void)
+{
+    atomic_store(&guest, ROUNDIE_THREAD_NONE);
+}
+
 roundie_storage_access_t roundie_storage_access_check(void)
 {
     if (roundie_storage_claim_held()) {
         return ROUNDIE_STORAGE_ACCESS_UNDER_CLAIM;
     }
     roundie_thread_t current = atomic_load(&owner);
-    if (current != ROUNDIE_THREAD_NONE && current != roundie_thread_self()) {
+    roundie_thread_t self = roundie_thread_self();
+    if (current != ROUNDIE_THREAD_NONE && current != self && atomic_load(&guest) != self) {
         return ROUNDIE_STORAGE_ACCESS_NOT_OWNER;
     }
     return ROUNDIE_STORAGE_ACCESS_OK;

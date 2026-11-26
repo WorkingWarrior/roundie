@@ -19,6 +19,8 @@
 #include "psa/crypto.h"
 #include "app_runtime.h"
 #include "stall_probe.h"
+#include "roundie_bounded_io.h"
+#include "roundie_storage_io.h"
 #include "storage_diagnostics.h"
 
 #define BENCH_DIRECTORY "/storage/dev"
@@ -118,11 +120,11 @@ static esp_err_t prepare(const char *path, uint32_t bytes, bench_result_t *resul
         result->total - result->used < (size_t)bytes + BENCH_RESERVE) {
         return ESP_ERR_NO_MEM;
     }
-    if (mkdir(BENCH_DIRECTORY, 0700) != 0 && errno != EEXIST) {
+    if (roundie_io_mkdir(BENCH_DIRECTORY, 0700) != 0 && errno != EEXIST) {
         return ESP_FAIL;
     }
     int64_t started = esp_timer_get_time();
-    int descriptor = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int descriptor = roundie_io_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (descriptor < 0) {
         return ESP_FAIL;
     }
@@ -130,19 +132,19 @@ static esp_err_t prepare(const char *path, uint32_t bytes, bench_result_t *resul
     uint32_t state = BENCH_SEED;
     for (uint32_t offset = 0; offset < bytes && error == ESP_OK; offset += BENCH_CHUNK) {
         fill_pattern(chunk, BENCH_CHUNK, &state);
-        if (write(descriptor, chunk, BENCH_CHUNK) != (ssize_t)BENCH_CHUNK) {
+        if (roundie_io_write(descriptor, chunk, BENCH_CHUNK) != (ssize_t)BENCH_CHUNK) {
             error = ESP_FAIL;
         }
         feed_watchdog(offset / BENCH_CHUNK);
     }
-    if (error == ESP_OK && fsync(descriptor) != 0) {
+    if (error == ESP_OK && roundie_io_fsync(descriptor) != 0) {
         error = ESP_FAIL;
     }
-    if (close(descriptor) != 0 && error == ESP_OK) {
+    if (roundie_io_close(descriptor) != 0 && error == ESP_OK) {
         error = ESP_FAIL;
     }
     if (error != ESP_OK) {
-        unlink(path);
+        roundie_io_unlink(path);
     }
     result->write_us = esp_timer_get_time() - started;
     return error;
@@ -154,13 +156,13 @@ static esp_err_t measure(const char *path, uint32_t bytes, bench_result_t *resul
         return ESP_ERR_INVALID_STATE;
     }
     int64_t started = esp_timer_get_time();
-    int descriptor = open(path, O_RDONLY);
+    int descriptor = roundie_io_open(path, O_RDONLY, 0);
     if (descriptor < 0) {
         return errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
     struct stat info;
-    if (fstat(descriptor, &info) != 0 || info.st_size != (off_t)bytes) {
-        close(descriptor);
+    if (roundie_io_fstat(descriptor, &info) != 0 || info.st_size != (off_t)bytes) {
+        roundie_io_close(descriptor);
         return ESP_ERR_INVALID_SIZE;
     }
     psa_hash_operation_t hash = psa_hash_operation_init();
@@ -172,7 +174,7 @@ static esp_err_t measure(const char *path, uint32_t bytes, bench_result_t *resul
     result->sha_us += esp_timer_get_time() - sha_started;
     for (uint32_t offset = 0; offset < bytes && error == ESP_OK; offset += BENCH_CHUNK) {
         int64_t chunk_started = esp_timer_get_time();
-        ssize_t count = read(descriptor, chunk, BENCH_CHUNK);
+        ssize_t count = roundie_io_read(descriptor, chunk, BENCH_CHUNK);
         int64_t read_done = esp_timer_get_time();
         if (count != (ssize_t)BENCH_CHUNK) {
             error = ESP_FAIL;
@@ -198,7 +200,7 @@ static esp_err_t measure(const char *path, uint32_t bytes, bench_result_t *resul
     }
     result->sha_us += esp_timer_get_time() - sha_started;
     psa_hash_abort(&hash);
-    if (close(descriptor) != 0 && error == ESP_OK) {
+    if (roundie_io_close(descriptor) != 0 && error == ESP_OK) {
         error = ESP_FAIL;
     }
     result->total_us = esp_timer_get_time() - started;
@@ -307,14 +309,14 @@ static void x_execute(x_job_t *job)
 {
     int64_t started = esp_timer_get_time();
     int previous_core = -1;
-    int descriptor = open(job->path, job->write ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY, 0600);
+    int descriptor = roundie_io_open(job->path, job->write ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY, 0600);
     if (descriptor < 0) {
         job->error = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
         return;
     }
     struct stat info;
-    if (!job->write && (fstat(descriptor, &info) != 0 || info.st_size != (off_t)job->bytes)) {
-        close(descriptor);
+    if (!job->write && (roundie_io_fstat(descriptor, &info) != 0 || info.st_size != (off_t)job->bytes)) {
+        roundie_io_close(descriptor);
         job->error = ESP_ERR_INVALID_SIZE;
         return;
     }
@@ -334,12 +336,12 @@ static void x_execute(x_job_t *job)
         if (job->write) {
             fill_pattern(job->buffer, job->chunk, &state);
             int64_t io_started = esp_timer_get_time();
-            if (write(descriptor, job->buffer, job->chunk) != (ssize_t)job->chunk) {
+            if (roundie_io_write(descriptor, job->buffer, job->chunk) != (ssize_t)job->chunk) {
                 job->error = ESP_FAIL;
             }
             job->io_us += esp_timer_get_time() - io_started;
         } else {
-            ssize_t count = read(descriptor, job->buffer, job->chunk);
+            ssize_t count = roundie_io_read(descriptor, job->buffer, job->chunk);
             int64_t read_done = esp_timer_get_time();
             job->io_us += read_done - chunk_started;
             if (count != (ssize_t)job->chunk || psa_hash_update(&hash, job->buffer, job->chunk) != PSA_SUCCESS) {
@@ -360,16 +362,16 @@ static void x_execute(x_job_t *job)
     }
     if (job->write && job->error == ESP_OK) {
         int64_t sync_started = esp_timer_get_time();
-        if (fsync(descriptor) != 0) {
+        if (roundie_io_fsync(descriptor) != 0) {
             job->error = ESP_FAIL;
         }
         job->io_us += esp_timer_get_time() - sync_started;
     }
-    if (close(descriptor) != 0 && job->error == ESP_OK) {
+    if (roundie_io_close(descriptor) != 0 && job->error == ESP_OK) {
         job->error = ESP_FAIL;
     }
     if (job->write && job->error != ESP_OK) {
-        unlink(job->path);
+        roundie_io_unlink(job->path);
     }
     if (!job->write) {
         uint8_t digest[32];
@@ -391,7 +393,9 @@ static void x_execute(x_job_t *job)
 static void x_helper(void *argument)
 {
     x_job_t *job = argument;
+    roundie_storage_guest_set();
     x_execute(job);
+    roundie_storage_guest_clear();
     if (job->low) {
         roundie_stall_disarm(&job->stall);
         heap_caps_free(job->buffer);
@@ -526,7 +530,7 @@ static void x_command(const char *operation, const char *id, int parsed)
             error = ESP_ERR_INVALID_STATE;
         } else if (job->write && (!usage || total < used || total - used < (size_t)job->bytes + BENCH_RESERVE)) {
             error = ESP_ERR_NO_MEM;
-        } else if (job->write && mkdir(BENCH_DIRECTORY, 0700) != 0 && errno != EEXIST) {
+        } else if (job->write && roundie_io_mkdir(BENCH_DIRECTORY, 0700) != 0 && errno != EEXIST) {
             error = ESP_FAIL;
         }
     }
@@ -599,7 +603,7 @@ bool roundie_storage_bench_command(const char *operation, const char *id, int pa
             error = measure(path, result.bytes, &result);
         } else if (roundie_app_runtime_busy()) {
             error = ESP_ERR_INVALID_STATE;
-        } else if (unlink(path) != 0) {
+        } else if (roundie_io_unlink(path) != 0) {
             error = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
         }
         if (kind != BENCH_READ) {

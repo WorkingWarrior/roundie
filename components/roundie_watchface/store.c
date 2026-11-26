@@ -111,15 +111,15 @@ static bool path_for(char out[PATH_SIZE], const char *id, const char *suffix)
 /* tmp + fsync + rename: the previous file stays until the new one is complete. */
 static bool replace_file(const char *path, const char *temporary, const void *data, size_t size)
 {
-    int file = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int file = roundie_io_open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (file < 0) {
         return false;
     }
     bool written = roundie_io_write_exact(file, data, size);
-    int synced = written ? fsync(file) : -1;
-    int closed = close(file);
-    if (!written || synced != 0 || closed != 0 || rename(temporary, path) != 0) {
-        unlink(temporary);
+    int synced = written ? roundie_io_fsync(file) : -1;
+    int closed = roundie_io_close(file);
+    if (!written || synced != 0 || closed != 0 || roundie_io_rename(temporary, path) != 0) {
+        roundie_io_unlink(temporary);
         return false;
     }
     return true;
@@ -128,12 +128,12 @@ static bool replace_file(const char *path, const char *temporary, const void *da
 static bool read_preference(char id[ROUNDIE_FACE_ID])
 {
     uint8_t bytes[PREFERENCE_SIZE];
-    int file = open(PREFERENCE, O_RDONLY);
+    int file = roundie_io_open(PREFERENCE, O_RDONLY, 0);
     if (file < 0) {
         return false;
     }
-    bool valid = roundie_io_read_exact(file, bytes, sizeof(bytes)) && read(file, bytes, 1) == 0;
-    close(file);
+    bool valid = roundie_io_read_exact(file, bytes, sizeof(bytes)) && roundie_io_read(file, bytes, 1) == 0;
+    roundie_io_close(file);
     if (!valid || memcmp(bytes, "RFA1", 4) != 0 || get32(bytes + 52) != fnv1a(bytes, 52) ||
         memchr(bytes + 4, '\0', ROUNDIE_FACE_ID) == NULL) {
         return false;
@@ -145,7 +145,7 @@ static bool read_preference(char id[ROUNDIE_FACE_ID])
 static bool write_preference(const char *id)
 {
     if (strcmp(id, ROUNDIE_WATCHFACE_SYSTEM) == 0) {
-        return unlink(PREFERENCE) == 0 || errno == ENOENT;
+        return roundie_io_unlink(PREFERENCE) == 0 || errno == ENOENT;
     }
     uint8_t bytes[PREFERENCE_SIZE] = {'R', 'F', 'A', '1'};
     strncpy((char *)bytes + 4, id, ROUNDIE_FACE_ID - 1);
@@ -164,12 +164,12 @@ static void read_settings(const char *id, const roundie_face_definition_t *defin
     if (!path_for(path, id, ".cfg")) {
         return;
     }
-    int file = open(path, O_RDONLY);
+    int file = roundie_io_open(path, O_RDONLY, 0);
     if (file < 0) {
         return;
     }
-    bool valid = roundie_io_read_exact(file, bytes, sizeof(bytes)) && read(file, bytes, 1) == 0;
-    close(file);
+    bool valid = roundie_io_read_exact(file, bytes, sizeof(bytes)) && roundie_io_read(file, bytes, 1) == 0;
+    roundie_io_close(file);
     if (!valid || memcmp(bytes, "RFS1", 4) != 0 || get32(bytes + 12) != fnv1a(bytes, 12) ||
         bytes[4] != definition->setting_count) {
         return;
@@ -207,21 +207,21 @@ void roundie_face_loaded_free(roundie_face_loaded_t *loaded)
 static roundie_face_loaded_t *load_file(const char *path, const uint8_t *expected, char error[ROUNDIE_FACE_ERROR])
 {
     struct stat info;
-    int file = open(path, O_RDONLY);
+    int file = roundie_io_open(path, O_RDONLY, 0);
     if (file < 0) {
         snprintf(error, ROUNDIE_FACE_ERROR, "face-open");
         return NULL;
     }
-    if (fstat(file, &info) != 0 || info.st_size < (off_t)ROUNDIE_FACE_PREFIX ||
+    if (roundie_io_fstat(file, &info) != 0 || info.st_size < (off_t)ROUNDIE_FACE_PREFIX ||
         info.st_size > (off_t)ROUNDIE_FACE_PACKAGE_MAX) {
-        close(file);
+        roundie_io_close(file);
         snprintf(error, ROUNDIE_FACE_ERROR, "package-size");
         return NULL;
     }
     size_t size = (size_t)info.st_size;
     roundie_face_loaded_t *loaded = platform->allocate(sizeof(*loaded) + size);
     if (loaded == NULL) {
-        close(file);
+        roundie_io_close(file);
         snprintf(error, ROUNDIE_FACE_ERROR, "face-memory");
         return NULL;
     }
@@ -229,7 +229,7 @@ static roundie_face_loaded_t *load_file(const char *path, const uint8_t *expecte
     loaded->bytes = (uint8_t *)(loaded + 1);
     loaded->size = size;
     bool read_ok = roundie_io_read_exact(file, loaded->bytes, size);
-    int closed = close(file);
+    int closed = roundie_io_close(file);
     if (!read_ok || closed != 0) {
         snprintf(error, ROUNDIE_FACE_ERROR, "face-read");
         goto fail;
@@ -276,7 +276,7 @@ static esp_err_t scan(void)
 {
     roundie_watchface_entry_t found[ROUNDIE_WATCHFACE_MAX];
     unsigned count = 0;
-    DIR *directory = opendir(FACES_DIRECTORY);
+    DIR *directory = roundie_io_opendir(FACES_DIRECTORY);
     if (directory == NULL) {
         roundie_lock(&lock);
         status.count = 0;
@@ -285,7 +285,7 @@ static esp_err_t scan(void)
         return errno == ENOENT ? ESP_OK : ESP_FAIL;
     }
     struct dirent *item;
-    while ((item = readdir(directory)) != NULL) {
+    while ((item = roundie_io_readdir(directory)) != NULL) {
         size_t length = strlen(item->d_name);
         if (length <= 4 || length - 4 >= ROUNDIE_FACE_ID || strcmp(item->d_name + length - 4, ".rwf") != 0) {
             continue;
@@ -302,8 +302,8 @@ static esp_err_t scan(void)
         memcpy(entry->id, id, sizeof(id));
         uint8_t prefix[ROUNDIE_FACE_PREFIX + ROUNDIE_FACE_RESOURCES_MAX * ROUNDIE_FACE_RESOURCE_ENTRY];
         struct stat info;
-        int file = open(path, O_RDONLY);
-        if (file >= 0 && fstat(file, &info) == 0 && info.st_size >= (off_t)ROUNDIE_FACE_PREFIX &&
+        int file = roundie_io_open(path, O_RDONLY, 0);
+        if (file >= 0 && roundie_io_fstat(file, &info) == 0 && info.st_size >= (off_t)ROUNDIE_FACE_PREFIX &&
             info.st_size <= (off_t)ROUNDIE_FACE_PACKAGE_MAX) {
             size_t available = (size_t)info.st_size < sizeof(prefix) ? (size_t)info.st_size : sizeof(prefix);
             roundie_face_package_t package;
@@ -319,11 +319,11 @@ static esp_err_t scan(void)
             }
         }
         if (file >= 0) {
-            close(file);
+            roundie_io_close(file);
         }
         count++;
     }
-    closedir(directory);
+    roundie_io_closedir(directory);
     /* Sorted by id: the gallery order does not depend on the directory. */
     for (unsigned i = 1; i < count; i++) {
         for (unsigned j = i; j > 0 && strcmp(found[j - 1].id, found[j].id) > 0; j--) {
@@ -423,7 +423,7 @@ static void start(void)
 {
     started = true;
     failed(ESP_OK, "");
-    if (mkdir(FACES_DIRECTORY, 0700) != 0 && errno != EEXIST) {
+    if (roundie_io_mkdir(FACES_DIRECTORY, 0700) != 0 && errno != EEXIST) {
         failed(ESP_FAIL, "face-directory");
         return;
     }
@@ -442,9 +442,9 @@ static void start(void)
 
 static esp_err_t cancel(void)
 {
-    int closed = transfer >= 0 ? close(transfer) : 0;
+    int closed = transfer >= 0 ? roundie_io_close(transfer) : 0;
     transfer = -1;
-    int removed = unlink(TRANSFER);
+    int removed = roundie_io_unlink(TRANSFER);
     roundie_lock(&lock);
     status.phase = ROUNDIE_WATCHFACE_IDLE;
     status.session = 0;
@@ -466,14 +466,14 @@ esp_err_t roundie_watchface_begin(uint32_t session, size_t size, const uint8_t d
     if (!platform->capacity(&free_bytes) || free_bytes < RESERVE + size + 16384U) {
         return failed(ESP_ERR_NO_MEM, "face-storage-reserve");
     }
-    if (mkdir(FACES_DIRECTORY, 0700) != 0 && errno != EEXIST) {
+    if (roundie_io_mkdir(FACES_DIRECTORY, 0700) != 0 && errno != EEXIST) {
         return failed(ESP_FAIL, "face-directory");
     }
     /* BEGIN retires the one known interrupted transfer. */
-    if (unlink(TRANSFER) != 0 && errno != ENOENT) {
+    if (roundie_io_unlink(TRANSFER) != 0 && errno != ENOENT) {
         return failed(ESP_FAIL, "temporary-cleanup");
     }
-    transfer = open(TRANSFER, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    transfer = roundie_io_open(TRANSFER, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (transfer < 0) {
         return failed(ESP_FAIL, "transfer-open");
     }
@@ -516,8 +516,8 @@ esp_err_t roundie_watchface_finish(uint32_t session)
     if (status.received != status.total) {
         return failed(ESP_ERR_INVALID_SIZE, "transfer-incomplete");
     }
-    int synced = fsync(transfer);
-    int closed = close(transfer);
+    int synced = roundie_io_fsync(transfer);
+    int closed = roundie_io_close(transfer);
     transfer = -1;
     if (synced != 0 || closed != 0) {
         cancel();
@@ -595,7 +595,7 @@ esp_err_t roundie_watchface_install(const uint8_t digest[32])
         result = failed(ESP_ERR_NO_MEM, "commit-storage-reserve");
     }
     char path[PATH_SIZE];
-    if (result == ESP_OK && (!path_for(path, id, ".rwf") || rename(TRANSFER, path) != 0)) {
+    if (result == ESP_OK && (!path_for(path, id, ".rwf") || roundie_io_rename(TRANSFER, path) != 0)) {
         result = failed(ESP_FAIL, "install-rename");
     }
     if (result == ESP_OK) {
@@ -673,11 +673,11 @@ esp_err_t roundie_watchface_remove(const char *id)
     if (!path_for(path, id, ".rwf")) {
         return failed(ESP_ERR_INVALID_ARG, "face-id");
     }
-    if (unlink(path) != 0) {
+    if (roundie_io_unlink(path) != 0) {
         return failed(errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL, "face-remove");
     }
     if (path_for(path, id, ".cfg")) {
-        unlink(path);
+        roundie_io_unlink(path);
     }
     roundie_lock(&lock);
     bool preferred = strcmp(status.preferred, id) == 0;

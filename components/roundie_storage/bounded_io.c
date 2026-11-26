@@ -1,7 +1,9 @@
 #include "roundie_bounded_io.h"
 
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <unistd.h>
 
 /* Host tests substitute the VFS (short reads, EOF inside a chunk). */
@@ -85,4 +87,94 @@ bool roundie_io_write_exact(int file, const void *data, size_t size)
         size -= (size_t)count;
     }
     return true;
+}
+
+int roundie_io_open(const char *path, int flags, mode_t mode)
+{
+    guard_access();
+    return open(path, flags, mode);
+}
+
+int roundie_io_close(int file)
+{
+    guard_access();
+    return close(file);
+}
+
+ssize_t roundie_io_read(int file, void *out, size_t size)
+{
+    guard_access();
+    return ROUNDIE_IO_READ(file, out, size);
+}
+
+ssize_t roundie_io_write(int file, const void *data, size_t size)
+{
+    guard_access();
+    return ROUNDIE_IO_WRITE(file, data, size);
+}
+
+off_t roundie_io_lseek(int file, off_t offset, int whence)
+{
+    guard_access();
+    return lseek(file, offset, whence);
+}
+
+int roundie_io_fstat(int file, struct stat *out)
+{
+    guard_access();
+    return fstat(file, out);
+}
+
+int roundie_io_fsync(int file)
+{
+    guard_access();
+    return fsync(file);
+}
+
+int roundie_io_stat(const char *path, struct stat *out)
+{
+    guard_access();
+    return stat(path, out);
+}
+
+int roundie_io_rename(const char *from, const char *to)
+{
+    guard_access();
+    return rename(from, to);
+}
+
+int roundie_io_unlink(const char *path)
+{
+    guard_access();
+    return unlink(path);
+}
+
+int roundie_io_mkdir(const char *path, mode_t mode)
+{
+    guard_access();
+    return mkdir(path, mode);
+}
+
+int roundie_io_rmdir(const char *path)
+{
+    guard_access();
+    return rmdir(path);
+}
+
+DIR *roundie_io_opendir(const char *path)
+{
+    guard_access();
+    return opendir(path);
+}
+
+struct dirent *roundie_io_readdir(DIR *directory)
+{
+    guard_access();
+    return readdir(directory);
+}
+
+int roundie_io_closedir(DIR *directory)
+{
+    guard_access();
+    return closedir(directory);
 }

@@ -14,12 +14,13 @@
 #include "fake_vfs.h"
 #endif
 
-static ssize_t injected_write(int file, const void *bytes, size_t size);
-static int injected_sync(int file);
-static int injected_rename(const char *source, const char *destination);
-#define write injected_write
-#define fsync injected_sync
-#define rename injected_rename
+ssize_t injected_write(int file, const void *bytes, size_t size);
+int injected_sync(int file);
+int injected_rename(const char *source, const char *destination);
+/* manager.c reaches the VFS through the roundie_io_* helpers: inject there. */
+#define roundie_io_write injected_write
+#define roundie_io_fsync injected_sync
+#define roundie_io_rename injected_rename
 #include "../components/roundie_packages/manager.c"
 #undef write
 #undef fsync
@@ -53,19 +54,19 @@ static bool fault(unsigned *counter)
     return false;
 }
 
-static ssize_t injected_write(int file, const void *bytes, size_t size)
+ssize_t injected_write(int file, const void *bytes, size_t size)
 {
     assert(!runtime_busy && allowed);
     return fault(&write_failure) ? -1 : write(file, bytes, size);
 }
 
-static int injected_sync(int file)
+int injected_sync(int file)
 {
     assert(!runtime_busy && allowed);
     return fault(&sync_failure) ? -1 : fsync(file);
 }
 
-static int injected_rename(const char *source, const char *destination)
+int injected_rename(const char *source, const char *destination)
 {
     assert(!runtime_busy && allowed);
     return fault(&rename_failure) ? -1 : rename(source, destination);

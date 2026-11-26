@@ -44,9 +44,9 @@ bool roundie_elf_transfer_busy(void)
 static void abort_transfer(void)
 {
     if (file >= 0) {
-        close(file);
+        roundie_io_close(file);
         file = -1;
-        unlink(TEMPORARY_ELF);
+        roundie_io_unlink(TEMPORARY_ELF);
     }
     session = 0;
     received = 0;
@@ -65,12 +65,12 @@ void roundie_elf_poll(int64_t now_us)
 static uint8_t *read_candidate(const char *path, size_t *size, const uint8_t digest[32])
 {
     struct stat info;
-    int descriptor = open(path, O_RDONLY);
+    int descriptor = roundie_io_open(path, O_RDONLY, 0);
     uint8_t *bytes = NULL;
     if (descriptor < 0) {
         goto failed;
     }
-    if (fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 52 ||
+    if (roundie_io_fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 52 ||
         info.st_size > ROUNDIE_ELF_MAX_FILE) {
         goto failed;
     }
@@ -82,7 +82,7 @@ static uint8_t *read_candidate(const char *path, size_t *size, const uint8_t dig
     if (!roundie_io_read_exact(descriptor, bytes, *size)) {
         goto failed;
     }
-    int closed = close(descriptor);
+    int closed = roundie_io_close(descriptor);
     descriptor = -1;
     if (closed != 0) {
         goto failed;
@@ -101,7 +101,7 @@ static uint8_t *read_candidate(const char *path, size_t *size, const uint8_t dig
     return bytes;
 failed:
     if (descriptor >= 0) {
-        close(descriptor);
+        roundie_io_close(descriptor);
     }
     heap_caps_free(bytes);
     if (last_error[0] == '\0') {
@@ -130,14 +130,14 @@ static esp_err_t operate(const roundie_ota_command_t *command, bool start)
             return ESP_ERR_INVALID_SIZE;
         }
         last_error[0] = '\0';
-        if (mkdir(DEVELOPMENT_DIRECTORY, 0700) != 0 && errno != EEXIST) {
+        if (roundie_io_mkdir(DEVELOPMENT_DIRECTORY, 0700) != 0 && errno != EEXIST) {
             return ESP_FAIL;
         }
         /* Explicit BEGIN cleans only our interrupted temporary file. */
-        if (unlink(TEMPORARY_ELF) != 0 && errno != ENOENT) {
+        if (roundie_io_unlink(TEMPORARY_ELF) != 0 && errno != ENOENT) {
             return ESP_FAIL;
         }
-        file = open(TEMPORARY_ELF, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        file = roundie_io_open(TEMPORARY_ELF, O_WRONLY | O_CREAT | O_EXCL, 0600);
         if (file < 0) {
             return ESP_FAIL;
         }
@@ -171,7 +171,7 @@ static esp_err_t operate(const roundie_ota_command_t *command, bool start)
         if (command->offset != received || command->size == 0 || command->size > total - received) {
             return ESP_ERR_INVALID_SIZE;
         }
-        if (write(file, command->data, command->size) != (ssize_t)command->size) {
+        if (roundie_io_write(file, command->data, command->size) != (ssize_t)command->size) {
             abort_transfer();
             return ESP_FAIL;
         }
@@ -183,18 +183,18 @@ static esp_err_t operate(const roundie_ota_command_t *command, bool start)
         if (received != total) {
             return ESP_ERR_INVALID_SIZE;
         }
-        int synced = fsync(file);
-        int closed = close(file);
+        int synced = roundie_io_fsync(file);
+        int closed = roundie_io_close(file);
         file = -1;
         size_t size = 0;
         uint8_t *bytes = synced == 0 && closed == 0 ? read_candidate(TEMPORARY_ELF, &size, expected) : NULL;
         esp_err_t error = ESP_ERR_INVALID_ARG;
-        if (bytes != NULL && size == total && rename(TEMPORARY_ELF, STAGED_ELF) == 0) {
+        if (bytes != NULL && size == total && roundie_io_rename(TEMPORARY_ELF, STAGED_ELF) == 0) {
             error = ESP_OK;
         }
         heap_caps_free(bytes);
         if (error != ESP_OK) {
-            unlink(TEMPORARY_ELF);
+            roundie_io_unlink(TEMPORARY_ELF);
         }
         session = 0;
         received = 0;

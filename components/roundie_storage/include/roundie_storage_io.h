@@ -63,5 +63,10 @@ typedef enum {
 } roundie_storage_access_t;
 
 void roundie_storage_owner_set(void);
+/* Development storage bench only (main/storage_bench.c): its helper task runs
+ * /storage I/O at a chosen priority and core while it is registered as the one
+ * guest; clear it before the task ends. */
+void roundie_storage_guest_set(void);
+void roundie_storage_guest_clear(void);
 /* The calling task's right to a VFS call now; UNDER_CLAIM wins over NOT_OWNER. */
 roundie_storage_access_t roundie_storage_access_check(void);

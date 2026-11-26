@@ -2,7 +2,10 @@
  * (docs/storage-io.md, P1 step 3). Built with -DROUNDIE_IO_READ=fake_read
  * -DROUNDIE_IO_WRITE=fake_write. */
 #include <assert.h>
+#include <fcntl.h>
 #include <pthread.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -215,11 +218,99 @@ static void test_guard(void)
     roundie_io_set_access_guard(NULL);
 }
 
+/* Every other VFS helper is guarded too: one call of each, on a real
+ * temporary directory, must give exactly one guard verdict. */
+enum { OPERATIONS = 15 };
+static char directory[64];
+
+static void every_operation(void)
+{
+    char file_path[96];
+    char moved_path[96];
+    char sub_path[96];
+    snprintf(file_path, sizeof(file_path), "%s/f", directory);
+    snprintf(moved_path, sizeof(moved_path), "%s/g", directory);
+    snprintf(sub_path, sizeof(sub_path), "%s/d", directory);
+    struct stat info;
+    uint8_t byte = 7;
+    int file = roundie_io_open(file_path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    assert(file >= 0);
+    reset(1);
+    (void)roundie_io_write(file, &byte, 1);
+    (void)roundie_io_read(file, &byte, 1);
+    (void)roundie_io_lseek(file, 0, SEEK_SET);
+    assert(roundie_io_fstat(file, &info) == 0);
+    assert(roundie_io_fsync(file) == 0);
+    assert(roundie_io_close(file) == 0);
+    assert(roundie_io_stat(file_path, &info) == 0);
+    assert(roundie_io_rename(file_path, moved_path) == 0);
+    assert(roundie_io_unlink(moved_path) == 0);
+    assert(roundie_io_mkdir(sub_path, 0700) == 0);
+    DIR *listing = roundie_io_opendir(directory);
+    assert(listing != NULL);
+    (void)roundie_io_readdir(listing);
+    assert(roundie_io_closedir(listing) == 0);
+    assert(roundie_io_rmdir(sub_path) == 0);
+}
+
+static void *other_task_operations(void *argument)
+{
+    (void)argument;
+    every_operation();
+    return NULL;
+}
+
+static void *guest_task_operations(void *argument)
+{
+    (void)argument;
+    roundie_storage_guest_set();
+    every_operation();
+    roundie_storage_guest_clear();
+    assert(roundie_storage_access_check() == ROUNDIE_STORAGE_ACCESS_NOT_OWNER);
+    return NULL;
+}
+
+static bool busy_with_operations(void)
+{
+    every_operation(); /* Wrong on purpose: VFS inside the claim mutex. */
+    return false;
+}
+
+static void test_every_operation(void)
+{
+    snprintf(directory, sizeof(directory), "/tmp/roundie-guard-XXXXXX");
+    assert(mkdtemp(directory) != NULL);
+    roundie_io_set_access_guard(recording_guard);
+    memset(violations, 0, sizeof(violations));
+    roundie_storage_owner_set();
+
+    every_operation();
+    assert(violations[ROUNDIE_STORAGE_ACCESS_OK] == OPERATIONS);
+
+    pthread_t thread;
+    assert(pthread_create(&thread, NULL, other_task_operations, NULL) == 0);
+    assert(pthread_join(thread, NULL) == 0);
+    assert(violations[ROUNDIE_STORAGE_ACCESS_NOT_OWNER] == OPERATIONS);
+
+    assert(roundie_storage_claim_ota(busy_with_operations));
+    roundie_storage_claim_ota_release();
+    assert(violations[ROUNDIE_STORAGE_ACCESS_UNDER_CLAIM] == OPERATIONS);
+
+    /* The registered bench guest passes; once cleared it is refused again. */
+    assert(pthread_create(&thread, NULL, guest_task_operations, NULL) == 0);
+    assert(pthread_join(thread, NULL) == 0);
+    assert(violations[ROUNDIE_STORAGE_ACCESS_OK] == 2 * OPERATIONS);
+    assert(violations[ROUNDIE_STORAGE_ACCESS_NOT_OWNER] == OPERATIONS);
+    roundie_io_set_access_guard(NULL);
+    assert(rmdir(directory) == 0);
+}
+
 int main(void)
 {
     test_bounded_read();
     test_bounded_write();
     test_guard();
+    test_every_operation();
     puts("storage guard: PASS");
     return 0;
 }
