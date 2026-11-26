@@ -65,6 +65,7 @@ static StaticTask_t executor_tcb; /* internal DRAM, as FreeRTOS requires */
 static uint8_t *block;            /* never freed once the guard is unmapped */
 static roundie_elf_crash_stack_t layout;
 static TaskHandle_t executor_task;
+static TaskFunction_t executor_entry;
 static intr_handle_t monitor_interrupt;
 static volatile bool self_test;
 static volatile uint32_t self_test_hits;
@@ -129,18 +130,33 @@ static bool prepare_block(void)
     return true;
 }
 
+/* The creator stores executor_task only after xTaskCreate returns, but the
+ * new task can already run on CPU1, and arming compares the current task with
+ * executor_task. Measured on the 1.85B with io_worker at priority 0: the arm
+ * ran first and the guard failed. So the task waits for the creator. */
+static void executor_start(void *argument)
+{
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    executor_entry(argument);
+}
+
 bool roundie_elf_stack_create(TaskFunction_t entry, TaskHandle_t *task)
 {
     if (!prepare_block() || layout.stack_high == 0U) {
         return false;
     }
-    executor_task = xTaskCreateStaticPinnedToCore(entry, "rep_executor", STACK_BYTES, NULL, EXECUTOR_PRIORITY,
+    executor_entry = entry;
+    executor_task = xTaskCreateStaticPinnedToCore(executor_start, "rep_executor", STACK_BYTES, NULL, EXECUTOR_PRIORITY,
                                                   (StackType_t *)(block + GUARD_BYTES), &executor_tcb,
                                                   EXECUTOR_CORE);
     *task = executor_task;
     ESP_LOGI(TAG, "guard=%08" PRIx32 " stack=%08" PRIx32 " limit=%08" PRIx32 " top=%08" PRIx32 " task=%p",
              layout.guard_low, layout.stack_low, layout.limit, layout.stack_high, (void *)executor_task);
-    return executor_task != NULL;
+    if (executor_task == NULL) {
+        return false;
+    }
+    xTaskNotifyGive(executor_task);
+    return true;
 }
 
 static inline void monitor_disable(void)
