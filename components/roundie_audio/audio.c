@@ -16,7 +16,7 @@
 #define CHUNK_FRAMES 256U
 #define TONE_AMPLITUDE 16000 /* half of full scale: headroom for the codec and the amplifier */
 #define TASK_STACK 4096
-#define TASK_PRIORITY 3
+#define TASK_PRIORITY 4
 #define TONE_MAX_MS 5000U
 
 static const char *TAG = "audio";

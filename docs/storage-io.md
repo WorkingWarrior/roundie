@@ -145,3 +145,92 @@ These refine the design above and are implemented in P1 steps 2–4.
 - Requirement 2 (flags only under the mutex): development-build guard in `bounded_io.c` and `io_worker.c`, with negative host tests (step 3). Only the bounded read/write calls are checked.
 - Requirement 3 (bounded park): implemented (step 2). The measurement under CPU load is still pending (step 4).
 - Requirement 4 (4 KiB, short reads, mid-chunk EOF): host tests for manager.c, store.c, app data and the development ELF (step 3). 1.85B trial done (step 2).
+
+### P1 step 4: priority variants and the io_worker watchdog (2026-11-26)
+
+**Decision: V1** (GUI 3, executor 2, `io_worker` 1, `system_worker` 4, audio 4).
+`GUI_PRIORITY` in `main/main.c`, `EXECUTOR_PRIORITY` in
+`components/roundie_elf/idf/executor_stack.c`, `TASK_PRIORITY` in
+`components/roundie_audio/audio.c`. The `io_worker` watchdog stays as it is (subscribed all
+the time, 10 s); see "Watchdog" below.
+
+Images on the 1.85B (serial 28:84:85:87:98:7C). The two V0/partial images are diagnostic
+builds and are not committed:
+- 0.3.96-eabi: partial V1 (only `io_worker` 1; GUI 1, executor 1, audio 3).
+- 0.3.98-eabi-v0: V0 (`io_worker` 0) with the executor start fix.
+- 0.3.99-eabi: full V1, the committed tree.
+
+**`run_e0_stall.py --only lowprio`.** The stopwatch runs during reads and is closed during
+writes. Each variant has 2 repeats; the table gives the maximum over both repeats.
+
+| variant | GUI gap ms | system_worker STATUS ms | read W / L / L0 KiB/s | write W / L / L0 KiB/s |
+|---|---|---|---|---|
+| partial V1 | **33.6** (W 16 KiB, yield 1) | 13.6 | 1585 / 2503 / 1740 | 120 / 77 / 91 |
+| V0 | 30.0 | 13.0 | **800** / 2540 / 1840 | **81** / 82 / 97 |
+| V1 | 30.0 | 22.1 | 1582 / 2482 / 1690 | 122 / 80 / 92 |
+
+Synchronous reads on `io_worker` (W) run at half speed in V0, and writes drop by a third,
+because `io_worker` time-slices with the IDLE tasks. In partial V1 the GUI gap goes over
+33 ms: the GUI and `io_worker` share priority 1. The probe task `c0p1` (priority 1, core 0)
+gaps up to 35 ms in V1. It is a measurement probe below the GUI, not a criterion.
+
+**Starvation, `run_p1_prio.py`.** RS1 BURN (development) spins one task per core for 6 s at
+the given priority. During the burn, 3× IOPARK, 3× RS1 STATUS and
+`XREAD 1024 4096 0 W` run on `io_worker`. Each cell gives the maximum park wait / the read's
+wall time.
+
+| load (core, priority) | partial V1 | V0 | V1 |
+|---|---|---|---|
+| none | 9.8 ms / 0.33 s | 19.8 ms / 0.47 s | 9.8 ms / 0.31 s |
+| core 1, 1 | 9.8 ms / 0.32 s | 19.8 ms / 0.65 s | 9.8 ms / 0.32 s |
+| both, 1 (app + GUI busy) | 19.8 ms / 0.47 s | **timeout 261 ms / 5.31 s** | 19.8 ms / 0.47 s |
+| core 0, 2 | 9.8 ms / 0.31 s | 19.8 ms / 0.61 s | 9.8 ms / 0.30 s |
+| core 1, 2 (executor priority) | — | — | 9.8 ms / 0.32 s |
+| both, 2 | timeout / 5.18 s | timeout / 5.32 s | timeout / 5.14 s |
+
+- RS1 STATUS stays ≤ 12 ms in every case.
+- A park timeout refuses sleep with "storage", as designed.
+- V0 fails the starvation criterion. When both cores are busy at priority 1, `io_worker`
+  makes no progress at all until the load ends.
+- V1 makes bounded progress unless both cores are busy above priority 1 the whole time.
+
+**Watchdog.** IOSTAT records the longest gap between two `io_worker` feeds. Hypothesis
+"can the 10 s `io_worker` TWDT reset the board under reasonable load":
+- **Measured, ordinary work:** each iteration is short.
+  - Feed gap ≤ 0.50 s in every V1 case except "both, 2".
+  - Package upload + install (6000 B) takes 0.43 s per iteration, launch 0.23 s, remove 0.26 s.
+  - Packages are capped at `ROUNDIE_PACKAGE_MAX` (64 KiB ELF), and reads run at about
+    1.5 MiB/s.
+- **Measured, starvation:** the gap equals the load duration (6.3 s for a 6 s burn). It
+  appears only when both cores are busy above `io_worker`.
+- **Why the `io_worker` TWDT adds no reset path (derived, not reset-tested):**
+  - Starving the unpinned `io_worker` needs both cores busy above priority 1.
+  - That also keeps IDLE0 and IDLE1 (priority 0) off the CPU.
+  - Both IDLE tasks are watched (`CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0/1=y`), so the
+    TWDT would fire at the same 10 s without `io_worker`.
+  - Neither "TWDT only while `io_worker` has work" nor progress supervision would avoid
+    that reset. Both would only drop the detection of a hung `io_worker` iteration.
+- The 7.8 s gap of the "workload" case is a measurement artefact. It is the development
+  `XWRITE 1024 4096 0 W` bench, which feeds the TWDT directly every 64 KiB
+  (`main/storage_bench.c:356`), bypassing the IOSTAT counter. With `chunk_max` 50 ms, the
+  real gap is at most 16 × 50 ms = 0.8 s (derived).
+
+**Bug found and fixed: executor start race.**
+- Cause: `roundie_elf_stack_create` stored `executor_task` only after
+  `xTaskCreateStaticPinnedToCore` returned. The new task can run first on CPU1, and
+  `roundie_elf_stack_arm` compares the current task with `executor_task`.
+- Evidence: on V0 the log showed `arm: not on the guarded executor stack (core 1 sp
+  3c14fce0)` before the creator's `task=` line. After that, applications were disabled
+  until the next reboot.
+- Risk: in V1 the executor (2) outranks its creator `io_worker` (1), so on CPU1 the race
+  would be the normal case.
+- Fix: the executor task waits for a notification, which the creator sends once the handle
+  is stored. Verified on 0.3.98-eabi-v0 and 0.3.99-eabi: "monitor self-test passed", and
+  the stopwatch runs.
+
+**Not verified:**
+- An actual TWDT reset by a burn longer than 10 s (not run: it only reproduces the
+  documented IDLE watchdog).
+- A package close to the 64 KiB cap.
+- The 1.75C board.
+- Long-running load.

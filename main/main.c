@@ -84,6 +84,7 @@ _Static_assert(ROUNDIE_BOARD_DISPLAY_ALIGN == 1, "the direct path sends LVGL are
 _Static_assert((ROUNDIE_BOARD_CAPABILITIES & ROUNDIE_BOARD_CAP_ROUND_DISPLAY) != 0,
                "the launcher and round UI need a round panel");
 #define GUI_DELAY_MAX_MS 10U
+#define GUI_PRIORITY 3
 
 static const char *TAG = "roundie";
 
@@ -1434,6 +1435,9 @@ void app_main(void)
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Backlight start: %s", esp_err_to_name(error));
     }
+    /* V1 (P1 step 4, docs/storage-io.md): the GUI above the executor (2) and
+     * io_worker (1), below system_worker (4). */
+    vTaskPrioritySet(NULL, GUI_PRIORITY);
     error = esp_task_wdt_add(NULL);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "GUI watchdog registration: %s", esp_err_to_name(error));

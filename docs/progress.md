@@ -210,18 +210,37 @@ Rules (from the task, binding for every session):
   1. ~~4 KiB cap in the read/write helpers~~ done (see below);
   2. ~~`io_worker` task and line forwarding, with the four cross-task points; target build of all configurations~~ done (see above);
   3. ~~owner assertion plus host negative test~~ done (see above);
-  4. priority variants V0/V1 on 1.85B with `run_e0_stall.py --only lowprio` plus a starvation case; choose from the measurements and record it here and in docs/storage-io.md.
-     Notes for step 4:
-     - The 1.85B runs 0.3.89-eabi (`ota_1`, guard active). io_worker priority is `IO_WORKER_PRIORITY` in `main/io_worker.c` (interim 1).
-     - Versioned images are built with `idf.py -B build-eabi ... -DPROJECT_VER=<v>` (`build-eabi/` is in `.git/info/exclude`).
-     - Unload any stopped development ELF before OTA (BEGIN answers 259 otherwise).
-     - The test `eabiprobe` package (stopwatch ELF, 6000 B) is installed.
-     - Still to measure:
-       - GUI gap and system_worker reply ≤ 33 ms;
-       - read/write throughput;
-       - starvation (an io_worker read makes bounded progress while a development app loads the CPU);
-       - `roundie_io_worker_park` under CPU load (≤ 250 ms, otherwise the sleep is refused with "storage");
-       - the TWDT risk (10 s) if io_worker starves.
+  4. ~~priority variants V0/V1 on 1.85B with `run_e0_stall.py --only lowprio` plus a starvation case~~ done (see below).
+- P1 step 4 (2026-11-26): priority variants, starvation, park latency, io_worker watchdog.
+  - **Decision: V1.**
+    - Priorities: GUI 3, executor 2, io_worker 1, system_worker 4, audio 4.
+    - io_worker TWDT unchanged (always subscribed, 10 s).
+    - Reasons, tables and images: docs/storage-io.md "P1 step 4".
+  - **Measured, `run_e0_stall.py --only lowprio` (PASS on all three images):**
+    - GUI gap: V1 ≤ 30.0 ms. Partial V1 (io_worker 1 only) 33.6 ms.
+    - system_worker STATUS ≤ 22.1 ms.
+    - Synchronous read: 1582 KiB/s in V1 against 800 in V0. Write: 122 against 81.
+  - **Measured, starvation (`run_p1_prio.py`, development RS1 BURN for 6 s; IOSTAT, IOPARK):**
+    - V0: with both cores busy at priority 1, park times out (261 ms) and the read waits for the whole burn (5.3 s). V0 fails the criterion.
+    - V1: park ≤ 19.8 ms and read ≤ 0.47 s for every load except both cores above priority 1. That case includes the executor at priority 2 on CPU1.
+  - **Watchdog:**
+    - Measured: io_worker feed gap ≤ 0.50 s under every load in V1, except both cores busy above priority 1. Package install, launch and remove each take ≤ 0.43 s per iteration.
+    - Starving io_worker also starves IDLE0 and IDLE1, which the TWDT already watches. So the io_worker TWDT adds no reset path. Gating it or replacing it with progress supervision would change no outcome. This conclusion is derived; no reset was forced.
+    - The 7.8 s "workload" gap is a measurement artefact: the development XWRITE bench feeds the TWDT directly every 64 KiB.
+  - **Bug fixed:** executor start race.
+    - Cause: the new executor task could arm its stack guard before its creator stored the handle.
+    - Seen on V0: "arm: not on the guarded executor stack", then native apps were disabled until reboot.
+    - Fix: the task waits for a notification from its creator.
+  - **Diagnostic experiments:**
+    - 0.3.96-eabi: partial V1, for the reference.
+    - 0.3.97-eabi-v0: V0. It hit the race above; the run did not count.
+    - 0.3.98-eabi-v0: V0 with the fix.
+    - Neither V0 image is committed.
+  - **Runs that did not count:**
+    - The first runner attempts: wrong `install` CLI usage, then an upload left open (aborted).
+    - One stale test package, removed.
+  - **Board state:** the 1.85B runs 0.3.99-eabi (VALID).
+  - **Not verified:** a forced TWDT reset (>10 s burn); a package near the 64 KiB cap; the 1.75C board; long-running load.
 
 - Then Stage B (EABI). Scope: the EABI section of docs/roadmap.md. Branch `eabi` from main after stage A is merged. Commit after each subphase. Do not raise runtime limits. Do not implement later-stage services (random, deadline, sensor, ...) or the resource runtime.
   - P1, storage and io_worker:

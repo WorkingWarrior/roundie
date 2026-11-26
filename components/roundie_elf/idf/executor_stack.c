@@ -53,7 +53,7 @@
 #define STACK_BYTES 65536U
 #define RED_ZONE_BYTES 40960U
 #define EXECUTOR_CORE 1
-#define EXECUTOR_PRIORITY 1
+#define EXECUTOR_PRIORITY 2
 
 _Static_assert(GUARD_BYTES == 65536U, "the guard is one 64 KiB MMU page");
 _Static_assert(RED_ZONE_BYTES >= 32760U + 4096U, "red zone: largest ENTRY frame plus interrupt frame and slack");
