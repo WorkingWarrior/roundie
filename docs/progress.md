@@ -111,8 +111,17 @@ Rules (from the task, binding for every session):
 
 ## Stage B: EABI (branch eabi from main 48ad0ba)
 
+### P1: storage and io_worker (in progress)
+- dd67c0b: rule and P2 additions from the user (backup push; UI update coalescing; `examples/lifecycle_probe`; runner reads refusal counters).
+- 6f981d2: inventory of every `/storage` access with file/line and calling task, in docs/storage-io.md. **Fact:** after startup all of it runs in `system_worker` (prio 4); there is no production `io_worker`.
+- Design proposal in docs/storage-io.md "Design for P1": task split (storage service loop and RP1/RF1/RE1 lines move to `io_worker`), four cross-task points (OTA vs packages mutex, recovery wake, power park, atomic getters), 4 KiB call cap, owner assertion, priority variants V0/V1.
+
 ### Next
-- P1: start with the `/storage` access inventory (file/line, calling task), then io_worker ownership. Subphase list below.
+- P1 implementation, in this order, each verified and committed:
+  1. 4 KiB cap in the read/write helpers (host tests: `tests/test_app_ui.py` builds `store.c`);
+  2. `io_worker` task and line forwarding, with the four cross-task points; target build of all configurations;
+  3. owner assertion plus host negative test;
+  4. priority variants V0/V1 on 1.85B with `run_e0_stall.py --only lowprio` plus a starvation case; choose from the measurements and record it here and in docs/storage-io.md.
 
 - Then Stage B (EABI). Scope: the EABI section of docs/roadmap.md. Branch `eabi` from main after stage A is merged. Commit after each subphase. Do not raise runtime limits. Do not implement later-stage services (random, deadline, sensor, ...) or the resource runtime.
   - P1, storage and io_worker:

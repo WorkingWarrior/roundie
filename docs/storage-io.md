@@ -42,3 +42,60 @@ Paths: `/storage/packages` (`manager.c:14`), `/storage/packages/<id>/data` (app 
 - Startup rows 1 and 3 run before any worker exists, with exclusive ownership.
 </content>
 </invoke>
+
+## Design for P1 (proposal, 2026-11-26; not implemented yet)
+
+**Assumption to check while implementing:** no other code touches the state of the
+packages manager, watch face store, launcher core and app runtime outside `system_worker`,
+except the calls listed under "Cross-task points". The grep above found no others.
+
+**Task split.** The storage-owning service loop moves out of `system_worker` into a new
+`io_worker`. Module state stays owned by one task, as today; only the task changes.
+- `io_worker` runs `roundie_app_runtime_faces_init` (now `main.c:419`), then a loop of
+  `roundie_app_runtime_poll`, `roundie_storage_import_poll` and `roundie_launcher_poll`
+  (now `main.c:436–438`), and executes forwarded `!RP1`, `!RF1`, `!RE1` lines
+  (`main.c:335–343`). It waits on its line queue with a 10 ms timeout instead of
+  `vTaskDelay(10)`, and writes each reply as one `usb_serial_jtag_write_bytes` call (whole
+  line), as the handlers already do.
+- `system_worker` keeps serial RX and demux, RT1, RG1, RW1, RO1, RA1, RS1, OTA, recovery,
+  power and sensors. It copies an io-owned line and its `discard` flag into a 2-entry queue.
+  When the queue is full it drops the line, logs it and counts it. The host times out as for
+  a lost frame; the host protocols are stop-and-wait.
+- Startup rows 1 and 3 stay in the main task. Ownership passes to `io_worker` when it starts.
+
+**Cross-task points (today implicit through one task).**
+1. OTA vs package transaction or launch: `ota_diagnostics.c:129,154` check
+   `roundie_app_runtime_busy()`, and package admission checks `ota.phase == IDLE`
+   (`app_runtime.c:43–46`). In two tasks this is a check-then-act race. Fix: one short
+   FreeRTOS mutex held only while checking and claiming (OTA begin; package begin, install,
+   remove, launch, import). No I/O under it.
+2. `recovery_diagnostics.c:444` calls `roundie_app_runtime_poll` from `system_worker` after
+   closing admission. Replace it with a wake of `io_worker`. The deferred restart
+   (`recovery_diagnostics.c:155`) already waits for `!roundie_app_runtime_busy()`.
+3. Power: light sleep relies on one owner of every Flash writer (`main.c:441`). Add a park
+   request: `system_worker` asks `io_worker` to park between jobs and sleeps only after the
+   acknowledgement, else it defers sleep. `roundie_launcher_park_home/resume_home`
+   (`power_manager.c:183,192`) change launcher state, so `io_worker` runs them during park and
+   resume. NVS writers (gauge learning, BootGuard persistence) stay in `system_worker`.
+4. Read-only getters called across tasks (`roundie_app_runtime_busy`, `_allowed`,
+   `roundie_launcher_status`): the flags they read must be atomic or read under the item 1
+   mutex.
+5. GUI side (`roundie_launcher_gui_*`, `roundie_watchface_gui_*`) already uses mailboxes
+   between the GUI and the worker; check that they do not assume a specific task.
+
+**4 KiB VFS calls.** Today some `read` calls cover a whole file: `read_exact` in
+`manager.c:53` and `store.c:110` (whole ELF or RWF), `elf_diagnostics.c:78` (whole
+candidate), `data_write` `manager.c:604–605` (header plus blob up to `REP_STORAGE_CAPACITY`).
+Cap each call at 4096 B in the bounded read/write helpers.
+
+**Owner assertion.** One check at the entry of each public storage-touching function
+(table rows 2 and 4–11), in a development build: the current task is the registered owner
+(main task until hand-over, then `io_worker`). The check is a pure function so a host test
+covers it, plus a negative test: a call from another task is caught.
+
+**Priority variants to measure (task criteria).**
+- V0: GUI 1, executor 1 (CPU1), `io_worker` 0, `system_worker` 4 (E0 §14 model).
+- V1: GUI 3, executor 2, `io_worker` 1, `system_worker` 4 (above GUI), audio above GUI.
+- Criteria: GUI gap ≤ 33 ms, `system_worker` reply ≤ 33 ms, read and write throughput, and
+  starvation: an `io_worker` read makes bounded progress while a development app loads the
+  CPU. Tool: `run_e0_stall.py --only lowprio`, extended with the starvation case.
