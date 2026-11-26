@@ -103,8 +103,16 @@ Rules (from the task, binding for every session):
 - Host tests: PASS 287/287; `--check-coverage`: 333 tests, 0 problems.
 - A6 result: every automatically checkable gate item on 1.85B is PASS.
 
+### A7: publication (done)
+- Pushed `e0-baseline`, PR #12 to main. CI: 20/20 checks pass.
+- Merge commit 48ad0ba (no squash). Remote branch deleted.
+- Stage A is closed. Left: BLOCKED (E0 on the 1.75C) and PENDING (physical tests).
+
+## Stage B: EABI (branch eabi from main 48ad0ba)
+
 ### Next
-- A7: publication.
+- P1: start with the `/storage` access inventory (file/line, calling task), then io_worker ownership. Subphase list below.
+
 - Then Stage B (EABI). Scope: the EABI section of docs/roadmap.md. Branch `eabi` from main after stage A is merged. Commit after each subphase. Do not raise runtime limits. Do not implement later-stage services (random, deadline, sensor, ...) or the resource runtime.
   - P1, storage and io_worker:
     - inventory every `/storage` access (registry scan, ELF load, app data, RWF, USB importer, diagnostics, OTA) with file/line and calling task;
