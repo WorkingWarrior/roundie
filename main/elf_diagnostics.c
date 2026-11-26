@@ -313,7 +313,9 @@ static void ui_reply(const char *id, esp_err_t error)
         ui.latency_max_us, ui.enqueue_max_us, ui.create_max_us, ui.update_max_us,
         ui.teardown_us, ui.input_latency_max_us, ui.acquired, ui.released, ui.outstanding,
         ui.lvgl_bytes, ui.lvgl_peak, ui.flushes, ui.flush_errors, ui.last_widget, ui.text_hash,
-        ui.foreground, ui.admitting, ui.pool_before, ui.pool_free, ui.realized_objects, ui.values};
+        ui.foreground, ui.admitting, ui.pool_before, ui.pool_free, ui.realized_objects, ui.values,
+        ui.rejected_full, ui.rejected_admission, ui.rejected_request, ui.reject_reason, ui.reject_depth,
+        ui.reject_pump_age_us};
     char response[768];
     int length = snprintf(response, sizeof(response), "\n!RE1 %s %d {\"ui\":[", id, (int)error);
     for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++) {

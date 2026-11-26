@@ -290,6 +290,7 @@ bool roundie_power_gui_poll(int64_t now_us, bool dma_idle, bool keep_display)
     uint8_t alert = roundie_power_shared.battery_alert;
     char message[sizeof(roundie_power_shared.message)];
     memcpy(message, roundie_power_shared.message, sizeof(message));
+    roundie_power_shared.brightness = *gui_brightness;
     roundie_unlock(&roundie_power_shared.lock);
     if (expired != 0U) {
         ESP_LOGW(TAG, "%u sleep inhibitor(s) expired (leak)", (unsigned)expired);

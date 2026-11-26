@@ -194,6 +194,36 @@ class TimeToolTests(unittest.TestCase):
             self.assertEqual([call.args[1] for call in requests.call_args_list],
                              ["GET", "RESTART", "GET"])
 
+    def test_restart_waits_for_board(self):
+        context = MagicMock()
+        before = {"code": "OK", "state": 0, "rtc": 100, "error": 0}
+        early = {"code": "RTC_READ", "state": 1, "rtc": -1, "error": 0x105}
+        after = {"code": "OK", "state": 0, "rtc": 103, "error": 0}
+        with patch.object(tool, "open_serial", return_value=context), \
+             patch.object(tool, "request", side_effect=[before, before, early, after]) as requests, \
+             patch.object(tool, "require_valid") as valid, patch.object(tool, "show_status"), \
+             patch.object(tool.time, "sleep"), \
+             patch.object(tool.time, "monotonic", side_effect=[1, 1, 1, 2, 4]):
+            tool.restart_verify("/dev/test")
+        self.assertEqual(len(requests.call_args_list), 4)
+        self.assertNotIn(early, [call.args[0] for call in valid.call_args_list])
+        # Never published before the deadline: a transport timeout, not a pass.
+        with patch.object(tool, "open_serial", return_value=context), \
+             patch.object(tool, "request", side_effect=[before, before, early]), \
+             patch.object(tool, "require_valid"), patch.object(tool.time, "sleep"), \
+             patch.object(tool.time, "monotonic", side_effect=[1, 1, 1, 17]):
+            with self.assertRaisesRegex(tool.TransportError, "not yet published"):
+                tool.restart_verify("/dev/test")
+        # Any other failed reply after the restart still fails at once.
+        failed = {"code": "RTC_READ", "state": 2, "rtc": -1, "error": 263}
+        with patch.object(tool, "open_serial", return_value=context), \
+             patch.object(tool, "request", side_effect=[before, before, failed]), \
+             patch.object(tool, "require_valid", side_effect=[None, None, tool.DeviceError("RTC_READ")]), \
+             patch.object(tool.time, "sleep"), \
+             patch.object(tool.time, "monotonic", side_effect=[1, 1, 1, 2]):
+            with self.assertRaises(tool.DeviceError):
+                tool.restart_verify("/dev/test")
+
     def test_restart_deadline(self):
         context = MagicMock()
         with patch.object(tool, "open_serial", return_value=context), \

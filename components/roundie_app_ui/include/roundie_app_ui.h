@@ -21,6 +21,15 @@ typedef bool (*roundie_ui_event_sink_t)(uint32_t generation, uint32_t type, uint
 typedef enum {
     ROUNDIE_UI_SHOW = 1, ROUNDIE_UI_HIDE, ROUNDIE_UI_DESTROY,
 } roundie_ui_transition_t;
+/* Cause of a refused create, update or destroy (roundie_ui_status_t). */
+typedef enum {
+    ROUNDIE_UI_REJECT_NONE = 0,
+    ROUNDIE_UI_REJECT_FULL,       /* the command queue had no free entry */
+    ROUNDIE_UI_REJECT_CLOSED,     /* other generation, admission closed (STOP) or view destroyed */
+    ROUNDIE_UI_REJECT_TRANSITION, /* a SHOW/HIDE/DESTROY transition is still pending */
+    ROUNDIE_UI_REJECT_ERROR,      /* the instance's UI is in error */
+    ROUNDIE_UI_REJECT_REQUEST,    /* invalid request: format, handle, type, range or widget limit */
+} roundie_ui_reject_t;
 typedef struct {
     uint32_t generation;
     uint32_t view;
@@ -58,6 +67,15 @@ typedef struct {
     uint32_t pool_before;
     uint32_t pool_free;
     uint32_t realized_objects;
+    /* Refused create/update/destroy calls by cause (they sum to rejected),
+     * and the last refusal: its cause, the queue depth and the time since the
+     * GUI task last pumped the queue. Diagnostics, not part of the app ABI. */
+    uint32_t rejected_full;
+    uint32_t rejected_admission;
+    uint32_t rejected_request;
+    uint32_t reject_reason;
+    uint32_t reject_depth;
+    uint32_t reject_pump_age_us;
     int32_t error;
     bool foreground;
     bool admitting;

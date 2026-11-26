@@ -5,13 +5,14 @@
 #   tools/ci/build_firmware.sh BOARD PROFILE
 #
 # BOARD: waveshare_s3_touch_lcd_1_85b or waveshare_s3_touch_amoled_1_75c;
-# PROFILE: legacy or rep. Needs the ESP-IDF v6.1 environment (export.sh, or
+# PROFILE: legacy, rep, or rep-nodev (the rep layout with every development
+# interface off, sdkconfig.nodev.defaults). Needs the ESP-IDF v6.1 environment (export.sh, or
 # the espressif/idf image). The build directory is build-ci/BOARD-PROFILE with
 # its sdkconfig inside, so no configuration in the checkout is touched.
 #
 # Reports in ${ROUNDIE_CI_REPORTS:-ci-reports}: firmware-BOARD-PROFILE.log
 # (the full build), .size.txt (idf.py size) and .md (summary). The build fails
-# on a compiler or linker warning: all four configurations build without one.
+# on a compiler or linker warning: all six configurations build without one.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -27,14 +28,21 @@ mkdir -p "$reports"
 log=$reports/firmware-$name.log
 summary=$reports/firmware-$name.md
 
+layout=$profile
+extra=""
+if [ "$profile" = rep-nodev ]; then
+    layout=rep
+    extra=sdkconfig.nodev.defaults
+fi
+
 status=0
-idf.py -B "$build" -DROUNDIE_BOARD="$board" -DROUNDIE_PROFILE="$profile" \
+idf.py -B "$build" -DROUNDIE_BOARD="$board" -DROUNDIE_PROFILE="$layout" -DROUNDIE_EXTRA_DEFAULTS="$extra" \
     -DSDKCONFIG="$build/sdkconfig" build > "$log" 2>&1 || status=$?
 warnings=$(grep -c 'warning:' "$log" || true)
 
 image=""
 if [ "$status" -eq 0 ]; then
-    idf.py -B "$build" -DROUNDIE_BOARD="$board" -DROUNDIE_PROFILE="$profile" \
+    idf.py -B "$build" -DROUNDIE_BOARD="$board" -DROUNDIE_PROFILE="$layout" -DROUNDIE_EXTRA_DEFAULTS="$extra" \
         -DSDKCONFIG="$build/sdkconfig" size > "$reports/firmware-$name.size.txt" 2>&1 || status=$?
     image=$(grep -o 'Roundie layout: .*' "$log" | head -1 || true)
 fi

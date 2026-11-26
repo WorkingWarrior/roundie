@@ -180,11 +180,12 @@ A restart is not evidence of deep sleep. Acceptance needs the wake cause
 
 The existing protocols carry everything; no new transport was added.
 
-- **RW1 `STATUS`** (1024 B frame): pm state, from, age, transitions, rejected,
+- **RW1 `STATUS`** (1280 B frame since E0): pm state, from, age, transitions, rejected,
   attempts, refused, last refusal, live `admission`, light sleeps, user and timer
   wakes, sleep errors, time in each state, suspend and resume (last and maximum),
   the inhibitor counters, and the guard state with its checks, failures and lost
-  mask.
+  mask; since E0 also `brightness`, the backlight percent the GUI applies
+  while the screen is on (0 is reported before the GUI binds).
 - **RW1 commands:** `INHIBIT <kinds> <s>` (DIAGNOSTICS owner), `RELEASE <HANDLE>`,
   `DEEPSLEEP` (always refused).
 - **RS1 `HEALTH`:** heap, PSRAM, tasks, stack high-water marks and the guard.

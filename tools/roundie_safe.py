@@ -10,6 +10,10 @@ import time
 from roundie_time import DeviceError, TransportError, open_serial, read_serial_reply, write_command
 
 
+# Read-only diagnostic frames (HISTORY, CRASH, CRASH STORED, CAUSE): no STATUS fields.
+DIAGNOSTIC_FRAMES = ("history", "crash", "cause")
+
+
 def parse_reply(line, request_id):
     prefix = f"!RS1 {request_id} ".encode()
     if not line.startswith(prefix):
@@ -20,6 +24,8 @@ def parse_reply(line, request_id):
         code_text, payload = line[len(prefix):].split(b" ", 1)
         code = int(code_text)
         status = json.loads(payload)
+        if type(status) is dict and code == 0 and any(key in status for key in DIAGNOSTIC_FRAMES):
+            return status
         for key in ("safe", "retained", "persistence", "skip_gui", "trial", "test_build", "restart"):
             if type(status[key]) is not int or status[key] not in (0, 1):
                 raise ValueError(f"invalid {key}")
@@ -56,7 +62,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "request", "clear", "reboot", "slots", "storage", "health"):
+    for name in ("status", "request", "clear", "reboot", "slots", "storage", "health", "history", "cause",
+                 "crash-stored"):
         commands.add_parser(name)
     select = commands.add_parser("select", help="select alternate verified VALID image; data compatibility is operator-owned")
     select.add_argument("slot", choices=("ota_0", "ota_1"))
@@ -66,7 +73,8 @@ def main(argv=None):
     hang = commands.add_parser("hang", help="development image only: stop the worker until its task watchdog panics")
     hang.add_argument("--elf", required=True)
     args = parser.parse_args(argv)
-    operation = {"status": "STATUS", "request": "REQUEST", "clear": "CLEAR", "reboot": "REBOOT", "slots": "SLOT STATUS", "storage": "STORAGE", "health": "HEALTH"}.get(args.command)
+    operation = {"status": "STATUS", "request": "REQUEST", "clear": "CLEAR", "reboot": "REBOOT", "slots": "SLOT STATUS", "storage": "STORAGE", "health": "HEALTH",
+                 "history": "HISTORY", "cause": "CAUSE", "crash-stored": "CRASH STORED"}.get(args.command)
     try:
         if args.command in ("select", "fault", "hang"):
             if re.fullmatch(r"[0-9a-f]{64}", args.elf) is None:

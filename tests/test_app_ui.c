@@ -231,7 +231,10 @@ static void bridge_tests(void)
     for (unsigned i = 2; i < REP_UI_WIDGET_LIMIT; i++) {
         assert(create(generation, &widget) != 0);
     }
+    uint32_t refused = ui_status().rejected_request;
     assert(create(generation, &widget) == 0);
+    assert(ui_status().reject_reason == ROUNDIE_UI_REJECT_REQUEST); /* widget limit */
+    assert(ui_status().rejected_request == refused + 1);
     pump();
     pump();
     rep_ui_update_t update = {1, sizeof(update), button, REP_UI_TEXT, 1, "A"};
@@ -239,7 +242,11 @@ static void bridge_tests(void)
         update.text[0] = (char)('A' + i);
         assert(roundie_ui_update(generation, &update) == 0);
     }
+    refused = ui_status().rejected_full;
     assert(roundie_ui_update(generation, &update) == -1);
+    assert(ui_status().reject_reason == ROUNDIE_UI_REJECT_FULL);
+    assert(ui_status().reject_depth == ROUNDIE_UI_QUEUE_CAPACITY);
+    assert(ui_status().rejected_full == refused + 1);
     current_task = (void *)2;
     roundie_ui_gui_batch(ROUNDIE_UI_BATCH);
     current_task = (void *)1;
@@ -257,13 +264,17 @@ static void bridge_tests(void)
     assert(strcmp(lv_label_get_text(lv_obj_get_child(object, 0)), "L") == 0);
     assert(roundie_ui_destroy(generation, view) == 0);
     assert(roundie_ui_update(generation, &update) == -1);
+    assert(ui_status().reject_reason == ROUNDIE_UI_REJECT_CLOSED);
     assert(roundie_ui_destroy(generation, view) == -1);
+    assert(ui_status().rejected_full + ui_status().rejected_admission + ui_status().rejected_request ==
+           ui_status().rejected);
     clean(generation);
     assert(!roundie_ui_input(generation, button, REP3_ORIGIN_TOUCH));
     assert(roundie_ui_open(++generation, sink));
     assert(roundie_ui_update(generation, &update) == -1); /* old handle */
+    assert(ui_status().reject_reason == ROUNDIE_UI_REJECT_REQUEST && ui_status().rejected == 1);
     clean(generation);
-    puts("Bridge + real LVGL: validation, UTF-8, copied payload, bounds, FIFO, overflow, owner task, stale IDs, cleanup PASS");
+    puts("Bridge + real LVGL: validation, UTF-8, copied payload, bounds, FIFO, overflow, refusal causes, owner task, stale IDs, cleanup PASS");
 }
 
 int main(int argc, char **argv)

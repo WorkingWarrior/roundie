@@ -55,6 +55,7 @@ and may exclude RTC writes/uploads without losing recovery status/control.
 !RS1 <id> REBOOT
 !RS1 <id> SLOT STATUS
 !RS1 <id> HEALTH
+!RS1 <id> HISTORY
 !RS1 <id> SELECT ota_0|ota_1 <exact-64-hex-target-ELF>
 !RS1 <id> <decimal-esp_err> <bounded-JSON-status>
 ```
@@ -84,6 +85,100 @@ HEALTH is read-only. It returns the STATUS fields and appends:
 
 It needs no FreeRTOS trace facility. Added in 0.3.55 for the M8.1 endurance
 runs.
+
+### Boot history
+
+HISTORY is read-only. It returns a diagnostic ring of the last eight boots,
+kept in NVS (namespace `boot_history`, one CRC-checked blob), newest first:
+
+```text
+!RS1 <id> 0 {"history":{"state":"ok","boots":N,"brownouts":N,"entries":[[boot,raw_reset,vbat_mv],...]}}
+```
+
+- `raw_reset` is the pinned IDF `esp_reset_reason_t`; `brownouts` counts
+  `ESP_RST_BROWNOUT`.
+- `vbat_mv` is the gauge voltage of the first startup reading, or 0 when there
+  was no battery reading (always 0 in Safe Mode, which does not start the gauge).
+- The entry is written right after BootGuard's persistence initialization, so
+  Safe Mode boots are recorded too. There are at most two small NVS writes per
+  boot: the reason and, later, the voltage.
+- `state` is `unavailable` without NVS or after a write error, and `malformed`
+  when the stored blob fails its checks. A malformed blob is left as found and
+  nothing is recorded over it; no erase or reset happens.
+- BootGuard and Safe Mode never read the history; it exists so that the next
+  unexplained Safe Mode entry can be matched with the resets and supply voltage
+  before it (docs/baseline/e0-1.85b.md §9 and §12).
+
+Added in 0.3.82-e0 (development image).
+
+### Latch cause
+
+Diagnostic data for the next unexplained Safe Mode entry (E0 1.85B report §9.4
+items 1–4). Nothing here is read by BootGuard or Safe Mode: no decision
+depends on it, and every write failure is ignored. The host test
+`tests/test_boot_guard.py` runs the whole BootGuard suite again with each
+injected diagnostic fault (NVS full, damaged entry, failed commit) and checks
+that the sequence of latch records written is identical to the fault-free run.
+
+- **RTC session record** (`components/roundie_boot_guard/diagnostics.c`): a
+  private, CRC-checked RTC record separate from BootGuard's. It keeps the code
+  of the last unplanned `esp_restart()` site (1 LCD transfer timeout, 2 flush
+  while a transfer is pending, 3 GUI watchdog feed) with the uptime, and the
+  last battery sample (mV, mA, SoC, flags, temperature, RTC time), at most once
+  a minute. At boot it becomes `previous`. It is ignored after power-on and
+  brownout, when RTC RAM is undefined.
+- **Cause record** (NVS `boot_guard`/`cause`): written whenever the durable
+  latch changes to a Safe Mode reason. It is written **after** the latch,
+  in its own NVS commit. A failed or skipped cause write therefore cannot fail,
+  delay or change the latch. The record holds:
+  - `latch`: the latch reason;
+  - `site`: 1 retained, decided from the RTC record (abnormal reset after
+    STABLE, boot loop); 2 USB Serial/JTAG unavailable; 3 system worker not
+    created; 4 any other `roundie_boot_enter_safe()`;
+  - the raw reset, previous stage, failures, `fault_app`, image prefix and the
+    previous session.
+- **Crash copy** (NVS `boot_guard`/`crash`): after a panic or watchdog reset
+  with a native crash record (`RS1 CRASH`), the record is copied once with the
+  raw reset and image prefix. The copy is 224 B (hard limit
+  `ROUNDIE_BOOT_DIAG_BLOB_MAX` = 256 B, a compile-time assertion), 9 NVS
+  entries. It is rewritten only when the copy differs.
+- **Bounded store:** both blobs go through `roundie_boot_diag_store()`.
+  - A blob over 256 B is refused.
+  - A write happens only while `nvs_get_stats().available_entries` stays at
+    least `ROUNDIE_BOOT_DIAG_RESERVE_ENTRIES` (126 entries, one 4 KiB page)
+    above what the blob needs. Otherwise the write is skipped (`store` 3).
+  - Diagnostics therefore yield to settings: the gauge learning data, time
+    zone, boot history and latch keep their space, and no other key is
+    touched.
+
+```text
+!RS1 <id> 0 {"cause":{"valid":1,"latch":N,"site":N,"raw_reset":N,"previous_stage":N,"failures":N,"retained_valid":N,"fault_app":"...","image":"<16 hex>","session":{...}},"previous":{...}}
+!RS1 <id> 0 {"crash":{"stored":1,"store":S,"limit":256,"size":224,"nvs":[valid,used,available,total],"raw_reset":N,"image":"<16 hex>", <RS1 CRASH fields>}}
+```
+
+- Session object:
+  `{"valid","image","restart_site","uptime_ms","battery","mv","ma","soc","flags","temp_dc","battery_ms","rtc"}`.
+- `store` values:
+  - −1 no copy was due this boot;
+  - 0 stored;
+  - 1 unchanged;
+  - 2 too large;
+  - 3 no room (reserve kept);
+  - 4 NVS unavailable or write failed.
+- `nvs` is read on every request, so it can be used to measure NVS occupancy
+  before and after a copy.
+- Measured on 1.85B (0.3.85-e0, 2026-11-26,
+  `tools/hardware_validation/run_e0_diag.py`, PASS): before the panic
+  `nvs` = [1, 17, 361, 504]. After the panic copy and the core-latch cause
+  record it was [1, 34, 344, 504]. That is +17 used entries: the crash copy
+  takes 9 by the blob formula and the cause record the remaining 8. It was
+  unchanged after REBOOT, and the copy was not rewritten (`store` −1). Both
+  records together use 3.4 % of the 504 entries, and 344 entries stay
+  available, well above the 126-entry reserve. Decision: the copy stays in
+  NVS. A separate partition would need repartitioning, which is a
+  destructive change.
+
+Host tool: `tools/roundie_safe.py --port P cause|crash-stored|history`.
 
 `reset` class values are 0 unknown, 1 power, 2 software, 3 sleep, 4 watchdog,
 5 panic, 6 brownout and 7 external; `raw_reset` is the pinned IDF

@@ -60,7 +60,7 @@ LEARN_INTS = ("resumed", "old_full", "new_full", "result_s", "qualified", "updat
               "edv2_rm", "dsg_samples", "dsg_avg_ma", "dsg_small_ma", "dsg_large_ma", "need_ma", "hold_s",
               "inhibitor", "stored", "stored_full", "stored_seq", "saves", "load", "low_temp", "overload", "op",
               "flags", "mv", "ma", "temp", "rm", "fcc", "dc")
-OPERATIONS = (r"STATUS|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP|LEARN LOG [0-9]{1,10}"
+OPERATIONS = (r"STATUS|BATTERY|CAPACITY [0-9]{1,5}|LEARN|LEARN HOLD [1-9][0-9]{0,3}|LEARN STOP|LEARN LOG [0-9]{1,10}"
               r"|LEARN END|LEARN WINDOW|LEARN TEST (END|STOP) [0-9]{1,4}")
 WINDOW_STATES = ("none", "open", "closed")
 WINDOW_INTS = ("started", "samples", "vmin", "vmax", "causes", "protect")
@@ -101,6 +101,11 @@ def parse_reply(line, request_id):
             if code != 0:
                 raise DeviceError(f"gauge rejected end command ({code}): {status}")
             return status
+        if "board" in status:
+            parse_battery(status)
+            if code != 0:
+                raise DeviceError(f"gauge rejected battery command ({code}): {status}")
+            return status
         if "learn" in status:
             parse_learn(status)
             if code != 0:
@@ -126,6 +131,33 @@ def parse_reply(line, request_id):
     if code != 0:
         raise DeviceError(f"gauge rejected command ({code}) at step {status['step_name']}: {status}")
     return status
+
+
+BATTERY_FLAGS = ("present", "voltage_valid", "soc_valid", "current_valid", "charging", "discharging", "initialized")
+
+
+def parse_battery(status):
+    """RG1 BATTERY (format 1): board identity and one battery sample."""
+    if status["format"] != 1:
+        raise ValueError("invalid battery format")
+    if type(status["board"]) is not str or not status["board"]:
+        raise ValueError("invalid board")
+    display = status["display"]
+    if (type(display) is not list or len(display) != 2 or
+            any(type(v) is not int or not 1 <= v <= 4096 for v in display)):
+        raise ValueError("invalid display")
+    for key in BATTERY_FLAGS:
+        if type(status[key]) is not int or status[key] not in (0, 1):
+            raise ValueError(f"invalid {key}")
+    for key in ("voltage_mv", "soc", "battery_flags"):
+        if type(status[key]) is not int or not 0 <= status[key] <= 0xFFFF:
+            raise ValueError(f"invalid {key}")
+    if type(status["current_ma"]) is not int or not -32768 <= status["current_ma"] <= 32767:
+        raise ValueError("invalid current_ma")
+    if type(status["state"]) is not int or not 0 <= status["state"] <= 15:
+        raise ValueError("invalid state")
+    if type(status["error"]) is not int:
+        raise ValueError("invalid error")
 
 
 def parse_learn(status):
@@ -307,6 +339,7 @@ def main(argv=None):
     parser.add_argument("--port", required=True)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("battery", help="board identity and one battery sample (both boards, read-only)")
     capacity = commands.add_parser("capacity", help="one-time RAM initialization, lost at gauge power-on reset")
     capacity.add_argument("mah", type=int)
     commands.add_parser("learn", help="capacity learning report (read-only)")
@@ -330,6 +363,7 @@ def main(argv=None):
         parser.error("delay must be 0..3600")
     operation = {
         "status": "STATUS",
+        "battery": "BATTERY",
         "learn": "LEARN",
         "learn-stop": "LEARN STOP",
         "learn-end": "LEARN END",

@@ -29,6 +29,38 @@ static bool lifecycle_stopped;
 static rep_descriptor_v2_t lifecycle;
 static bool ui_owned;
 static bool round_ui; /* descriptor required REP3_CAP_ROUND_UI */
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+static atomic_uint debug_delivery_delay_ms;
+
+void roundie_elf_debug_delivery_delay(uint32_t ms)
+{
+    atomic_store(&debug_delivery_delay_ms, ms);
+}
+
+/* Timer posts and the longest gap between two of them; written only by the
+ * executor, read and cleared by the diagnostic command. */
+static atomic_uint debug_ticks;
+static atomic_uint debug_tick_gap_max_us;
+static int64_t debug_tick_last_us;
+
+static void debug_tick(int64_t now_us)
+{
+    if (debug_tick_last_us != 0) {
+        uint32_t gap = (uint32_t)(now_us - debug_tick_last_us);
+        if (gap > atomic_load(&debug_tick_gap_max_us)) {
+            atomic_store(&debug_tick_gap_max_us, gap);
+        }
+    }
+    debug_tick_last_us = now_us;
+    atomic_fetch_add(&debug_ticks, 1U);
+}
+
+void roundie_elf_debug_tick_gap(uint32_t *ticks, uint32_t *gap_max_us)
+{
+    *ticks = atomic_exchange(&debug_ticks, 0U);
+    *gap_max_us = atomic_exchange(&debug_tick_gap_max_us, 0U);
+}
+#endif
 #if CONFIG_ROUNDIE_AUDIO
 /* rep_audio_v1: this instance's stream handle, 0 when none. Executor only. */
 static uint32_t audio_stream;
@@ -1035,6 +1067,9 @@ void roundie_elf_step(int64_t now_us)
     if (status.timer_handle != 0 && now_us >= timer_due_us) {
         post_event(status.instance, REP2_EVENT_TIMER, status.timer_handle, now_us);
         timer_due_us = now_us + (int64_t)timer_period_ms * 1000;
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        debug_tick(now_us);
+#endif
     }
     clock_step(now_us);
     rep_event_v2_t event;
@@ -1059,6 +1094,15 @@ void roundie_elf_step(int64_t now_us)
             roundie_unlock(&lock);
             return;
         }
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        uint32_t delay_ms = atomic_load(&debug_delivery_delay_ms);
+        if (ui_event && delay_ms != 0) {
+            /* Development diagnostic only (E0 §8.6): widens the window between
+             * taking a UI event from the mailbox and on_event, so a STOP in
+             * that window is reproducible. No lock is held while sleeping. */
+            roundie_sleep_ms(delay_ms);
+        }
+#endif
         rep_context_v2_t context = {status.abi_version, sizeof(context), status.instance, 0};
         int64_t started = roundie_time_us();
         uint32_t latency = (uint32_t)((uint64_t)started - event.posted_us);

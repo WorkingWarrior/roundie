@@ -1,4 +1,4 @@
-# Roundie CI (docs/ci.md): the four firmware configurations, the host tests
+# Roundie CI (docs/ci.md): the six firmware configurations, the host tests
 # and validators, the desktop runtime under ASan/UBSan and ThreadSanitizer,
 # native REP x86-64 applications, the Virtual Hardware Lab and the graphics
 # tests on Mesa lavapipe. Every job can be reproduced locally with the same
@@ -51,7 +51,7 @@ jobs:
       fail-fast: false
       matrix:
         board: [waveshare_s3_touch_lcd_1_85b, waveshare_s3_touch_amoled_1_75c]
-        profile: [legacy, rep]
+        profile: [legacy, rep, rep-nodev]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

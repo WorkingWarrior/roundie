@@ -114,6 +114,8 @@ static uint32_t ulTaskNotifyTake(int clear, unsigned timeout)
     return result;
 }
 static _Noreturn void esp_restart(void) { longjmp(restart, 1); }
+enum { ROUNDIE_RESTART_SITE_LCD_TIMEOUT = 1, ROUNDIE_RESTART_SITE_LCD_FLUSH };
+static void roundie_boot_diag_restart_site(int site, int64_t now_us) { (void)site; (void)now_us; }
 static unsigned lv_area_get_size(const lv_area_t *a)
 {
     return (unsigned)((a->x2 - a->x1 + 1) * (a->y2 - a->y1 + 1));
@@ -263,6 +265,8 @@ static uint16_t panel[DISPLAY_HEIGHT][DISPLAY_WIDTH];
 static int64_t esp_timer_get_time(void) { now += 10; return now; }
 static const char *esp_err_to_name(int error) { (void)error; return "failed"; }
 static _Noreturn void esp_restart(void) { longjmp(restart, 1); }
+enum { ROUNDIE_RESTART_SITE_LCD_TIMEOUT = 1, ROUNDIE_RESTART_SITE_LCD_FLUSH };
+static void roundie_boot_diag_restart_site(int site, int64_t now_us) { (void)site; (void)now_us; }
 static gui_state_t *lv_display_get_user_data(lv_display_t *d) { return d; }
 static void lv_display_flush_ready(lv_display_t *d) { assert(d == &state); releases++; }
 static bool lv_display_flush_is_last(lv_display_t *d) { assert(d == &state); return last_part; }

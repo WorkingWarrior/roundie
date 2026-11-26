@@ -12,6 +12,9 @@ FIELDS = ("generation view button widgets pending max_depth submitted applied fa
           "enqueue_max_us create_max_us update_max_us teardown_us input_latency_max_us acquired "
           "released outstanding lvgl_bytes lvgl_peak flushes flush_errors last_widget text_hash "
           "foreground admitting pool_before pool_free realized_objects values").split()
+# Refusal causes (bridge diagnostics, firmware after 0.3.86); they sum to rejected.
+REJECT_FIELDS = "rejected_full rejected_admission rejected_request reject_reason reject_depth reject_pump_age_us".split()
+REJECT_REASONS = {0: "none", 1: "full", 2: "closed", 3: "transition", 4: "error", 5: "request"}
 OPERATION = re.compile(r"PRESS [1-9][0-9]{0,9} [1-9][0-9]{0,9}|VALUE [1-9][0-9]{0,9} [1-9][0-9]{0,9} -?[0-9]{1,7}")
 
 
@@ -28,10 +31,16 @@ def request(port, operation="STATUS", timeout=4):
             raise ValueError("code")
         result = json.loads(payload)
         values = result["ui"]
-        # Firmware before Round UI reports every field except the last.
-        if len(values) not in (len(FIELDS) - 1, len(FIELDS)) or any(type(v) is not int or not 0 <= v <= 0xffffffff for v in values):
+        # Firmware before Round UI reports every field except the last; firmware
+        # up to 0.3.86 has no refusal causes.
+        if len(values) not in (len(FIELDS) - 1, len(FIELDS), len(FIELDS) + len(REJECT_FIELDS)) or any(type(v) is not int or not 0 <= v <= 0xffffffff for v in values):
             raise ValueError("counters")
-        result = dict(zip(FIELDS, values), error=result["error"])
+        result = dict(zip(FIELDS + REJECT_FIELDS, values), error=result["error"])
+        if "reject_reason" in result:
+            if (result["reject_reason"] not in REJECT_REASONS or result["reject_depth"] > 12 or
+                    result["rejected_full"] + result["rejected_admission"] + result["rejected_request"] !=
+                    result["rejected"]):
+                raise ValueError("refusals")
         if (type(result["error"]) is not int or result["widgets"] > 8 or result["pending"] > 12 or
                 result["foreground"] > 1 or result["admitting"] > 1 or
                 result["acquired"] != result["released"] + result["outstanding"]):

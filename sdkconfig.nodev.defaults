@@ -1,0 +1,13 @@
+# Release-like variant of the rep profile (CI "rep-nodev", docs/ci.md):
+# every development interface off. Appended last through
+# ROUNDIE_EXTRA_DEFAULTS, so it overrides sdkconfig.defaults and
+# sdkconfig.rep.defaults in a fresh build directory.
+# CONFIG_ROUNDIE_DEV_TIME_SYNC is not set
+# CONFIG_ROUNDIE_DEV_OTA is not set
+# CONFIG_ROUNDIE_DEV_ELF is not set
+# CONFIG_ROUNDIE_DEV_PACKAGES is not set
+# CONFIG_ROUNDIE_DEV_POWER is not set
+# CONFIG_ROUNDIE_DEV_STORAGE_CDC is not set
+# CONFIG_ROUNDIE_DEV_AUDIO is not set
+# CONFIG_ROUNDIE_BOOT_GUARD_TEST is not set
+# CONFIG_ROUNDIE_OTA_TEST_UNCONFIRMED_RESET is not set

@@ -39,6 +39,7 @@
 #include "face_diagnostics.h"
 #include "roundie_watchface.h"
 #include "gui_diagnostics.h"
+#include "stall_probe.h"
 #include "roundie_launcher.h"
 #include "roundie_app_ui.h"
 #include "power_manager.h"
@@ -397,6 +398,7 @@ static void sensor_worker(void *argument)
     ESP_LOGI(TAG, "Development RTC protocol RT1 %s",
              serial_fd >= 0 ? "enabled on USB Serial/JTAG" : "unavailable");
     if (serial_fd < 0 && !storage_mode) {
+        roundie_boot_diag_safe_site(ROUNDIE_SAFE_SITE_SERIAL);
         roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);
         roundie_ota_gui_health(false);
         ESP_LOGE(TAG, "USB recovery unavailable; no new-image confirmation, ROM recovery required");
@@ -471,6 +473,17 @@ static void sensor_worker(void *argument)
                      sensor_state_name(battery.state), battery.battery_present,
                      battery.initialized, esp_err_to_name(battery.error));
             last_battery = battery.state;
+        }
+        if (battery.voltage_valid) {
+            /* Safe Mode cause diagnostics: kept at most once a minute. */
+            int64_t rtc_unix = 0;
+            if (rtc.state != ROUNDIE_SENSOR_VALID || !roundie_rtc_unix_seconds(&rtc.time, &rtc_unix)) {
+                rtc_unix = 0;
+            }
+            roundie_boot_diag_battery(battery.voltage_mv, battery.current_valid ? battery.current_ma : 0,
+                                      battery.soc_valid ? battery.soc_percent : 0, battery.battery_flags,
+                                      battery.temperature_valid ? battery.temperature_deci_c : 0, rtc_unix,
+                                      esp_timer_get_time());
         }
         if (battery.voltage_valid &&
             (first_battery || abs((int)battery.voltage_mv - last_voltage) >= 50 ||
@@ -642,6 +655,7 @@ static void wait_for_display(lv_display_t *display)
     ESP_LOGE(TAG, "LCD transfer completion timeout (%u)",
              state->transfer_errors);
     /* LVGL would otherwise reuse a buffer that SPI DMA may still own. */
+    roundie_boot_diag_restart_site(ROUNDIE_RESTART_SITE_LCD_TIMEOUT, esp_timer_get_time());
     esp_restart();
     abort();
 }
@@ -657,6 +671,7 @@ static void flush_display(lv_display_t *display, const lv_area_t *area,
     if (state->transfer_pending) {
         state->transfer_errors++;
         ESP_LOGE(TAG, "LCD flush requested while previous transfer is pending");
+        roundie_boot_diag_restart_site(ROUNDIE_RESTART_SITE_LCD_FLUSH, esp_timer_get_time());
         esp_restart();
         abort();
     }
@@ -773,6 +788,7 @@ static void wait_for_chunks(gui_state_t *state, uint32_t target)
             state->transfer_errors++;
             ESP_LOGE(TAG, "LCD transfer completion timeout (%u)", state->transfer_errors);
             /* The scaler would otherwise reuse a buffer that DMA may still own. */
+            roundie_boot_diag_restart_site(ROUNDIE_RESTART_SITE_LCD_TIMEOUT, esp_timer_get_time());
             esp_restart();
             abort();
         }
@@ -1156,6 +1172,7 @@ void app_main(void)
 {
     const esp_app_desc_t *description = esp_app_get_description();
     roundie_boot_begin(roundie_boot_reset_class(), description->app_elf_sha256);
+    roundie_boot_diag_begin(esp_reset_reason(), description->app_elf_sha256);
     roundie_elf_crash_boot();
     roundie_elf_crash_report_t crash;
     if (roundie_elf_crash_last(&crash) && crash.fault) {
@@ -1177,6 +1194,9 @@ void app_main(void)
     esp_err_t nvs_error = nvs_flash_init();
     ESP_LOGI(TAG, "NVS initialization: %s; no erase fallback", esp_err_to_name(nvs_error));
     roundie_boot_persistence_init(nvs_error == ESP_OK);
+    roundie_recovery_store_crash(esp_reset_reason(), description->app_elf_sha256);
+    /* Diagnostic ring of reset reasons; never read by BootGuard. */
+    roundie_boot_history_record(nvs_error == ESP_OK);
     roundie_local_time_init(nvs_error == ESP_OK, roundie_wall_clock_valid);
     roundie_elf_set_clock_source(roundie_local_time_now);
     roundie_boot_status_t boot;
@@ -1216,6 +1236,7 @@ void app_main(void)
      * the worker high-water mark through RP1 instead of assuming host stacks
      * establish the Xtensa call-chain margin. */
     if (xTaskCreate(sensor_worker, "system_worker", 12288, &sensors, 4, &sensor_task) != pdPASS) {
+        roundie_boot_diag_safe_site(ROUNDIE_SAFE_SITE_SYSTEM_WORKER);
         roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);
         ESP_LOGE(TAG, "System worker creation failed; USB recovery unavailable, ROM recovery required");
         roundie_ota_startup_failed();
@@ -1268,6 +1289,9 @@ void app_main(void)
              sensor_state_name(initial_battery.state), initial_battery.battery_present,
              initial_battery.voltage_mv, initial_battery.soc_valid,
              initial_battery.soc_percent, esp_err_to_name(initial_battery.error));
+    if (initial_battery.error == ESP_OK && initial_battery.battery_present) {
+        roundie_boot_history_battery(initial_battery.voltage_mv);
+    }
     roundie_wall_clock_start(&initial_rtc);
 
     lv_init();
@@ -1434,6 +1458,9 @@ void app_main(void)
         int64_t iteration_at = esp_timer_get_time();
         uint32_t wake_us = expected_wake_us > 0 && iteration_at > expected_wake_us ?
             (uint32_t)(iteration_at - expected_wake_us) : 0;
+#if CONFIG_ROUNDIE_DEV_PACKAGES
+        roundie_stall_gui_mark(iteration_at, wake_us);
+#endif
 #if CONFIG_ROUNDIE_POWER
         portENTER_CRITICAL(&state.dma_lock);
         bool dma_idle = state.dma_completions == (uint32_t)state.transfer_id;
@@ -1443,6 +1470,7 @@ void app_main(void)
             error = esp_task_wdt_reset();
             if (error != ESP_OK) {
                 ESP_LOGE(TAG, "GUI watchdog feed: %s", esp_err_to_name(error));
+                roundie_boot_diag_restart_site(ROUNDIE_RESTART_SITE_GUI_WATCHDOG, esp_timer_get_time());
                 esp_restart();
                 abort();
             }
@@ -1513,6 +1541,7 @@ void app_main(void)
         error = esp_task_wdt_reset();
         if (error != ESP_OK) {
             ESP_LOGE(TAG, "GUI watchdog feed: %s", esp_err_to_name(error));
+            roundie_boot_diag_restart_site(ROUNDIE_RESTART_SITE_GUI_WATCHDOG, esp_timer_get_time());
             esp_restart();
             abort();
         }

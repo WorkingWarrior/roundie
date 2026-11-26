@@ -70,6 +70,19 @@ class SafeToolTests(unittest.TestCase):
             self.assertEqual(tool.main(["--port", "HOST_ONLY", "select", "ota_0", "--elf", "bad"]), 3)
             opened.assert_not_called()
 
+    def test_diagnostic_frames(self):
+        frame = b'!RS1 1234abcd 0 {"cause":{"valid":0},"previous":{"valid":1}}\n'
+        self.assertEqual(tool.parse_reply(frame, "1234abcd")["previous"], {"valid": 1})
+        with self.assertRaises(tool.TransportError):
+            tool.parse_reply(b'!RS1 1234abcd 0 {"other":1}\n', "1234abcd")
+
+    def test_cli_read_only_diagnostics(self):
+        for command, operation in (("history", "HISTORY"), ("cause", "CAUSE"), ("crash-stored", "CRASH STORED")):
+            with patch.object(tool, "open_serial"), patch.object(tool, "request", return_value={}) as sent, \
+                    patch("sys.stdout", new_callable=io.StringIO):
+                self.assertEqual(tool.main(["--port", "HOST_ONLY", command]), 0)
+                self.assertEqual(sent.call_args.args[1], operation)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -920,6 +920,30 @@ static void stopwatch_runtime_tests(void)
     assert(lv_obj_has_state(lap, LV_STATE_DISABLED) && strcmp(button_text(lap), "Okrążenie") == 0);
     assert(lv_color_to_u32(lv_obj_get_style_text_color(time_text, LV_PART_MAIN)) == 0xffffffff);
 
+    /* Backpressure (E0 A6 worst_stack): stop and reset handled before the GUI
+     * pumps once queue 13 updates into the 12-entry UI queue. The refused
+     * update is not an error: the app keeps running and the next tick redraws
+     * the whole state, then the retry timer stops. */
+    click(dial);
+    drain();
+    step_after(1250000);
+    click(lap);
+    drain();
+    uint32_t refused = ui_status().rejected_full;
+    click(dial);
+    click(lap);
+    drain();
+    assert(ui_status().rejected_full == refused + 1);
+    assert(status.state == ROUNDIE_ELF_RUNNING && ui_status().error == 0);
+    assert(status.timer_handle != 0); /* the redraw tick */
+    step_after(100000); /* one 100 ms tick */
+    assert(status.timer_handle == 0);
+    assert(strcmp(lv_label_get_text(time_text), "00:00.0") == 0);
+    assert(strcmp(lv_label_get_text(laps_text), "Dotknij, aby uruchomić") == 0);
+    assert(lv_obj_has_state(lap, LV_STATE_DISABLED) && strcmp(button_text(lap), "Okrążenie") == 0);
+    assert(lv_color_to_u32(lv_obj_get_style_text_color(time_text, LV_PART_MAIN)) == 0xffffffff);
+    assert(lv_arc_get_value(ring) == 0);
+
     /* Past an hour: "H:MM:SS.d"; the dial's value is the elapsed seconds. An
      * RP1 injection on the dial is a tap: it stops the stopwatch. */
     click(dial);

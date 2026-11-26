@@ -1,7 +1,7 @@
 # Continuous integration (M7)
 
 `.github/workflows/ci.yml` runs on every pull request, on pushes to `main` and
-on demand. It builds the four firmware configurations and runs the existing
+on demand. It builds the six firmware configurations and runs the existing
 host tests (`tests/`) in named groups. The tests and build commands are the
 ones a developer runs locally. `tools/ci/` only selects them, runs them in
 pinned containers and writes reports.
@@ -10,7 +10,7 @@ pinned containers and writes reports.
 
 | Job | Environment | What it runs | Timing |
 |---|---|---|---|
-| Firmware 1.85B legacy, 1.85B rep, 1.75C legacy, 1.75C rep | `espressif/idf:v6.1` by digest | `tools/ci/build_firmware.sh BOARD PROFILE`: `idf.py build`, `idf.py size`; fails on any warning | build |
+| Firmware 1.85B and 1.75C, each legacy, rep and rep-nodev | `espressif/idf:v6.1` by digest | `tools/ci/build_firmware.sh BOARD PROFILE`: `idf.py build`, `idf.py size`; fails on any warning. `rep-nodev` is the rep layout with every `ROUNDIE_DEV_*` interface off (`sdkconfig.nodev.defaults`, appended through the CMake cache variable `ROUNDIE_EXTRA_DEFAULTS`); it keeps the code paths of a release-like image compiling | build |
 | Managed components | IDF image | `idf.py reconfigure`, checked against `dependencies.lock`; cached for the desktop jobs | build |
 | CI image | Docker on `ubuntu-24.04` | `tools/ci/Containerfile`, cached by its own hash | build |
 | Host tests and validators | CI image | group `host`: C harnesses (many under ASan/UBSan), ELF and package validators, OTA, clock, storage layout, REP deployment guards and desktop contract tests | none |
@@ -50,7 +50,7 @@ an earlier job failed, was skipped or was cancelled.
 preparatory ones:
 
 - `workflow-lint`
-- `firmware` (the 4 variants)
+- `firmware` (the 6 variants)
 - `components`
 - `ci-image`
 - `host`

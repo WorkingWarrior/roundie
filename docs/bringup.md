@@ -597,8 +597,9 @@ holds TI's default 3000 mAh profile. The fitted cell is not Waveshare's
 (the cell maker's figure; not measured here).
 
 `!RG1` (`main/gauge_diagnostics.c`, enabled with `CONFIG_ROUNDIE_DEV_POWER`;
-client `tools/roundie_gauge.py`, reply format 2) has two operations, both in
-`bq27220_config.c` (board directory, host-testable):
+client `tools/roundie_gauge.py`, reply format 2) has these operations;
+`STATUS` and `CAPACITY` are in `bq27220_config.c` (board directory,
+host-testable):
 
 - `STATUS` reads `BatteryStatus()`, `OperationStatus()`, `DesignCapacity()`
   `0x3C` and three Data Memory blocks: `0x929B` (Gauging Configuration, Full
@@ -607,6 +608,13 @@ client `tools/roundie_gauge.py`, reply format 2) has two operations, both in
   `0x9268` (Near Full `0x926B`). Each block read selects the address, waits
   for its echo at `0x3E` and refuses a block whose `MACDataSum()`/
   `MACDataLen()` it cannot reproduce. No subcommand is sent.
+- `BATTERY` (E0, both boards, read-only, its own reply `format` 1) reports
+  the board name, the panel size in pixels and one battery sample as the
+  board reads it: BQ27220 on the 1.85B, AXP2101 on the 1.75C (`present`,
+  `voltage_mv`, `soc`, `current_ma` with `*_valid` flags, `charging`,
+  `discharging`, `state`). It is the chip's state, not a current
+  measurement; the AXP2101 reports no current here (`current_valid` 0). The
+  E0 runner uses it to record the power source and to check `--board`.
 - `CAPACITY <mAh>` (100–6000) initializes Design Capacity and Full Charge
   Capacity once (below). It writes nothing when Design Capacity already has
   the value.

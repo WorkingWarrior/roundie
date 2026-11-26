@@ -3,7 +3,8 @@
  * lap list below can grow without being covered. Elapsed time comes from monotonic_ms,
  * so wall-clock changes do not affect it. The system dial's second ring lights
  * its ticks up to the current second. A 100 ms timer runs only while the
- * stopwatch runs. No LVGL access. */
+ * stopwatch runs, and while a refused update waits for its redraw.
+ * No LVGL access. */
 #include "rep/rep_app_v3.h"
 #include <stdbool.h>
 REP3_APP_METADATA;
@@ -16,6 +17,7 @@ REP3_APP_METADATA;
 #define LAPS_COLOR 0x9aa5b1
 #define LAP_COLOR 0xd1d5db
 #define RESET_COLOR 0xff453a
+#define STALE_TICKS_LIMIT 50U /* 5 s of refused redraws: then the refusal is an error */
 
 static const rep_api_v3_t *api;
 static uint32_t view;
@@ -33,6 +35,8 @@ static uint32_t laps;
 static uint32_t last_lap_total_ms;
 static uint32_t lap_ms[LAPS_SHOWN]; /* newest first */
 static uint32_t shown_seconds;
+static bool stale; /* an update was refused; the next tick redraws everything */
+static uint32_t stale_ticks; /* consecutive refused redraws */
 static rep_ui_update_t update = {1, sizeof(update), 0, REP_UI_TEXT, 0, ""};
 static rep_ui_widget_t view_widget = {1, sizeof(rep_ui_widget_t), REP_UI_VIEW, 0, 0, 0, 360, 360, 0, ""};
 /* The dial covers the face; widgets created after it (the lap button) stay
@@ -168,16 +172,20 @@ static int32_t start_or_stop(uint32_t instance)
     if (running) {
         base_ms = elapsed(instance);
         running = false;
-        if (api->timer_cancel(instance, timer) != 0) {
-            return -26;
+        if (!stale) { /* a pending redraw keeps the timer */
+            if (api->timer_cancel(instance, timer) != 0) {
+                return -26;
+            }
+            timer = 0;
         }
-        timer = 0;
     } else {
         start_ms = api->monotonic_ms(instance);
         running = true;
-        timer = api->timer_start(instance, TICK_MS);
-        if (timer == 0) {
-            return -27;
+        if (timer == 0) { /* a pending redraw may hold it already */
+            timer = api->timer_start(instance, TICK_MS);
+            if (timer == 0) {
+                return -27;
+            }
         }
     }
     int32_t result = show_time(instance, base_ms); /* exact on stop; the start point on start */
@@ -209,10 +217,55 @@ static int32_t lap_or_reset(uint32_t instance)
     return result != 0 ? result : show_state(instance);
 }
 
+/* The UI queue is bounded (12 commands) and refuses more while the GUI task
+ * catches up: a stop and a reset handled within one GUI frame queue 13. A
+ * refused update (-21..-24) is therefore not an error: the next timer tick
+ * redraws the whole state. Only a refusal that lasts STALE_TICKS_LIMIT ticks is
+ * returned. The timer runs while stale, also when stopped; if it cannot start,
+ * the system is stopping the app and there is nothing left to redraw. */
+static int32_t refused(uint32_t instance, int32_t result)
+{
+    if (result > -21 || result < -24) {
+        return result; /* 0, or not a UI refusal */
+    }
+    stale = true;
+    if (timer == 0) {
+        timer = api->timer_start(instance, TICK_MS);
+    }
+    return 0;
+}
+
+static int32_t redraw(uint32_t instance)
+{
+    shown_seconds = UINT32_MAX; /* resend the dial as well */
+    int32_t result = show_time(instance, elapsed(instance));
+    if (result == 0) {
+        result = show_laps(instance);
+    }
+    if (result == 0) {
+        result = show_state(instance);
+    }
+    if (result != 0) {
+        stale_ticks++;
+        return stale_ticks > STALE_TICKS_LIMIT ? result : 0; /* still stale: next tick */
+    }
+    stale = false;
+    stale_ticks = 0;
+    if (!running) {
+        if (api->timer_cancel(instance, timer) != 0) {
+            return -26;
+        }
+        timer = 0;
+    }
+    return 0;
+}
+
 static int32_t initialize(const rep_context_v3_t *context)
 {
     uint32_t instance = context->instance;
     running = false;
+    stale = false;
+    stale_ticks = 0;
     base_ms = 0;
     laps = 0;
     last_lap_total_ms = 0;
@@ -247,14 +300,17 @@ static int32_t initialize(const rep_context_v3_t *context)
 static int32_t event(const rep_context_v3_t *context, const rep_event_v3_t *event)
 {
     uint32_t instance = context->instance;
-    if (event->type == REP2_EVENT_TIMER && running && event->value == timer) {
-        return show_time(instance, elapsed(instance));
+    if (event->type == REP2_EVENT_TIMER && timer != 0 && event->value == timer) {
+        if (stale) {
+            return redraw(instance);
+        }
+        return running ? refused(instance, show_time(instance, elapsed(instance))) : 0;
     }
     if (event->type == REP3_EVENT_BUTTON && event->value == dial) { /* tap */
-        return start_or_stop(instance);
+        return refused(instance, start_or_stop(instance));
     }
     if (event->type == REP3_EVENT_BUTTON && event->value == lap_button) {
-        return lap_or_reset(instance);
+        return refused(instance, lap_or_reset(instance));
     }
     return 0;
 }
