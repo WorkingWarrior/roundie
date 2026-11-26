@@ -268,5 +268,8 @@ Zasada domknięcia: wszystko, co da się zrobić bez 1.75C i bez fizycznej obecn
 - Urządzenie 1.85B (`0.3.86-e0`, `build-ci/e0/a6-185b-gate/`):
   - base z light sleep: PASS;
   - stall: PASS;
-  - **followup: FAIL w `worst_stack`** (2 z 2 przebiegów). Stoper kończy się sam wynikiem `-24` (`show_state`, odrzucone `set()`) przed EXIT, więc to nie jest wyścig STOP. Na `0.3.84-e0` ten scenariusz przeszedł. Analiza i następny krok: `docs/progress.md` A6.
-- E0 nie jest jeszcze gotowe do publikacji (A7), dopóki ten FAIL nie zostanie wyjaśniony.
+  - **followup: FAIL w `worst_stack`** (2 z 2 przebiegów). Stoper kończy się sam wynikiem `-24` (`show_state`, odrzucone `set()`) przed EXIT, więc to nie jest wyścig STOP.
+- **Przyczyna (fakt, macierz obraz × runner w `docs/progress.md` A6):** pełna kolejka UI. STOP i reset obsłużone 10 ms po sobie, przed kolejną iteracją GUI, dają 13 poleceń; odrzucone zostaje 13. (`reject_reason=FULL`, `reject_depth=12`). Występuje także na `0.3.84-e0`, więc to defekt kontraktu ujawniony timingiem, nie regresja etapu A. Hipoteza o I²C odrzucona.
+- **Decyzja:** stoper 1.1.1 traktuje odrzucenie jako nieaktualny widok i rysuje cały stan przy następnym ticku (test regresji hosta). Semantyka backpressure UI („zajęte”) trafia do EABI P2 w roadmapie. Sonda `race` liczy wyścig po liczniku odrzuceń przez zamkniętą admisję, bo stoper nie pokazuje już RESULT.
+- Bramka na obrazie końcowym `0.3.87-e0` (liczniki odrzuceń według przyczyny), stoper 1.1.1: base z light sleep PASS, followup PASS (4/4), stall PASS (`race`: wyścig 10/10 z opóźnieniem według licznika, 0 widoków RESULT, kontrola 0). Testy hosta 287/287, 333 testy, 0 problemów z pokryciem.
+- **Wszystkie pozycje bramki mierzalne automatycznie na 1.85B mają PASS.** Pozostają PENDING (fizyczne) i BLOCKED (1.75C).

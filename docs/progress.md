@@ -56,7 +56,7 @@ Rules (from the task, binding for every session):
 - The CI layout line appears in a clean rep-nodev configure.
 - The console line-loss mechanism is confirmed from the IDF source (e0-summary §10.1 #8).
 
-### A6: builds, host tests, gate on 1.85B (BLOCKED by a FAIL, under investigation)
+### A6: builds, host tests, gate on 1.85B (done)
 - 6 configs × 0 warnings: PASS.
 - Host tests: 333 tests, 0 coverage problems.
 - Gate on 1.85B with image 0.3.86-e0 (`build-ci/e0/a6-185b-gate/`):
@@ -94,13 +94,50 @@ Rules (from the task, binding for every session):
 - Image 0.3.87-e0 = HEAD firmware (rebuild gives the same binary, 0 warnings). Stopwatch 1.1.1 installed: SHA-256 `2f54ed84…5f47f540`.
 - Follow-up after the fix (`a6-185b-gate/followup-fix`, 0.3.87-e0, stopwatch 1.1.1, runner v2, defaults): **PASS**, all 4 steps (memprobe, cycles, worst_stack, fsbench_gui), 0 unexpected resets. In worst_stack the app ended through EXIT with result `[0,0,0]`.
   - Not verified on the device: whether the queue actually overflowed in this run. At the lap PRESS, 6 stop commands were still pending (the same state as in the failures). No UI snapshot was taken between the reset and EXIT. The host regression test is the evidence for the refused path.
-- A7 (publication) waits for this: every automatically checkable gate item must be PASS.
+- Gate repeated on the final image 0.3.87-e0 (new image, so a new configuration):
+  - base with light sleep (`base-087`): PASS;
+  - stall (`stall-087`): 6 of 7 PASS. `race` FAIL: "reproduced 0/10 with delay". The probe counted only RESULT views, and stopwatch 1.1.1 now tolerates the refused update, so it returns to Home.
+  - Decision: the race probe measures the race at the bridge. An attempt reproduces it if the launcher shows RESULT **or** the bridge counted a refusal by closed admission (`rejected_admission`, kept from the unload until the next open). RESULT views are reported separately (`delayed_results`). Host test: `test_run_e0_stall` verdict cases.
+  - `race` with the changed probe (`stall-087-race`): PASS. Reproduced 10/10 with a 300 ms delay (`rejected_admission=1` each time), 0/10 RESULT views; control without delay: 0 refusals, 0 RESULT.
+  - Follow-up: PASS (above).
+- Host tests: PASS 287/287; `--check-coverage`: 333 tests, 0 problems.
+- A6 result: every automatically checkable gate item on 1.85B is PASS.
 
 ### Next
-- A6: resolve the worst_stack FAIL (above), record the gate in e0-summary §10 and commit.
 - A7: publication.
-- Then Stage B:
-  - branch `eabi` from main;
-  - P1–P8 from the task;
-  - do not raise runtime limits;
-  - no later-stage services.
+- Then Stage B (EABI). Scope: the EABI section of docs/roadmap.md. Branch `eabi` from main after stage A is merged. Commit after each subphase. Do not raise runtime limits. Do not implement later-stage services (random, deadline, sensor, ...) or the resource runtime.
+  - P1, storage and io_worker:
+    - inventory every `/storage` access (registry scan, ELF load, app data, RWF, USB importer, diagnostics, OTA) with file/line and calling task;
+    - io_worker is the only owner of `/storage` access; VFS calls are limited to 4 KiB; system_worker does only short operations and keeps state in RAM;
+    - a storage-layer assertion (development build) that the caller is io_worker, plus a negative test;
+    - priorities: priority 0 only for idle. Measure io_worker above idle and below GUI (e.g. GUI 3, executor 2, io_worker 1, system_worker above GUI) against today's io_worker at prio 0. Criteria: GUI gap ≤ 33 ms, system_worker reply ≤ 33 ms, read/write throughput, and a starvation test (an io_worker read makes bounded progress while a development app loads the CPU). Choose the variant from the measurements.
+  - P2, ABI 4:
+    - shared types; handles (slot + generation); a 64 B event without an ABI field, with a 24 B payload;
+    - lifecycle RUNNING → STOPPING → UNLOADED; core/UI/audio tables; modular service getters; event routing by import, subscription, owner and generation;
+    - in STOPPING, UI operations return a non-critical code. A result after a system-requested STOP is not shown to the user as an error (except crash or timeout). The ELFDELAY regression for −23 (show_laps) and −24 (show_state) must return to Home;
+    - UI backpressure "busy" code (roadmap "Backpressure UI (P2)");
+    - both ELF validators (Xtensa, x86-64) and the Linux backend.
+  - P3, package format per the roadmap:
+    - header + manifest + bounded requirement list `(service_id, feature_mask)` + ELF;
+    - a deterministic builder and a canonical parser shared by host and firmware;
+    - host tests, including bad magic and version;
+    - a new docs/package-format.md.
+  - P4, PackageManager:
+    - one registry `/storage/packages`; classify OBSOLETE vs CORRUPT vs I/O error; replace/REMOVE an OBSOLETE entry;
+    - an activation record anchored to the metadata; selective verification at scan and start; a global space budget;
+    - app data in `/storage/app-data/<id>`, independent of the registry;
+    - firmware start erases and moves nothing; all I/O through the P1 io_worker.
+  - P5: migrate the examples, tools, USB import and CI. `reinstall-all`: `--clean` removes every OBSOLETE entry after listing it; `--prune` handles IDs outside the set; app-data is always kept.
+  - P6, Manager: format version, ABI, target, requirements, declared services, refusal reasons, free/required space, install progress.
+  - P7, gate on 1.85B (1.75C BLOCKED unless connected). Items:
+    - OTA, reinstall-all, stopwatch start/unload, sound PCM;
+    - watch keeps its theme after removal and reinstall;
+    - OBSOLETE entries kept at scan and start; replacement and REMOVE; interrupted commit; the STOP regression;
+    - delta against E0: memory, stacks, GUI gaps during a 512 KiB install.
+    Report in docs/eabi-report.md. Apply the closure rule before closing.
+  - P8: update the roadmap with findings that change it, then publication.
+- Publication details from the task:
+  - PR description: scope, results, PENDING/BLOCKED, decisions.
+  - If CI fails: fix, commit, push, repeat.
+  - If a merge condition cannot be met, or the merge conflicts in a way that needs a design decision: leave the PR open, give the reason in the PR and here, and stop.
+- Continuity: if the session context grows large, close the current subphase, update this file and stop, so a new session can continue from the repo alone.

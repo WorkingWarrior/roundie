@@ -172,8 +172,13 @@ class RaceTest(unittest.TestCase):
 
     def test_verdict(self):
         self.assertEqual(stall.race_verdict({"state": "RESULT", "result": [0, -1, -24]}),
-                         {"outcome": "result", "result": [0, -1, -24]})
-        self.assertEqual(stall.race_verdict({"state": "HOME"}), {"outcome": "home"})
+                         {"outcome": "result", "result": [0, -1, -24], "reproduced": True})
+        self.assertEqual(stall.race_verdict({"state": "HOME"}), {"outcome": "home", "reproduced": False})
+        # Stopwatch 1.1.1 tolerates the refusal: Home, but the bridge counted it.
+        self.assertEqual(stall.race_verdict({"state": "HOME"}, {"rejected_admission": 1}),
+                         {"outcome": "home", "rejected_admission": 1, "reproduced": True})
+        self.assertEqual(stall.race_verdict({"state": "HOME"}, {"rejected_admission": 0}),
+                         {"outcome": "home", "rejected_admission": 0, "reproduced": False})
 
 
 if __name__ == "__main__":

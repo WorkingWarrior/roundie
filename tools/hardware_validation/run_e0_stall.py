@@ -246,11 +246,22 @@ def stall_row(operation, reply):
             "mmap_remain": reply["mmap_remain"], "probes_armed": reply["probes_armed"]}
 
 
-def race_verdict(nav):
-    """Outcome of one EXIT: 'home' or the RESULT tuple shown instead."""
+def race_verdict(nav, ui_status=None):
+    """Outcome of one EXIT: 'home' or the RESULT tuple shown instead, plus the
+    UI calls the bridge refused because STOP had closed admission. The bridge
+    keeps its counters from the unload until the next open. The race is
+    reproduced if either shows it: an app that tolerates the refusal (stopwatch
+    1.1.1) returns Home, so only the counter still shows the race. Images
+    before 0.3.87-e0 lack the counter."""
     if nav["state"] == "RESULT":
-        return {"outcome": "result", "result": nav.get("result")}
-    return {"outcome": nav["state"].lower()}
+        verdict = {"outcome": "result", "result": nav.get("result")}
+    else:
+        verdict = {"outcome": nav["state"].lower()}
+    admission = (ui_status or {}).get("rejected_admission")
+    if admission is not None:
+        verdict["rejected_admission"] = admission
+    verdict["reproduced"] = verdict["outcome"] == "result" or bool(admission)
+    return verdict
 
 
 class StallRunner(followup.FollowupRunner):
@@ -534,9 +545,10 @@ class StallRunner(followup.FollowupRunner):
             self.wait_for("idle runtime", lambda: self.call("elf"),
                           lambda s: s["state"] == m8.ELF_IDLE and not s["busy"], 15)
             nav = self.settled_nav()
+            ui_status = self.call("ui")
         finally:
             self.call("elfdelay", "ELFDELAY 0")
-        verdict = race_verdict(nav)
+        verdict = race_verdict(nav, ui_status)
         self.go_home()
         return verdict
 
@@ -547,14 +559,16 @@ class StallRunner(followup.FollowupRunner):
             series[str(delay_ms)] = [self.race_attempt(delay_ms) for _ in range(self.args.race_repeats)]
             self.write_report()
         delayed = series[str(self.args.race_delay)]
-        reproduced = sum(1 for v in delayed if v["outcome"] == "result")
+        reproduced = sum(1 for v in delayed if v["reproduced"])
+        results = sum(1 for v in delayed if v["outcome"] == "result")
         control = sum(1 for v in series["0"] if v["outcome"] == "result")
         problems = []
         if reproduced != len(delayed):
             problems.append(f"race reproduced {reproduced}/{len(delayed)} with delay")
         return (FAIL if problems else PASS), {
             "delay_ms": self.args.race_delay, "exit_after_s": self.args.exit_after, "series": series,
-            "reproduced": [reproduced, len(delayed)], "control_results": [control, len(series["0"])],
+            "reproduced": [reproduced, len(delayed)], "delayed_results": [results, len(delayed)],
+            "control_results": [control, len(series["0"])],
             "problems": problems}
 
 
