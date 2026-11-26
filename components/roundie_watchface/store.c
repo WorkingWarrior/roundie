@@ -11,15 +11,13 @@
 #include <unistd.h>
 #include "private.h"
 #include "psa/crypto.h"
+#include "roundie_bounded_io.h"
 #include "roundie_platform.h"
 
 #ifndef FACES_DIRECTORY
 #define FACES_DIRECTORY "/storage/faces"
 #endif
 #define TRANSFER FACES_DIRECTORY "/.transfer"
-/* One VFS call holds the LittleFS lock; 4 KiB bounds that hold (E0 §14:
- * chunk_max 58-80 ms at 4 KiB, 184-240 ms at 16 KiB; docs/storage-io.md). */
-#define VFS_CALL_MAX 4096U
 #define PREFERENCE FACES_DIRECTORY "/active"
 #define PREFERENCE_TEMPORARY FACES_DIRECTORY "/active.tmp"
 #define PATH_SIZE (sizeof(FACES_DIRECTORY) + ROUNDIE_FACE_ID + 16)
@@ -110,35 +108,6 @@ static bool path_for(char out[PATH_SIZE], const char *id, const char *suffix)
     return length > 0 && (size_t)length < PATH_SIZE;
 }
 
-static bool read_exact(int file, void *out, size_t size)
-{
-    uint8_t *bytes = out;
-    while (size > 0) {
-        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
-        ssize_t count = read(file, bytes, step);
-        if (count <= 0) {
-            return false;
-        }
-        bytes += count;
-        size -= (size_t)count;
-    }
-    return true;
-}
-
-static bool write_exact(int file, const void *data, size_t size)
-{
-    const uint8_t *bytes = data;
-    while (size > 0) {
-        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
-        if (write(file, bytes, step) != (ssize_t)step) {
-            return false;
-        }
-        size -= step;
-        bytes += step;
-    }
-    return true;
-}
-
 /* tmp + fsync + rename: the previous file stays until the new one is complete. */
 static bool replace_file(const char *path, const char *temporary, const void *data, size_t size)
 {
@@ -146,7 +115,7 @@ static bool replace_file(const char *path, const char *temporary, const void *da
     if (file < 0) {
         return false;
     }
-    bool written = write_exact(file, data, size);
+    bool written = roundie_io_write_exact(file, data, size);
     int synced = written ? fsync(file) : -1;
     int closed = close(file);
     if (!written || synced != 0 || closed != 0 || rename(temporary, path) != 0) {
@@ -163,7 +132,7 @@ static bool read_preference(char id[ROUNDIE_FACE_ID])
     if (file < 0) {
         return false;
     }
-    bool valid = read_exact(file, bytes, sizeof(bytes)) && read(file, bytes, 1) == 0;
+    bool valid = roundie_io_read_exact(file, bytes, sizeof(bytes)) && read(file, bytes, 1) == 0;
     close(file);
     if (!valid || memcmp(bytes, "RFA1", 4) != 0 || get32(bytes + 52) != fnv1a(bytes, 52) ||
         memchr(bytes + 4, '\0', ROUNDIE_FACE_ID) == NULL) {
@@ -199,7 +168,7 @@ static void read_settings(const char *id, const roundie_face_definition_t *defin
     if (file < 0) {
         return;
     }
-    bool valid = read_exact(file, bytes, sizeof(bytes)) && read(file, bytes, 1) == 0;
+    bool valid = roundie_io_read_exact(file, bytes, sizeof(bytes)) && read(file, bytes, 1) == 0;
     close(file);
     if (!valid || memcmp(bytes, "RFS1", 4) != 0 || get32(bytes + 12) != fnv1a(bytes, 12) ||
         bytes[4] != definition->setting_count) {
@@ -259,7 +228,7 @@ static roundie_face_loaded_t *load_file(const char *path, const uint8_t *expecte
     memset(loaded, 0, sizeof(*loaded));
     loaded->bytes = (uint8_t *)(loaded + 1);
     loaded->size = size;
-    bool read_ok = read_exact(file, loaded->bytes, size);
+    bool read_ok = roundie_io_read_exact(file, loaded->bytes, size);
     int closed = close(file);
     if (!read_ok || closed != 0) {
         snprintf(error, ROUNDIE_FACE_ERROR, "face-read");
@@ -340,7 +309,7 @@ static esp_err_t scan(void)
             roundie_face_package_t package;
             char error[ROUNDIE_FACE_ERROR];
             entry->size = (uint32_t)info.st_size;
-            if (read_exact(file, prefix, available) &&
+            if (roundie_io_read_exact(file, prefix, available) &&
                 roundie_face_decode_package(prefix, available, (size_t)info.st_size, &package, error) &&
                 strcmp(package.manifest.id, id) == 0) {
                 memcpy(entry->name, package.manifest.name, sizeof(entry->name));
@@ -528,7 +497,7 @@ esp_err_t roundie_watchface_write(uint32_t session, size_t offset, const void *d
     if (offset != status.received || size == 0 || size > 512 || size > status.total - status.received) {
         return failed(ESP_ERR_INVALID_SIZE, "transfer-offset-or-length");
     }
-    if (!write_exact(transfer, data, size)) {
+    if (!roundie_io_write_exact(transfer, data, size)) {
         cancel();
         return failed(ESP_FAIL, "transfer-write");
     }

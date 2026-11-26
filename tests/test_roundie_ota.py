@@ -113,7 +113,11 @@ class OTATests(unittest.TestCase):
                                 "-I" + str(ROOT / "tests/ota_mocks"), "-I" + str(ROOT / "main"),
                                 "-I" + str(ROOT / "components/roundie_ota/include"),
                                 "-I" + str(ROOT / "components/roundie_boot_guard/include"),
+                                "-I" + str(ROOT / "components/roundie_storage/include"),
+                                "-I" + str(ROOT / "components/roundie_platform/include"),
+                            "-I" + str(ROOT / "platform/linux/include"), "-pthread",
                                 str(ROOT / "main/ota_diagnostics.c"), str(ROOT / "tests/test_ota_boot_gate.c"),
+                                str(ROOT / "components/roundie_storage/claim.c"), str(ROOT / "tests/io_worker_stub.c"),
                                 "-o", executable], check=True)
                 for state in (0, 1, 2, 3, 4, -1, -2):
                     for fallback in (0, 1):

@@ -13,7 +13,7 @@ import tempfile
 import time
 
 import roundie_elf
-from roundie_time import DeviceError, TransportError, open_serial, read_serial_reply, write_command
+from roundie_time import DeviceBusy, DeviceError, TransportError, open_serial, read_serial_reply, write_command
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = 224
@@ -94,6 +94,8 @@ def parse_reply(line, request_id):
         if re.fullmatch(rb"-?[0-9]{1,10}", code) is None:
             raise ValueError("code")
         status = json.loads(raw)
+        if status == {"format": 1, "error": "busy"}:
+            raise DeviceBusy("device busy: io_worker queue full, retry later")
         if status["format"] != 1:
             raise ValueError("format")
         for key in ("allowed", "busy"):
@@ -126,6 +128,8 @@ def parse_reply(line, request_id):
                 not isinstance(status["sha256"], str) or
                 (status["sha256"] and HEX64.fullmatch(status["sha256"]) is None)):
             raise ValueError("metadata")
+    except DeviceBusy:
+        raise
     except (ValueError, TypeError, KeyError, DeviceError) as error:
         raise TransportError(f"malformed package response: {error}") from error
     if int(code) != 0:

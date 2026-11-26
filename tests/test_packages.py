@@ -41,10 +41,12 @@ class PackageTests(unittest.TestCase):
                             "-I" + str(ROOT / "tests/ota_mocks"), "-I" + str(ROOT / "include"),
                             "-I" + str(ROOT / "components/roundie_elf/include"),
                             "-I" + str(ROOT / "components/roundie_packages/include"),
+                            "-I" + str(ROOT / "components/roundie_storage/include"),
                             '-DPACKAGES_DIRECTORY="' + str(directory / "packages") + '"',
                             str(ROOT / "tests/test_packages.c"),
                             str(ROOT / "components/roundie_packages/format.c"),
                             str(ROOT / "components/roundie_elf/validate.c"),
+                            str(ROOT / "components/roundie_storage/bounded_io.c"),
                             "-lcrypto", "-o", str(executable)], check=True)
             subprocess.run([str(executable), *packages], check=True, timeout=20)
 

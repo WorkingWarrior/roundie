@@ -39,6 +39,7 @@ def compile_sources(output, *sources, defines=()):
                "-I" + str(ROOT / "tests/ota_mocks"), "-I" + str(ROOT / "platform/linux/include"),
                "-I" + str(ROOT / "include"), "-I" + str(ROOT / "components/roundie_elf/include"),
                "-I" + str(ROOT / "components/roundie_platform/include"),
+               "-I" + str(ROOT / "components/roundie_storage/include"),
                "-I" + str(ROOT / "components/roundie_watchface"),
                "-I" + str(ROOT / "components/roundie_watchface/include"),
                "-I" + str(ROOT / "tests/app_ui"), "-I" + str(ROOT / "managed_components/lvgl__lvgl"),
@@ -106,6 +107,7 @@ class WatchFaceTests(unittest.TestCase):
             component = ROOT / "components/roundie_watchface"
             compile_sources(executable, ROOT / "tests/test_watchface.c", component / "format.c",
                             component / "text.c", component / "host.c", component / "store.c",
+                            ROOT / "components/roundie_storage/bounded_io.c",
                             defines=['-DFACES_DIRECTORY="' + str(faces) + '"'])
             arguments = [str(directory), str(packages["classic_analog"]), str(packages["minimal_digital"]),
                          str(packages["information"]), str(packages["analog_v2"]), *bad]

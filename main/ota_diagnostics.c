@@ -11,6 +11,8 @@
 #include "roundie_ota_protocol.h"
 #include "recovery_diagnostics.h"
 #include "app_runtime.h"
+#include "io_worker.h"
+#include "roundie_storage_io.h"
 
 static const char *TAG = "ota";
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -153,6 +155,10 @@ void roundie_ota_command(char *line, bool discard)
 #if CONFIG_ROUNDIE_APP_RUNTIME
         if (command.operation != ROUNDIE_OTA_STATUS && roundie_app_runtime_busy()) {
             error = ESP_ERR_INVALID_STATE;
+        } else if (command.operation == ROUNDIE_OTA_BEGIN && !roundie_storage_claim_ota(roundie_app_runtime_busy)) {
+            /* io_worker is between check and claim of a package job, or one
+             * started: busy, as above (docs/storage-io.md point 1). */
+            error = ESP_ERR_INVALID_STATE;
         } else
 #endif
         if (command.operation == ROUNDIE_OTA_RESTART) {
@@ -206,6 +212,7 @@ void roundie_ota_command(char *line, bool discard)
         roundie_boot_planned_restart();
         usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
         vTaskDelay(pdMS_TO_TICKS(100));
+        (void)roundie_io_worker_park(ROUNDIE_IO_PARK_TIMEOUT_US);
         esp_restart();
     }
 }

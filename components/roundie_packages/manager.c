@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "psa/crypto.h"
+#include "roundie_bounded_io.h"
 
 #ifndef PACKAGES_DIRECTORY
 #define PACKAGES_DIRECTORY "/storage/packages"
@@ -16,9 +17,6 @@
 #define TRANSFER PACKAGES_DIRECTORY "/.transfer"
 #define PATH_SIZE (sizeof(PACKAGES_DIRECTORY) + ROUNDIE_PACKAGE_ID + 24)
 #define SELECTION_SIZE 40U
-/* One VFS call holds the LittleFS lock; 4 KiB bounds that hold (E0 §14:
- * chunk_max 58-80 ms at 4 KiB, 184-240 ms at 16 KiB; docs/storage-io.md). */
-#define VFS_CALL_MAX 4096U
 
 static roundie_packages_status_t status;
 static roundie_package_record_t registry[ROUNDIE_PACKAGES_MAX];
@@ -53,35 +51,6 @@ static bool path_for(char out[PATH_SIZE], const char *id, const char *name)
     return length > 0 && (size_t)length < PATH_SIZE;
 }
 
-static bool write_exact(int file, const void *data, size_t size)
-{
-    const uint8_t *bytes = data;
-    while (size > 0) {
-        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
-        if (write(file, bytes, step) != (ssize_t)step) {
-            return false;
-        }
-        size -= step;
-        bytes += step;
-    }
-    return true;
-}
-
-static bool read_exact(int file, void *out, size_t size)
-{
-    uint8_t *bytes = out;
-    while (size > 0) {
-        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
-        ssize_t count = read(file, bytes, step);
-        if (count <= 0) {
-            return false;
-        }
-        size -= (size_t)count;
-        bytes += count;
-    }
-    return true;
-}
-
 static bool read_selection(const char *id, uint8_t selection[SELECTION_SIZE])
 {
     char path[PATH_SIZE];
@@ -94,7 +63,7 @@ static bool read_selection(const char *id, uint8_t selection[SELECTION_SIZE])
     }
     struct stat info;
     bool valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) &&
-        info.st_size == SELECTION_SIZE && read_exact(file, selection, SELECTION_SIZE);
+        info.st_size == SELECTION_SIZE && roundie_io_read_exact(file, selection, SELECTION_SIZE);
     int closed = close(file);
     return valid && closed == 0 && memcmp(selection, "RPA1", 4) == 0 &&
         selection[4] <= 1 && selection[5] == 0 && selection[6] == 0 && selection[7] == 0;
@@ -112,7 +81,7 @@ static bool inspect_file(const char *path, const uint8_t digest[32],
     uint8_t prefix[ROUNDIE_PACKAGE_PREFIX];
     struct stat info;
     bool valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= 0 &&
-        info.st_size <= ROUNDIE_PACKAGE_MAX && read_exact(file, prefix, sizeof(prefix)) &&
+        info.st_size <= ROUNDIE_PACKAGE_MAX && roundie_io_read_exact(file, prefix, sizeof(prefix)) &&
         roundie_package_decode(prefix, sizeof(prefix), (size_t)info.st_size, metadata, status.error);
     psa_hash_operation_t hash = psa_hash_operation_init();
     if (valid) {
@@ -123,7 +92,7 @@ static bool inspect_file(const char *path, const uint8_t digest[32],
     size_t remaining = valid ? (size_t)info.st_size - sizeof(prefix) : 0;
     while (valid && remaining > 0) {
         size_t size = remaining > sizeof(block) ? sizeof(block) : remaining;
-        valid = read_exact(file, block, size) && psa_hash_update(&hash, block, size) == PSA_SUCCESS;
+        valid = roundie_io_read_exact(file, block, size) && psa_hash_update(&hash, block, size) == PSA_SUCCESS;
         remaining -= size;
     }
     uint8_t actual[32];
@@ -159,7 +128,7 @@ static uint8_t *validate_file(const char *path, const uint8_t digest[32],
     }
     elf = roundie_packages_allocate(metadata->elf_size);
     bool valid = elf != NULL && lseek(file, ROUNDIE_PACKAGE_PREFIX, SEEK_SET) == ROUNDIE_PACKAGE_PREFIX &&
-        read_exact(file, elf, metadata->elf_size);
+        roundie_io_read_exact(file, elf, metadata->elf_size);
     int closed = close(file);
     uint8_t actual[32];
     size_t length = 0;
@@ -567,13 +536,13 @@ esp_err_t roundie_packages_data_read(const char *id, void *buffer, size_t capaci
     uint8_t header[DATA_HEADER];
     struct stat info;
     bool valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= (off_t)DATA_HEADER &&
-        (size_t)info.st_size - DATA_HEADER <= capacity && read_exact(file, header, sizeof(header));
+        (size_t)info.st_size - DATA_HEADER <= capacity && roundie_io_read_exact(file, header, sizeof(header));
     uint32_t size = 0;
     if (valid) {
         size = (uint32_t)header[4] | (uint32_t)header[5] << 8 | (uint32_t)header[6] << 16 |
             (uint32_t)header[7] << 24;
         valid = memcmp(header, "RPD1", 4) == 0 && size == (size_t)info.st_size - DATA_HEADER &&
-            read_exact(file, buffer, size);
+            roundie_io_read_exact(file, buffer, size);
     }
     int closed = close(file);
     uint8_t actual[32];
@@ -619,7 +588,7 @@ esp_err_t roundie_packages_data_write(const char *id, const void *data, size_t l
     if (file < 0) {
         return failed(ESP_FAIL, "data-open");
     }
-    bool written = write_exact(file, header, sizeof(header)) && write_exact(file, data, length);
+    bool written = roundie_io_write_exact(file, header, sizeof(header)) && roundie_io_write_exact(file, data, length);
     int synced = written ? fsync(file) : -1;
     int closed = close(file);
     if (!written || synced != 0 || closed != 0 || rename(temporary, path) != 0) {

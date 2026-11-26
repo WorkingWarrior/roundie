@@ -27,6 +27,7 @@
 #include "roundie_elf.h"
 #include "roundie_launcher.h"
 #endif
+#include "io_worker.h"
 #if CONFIG_ROUNDIE_DEV_POWER
 #include "driver/usb_serial_jtag.h"
 #endif
@@ -118,6 +119,9 @@ static void restart(bool safe)
     ESP_LOGI(TAG, "Power menu %s", safe ? "Safe Mode restart" : "restart");
     roundie_boot_planned_restart();
     vTaskDelay(pdMS_TO_TICKS(100));
+    /* Narrow the restart to a chunk boundary; LittleFS keeps a torn write safe
+     * if the bounded wait expires, as after a power loss. */
+    (void)roundie_io_worker_park(ROUNDIE_IO_PARK_TIMEOUT_US);
     esp_restart();
 }
 
@@ -172,6 +176,7 @@ static void enter_storage_mode(void)
     ESP_LOGI(TAG, "Power menu: restart into USB storage mode");
     roundie_boot_planned_restart();
     vTaskDelay(pdMS_TO_TICKS(100));
+    (void)roundie_io_worker_park(ROUNDIE_IO_PARK_TIMEOUT_US);
     esp_restart();
 }
 
@@ -331,7 +336,18 @@ void roundie_power_worker_poll(int64_t now_us)
         finish_sleep(true, refusal, ESP_ERR_INVALID_STATE);
         return;
     }
+    /* io_worker parks only at a 4 KiB chunk boundary; give up this sleep
+     * rather than wait without bound (docs/storage-io.md requirement 3). */
+    if (!roundie_io_worker_park(ROUNDIE_IO_PARK_TIMEOUT_US)) {
+        ESP_LOGW(TAG, "Sleep aborted: %s", roundie_power_refusal_name(ROUNDIE_POWER_REFUSED_STORAGE));
+        portENTER_CRITICAL(&roundie_power_shared.lock);
+        roundie_pm_cancel(&roundie_power_shared.pm, ROUNDIE_POWER_REFUSED_STORAGE, now_us);
+        portEXIT_CRITICAL(&roundie_power_shared.lock);
+        finish_sleep(true, ROUNDIE_POWER_REFUSED_STORAGE, ESP_ERR_TIMEOUT);
+        return;
+    }
     light_sleep(board, limit_s);
+    roundie_io_worker_resume();
 }
 
 #if CONFIG_ROUNDIE_DEV_POWER

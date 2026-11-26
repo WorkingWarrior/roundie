@@ -49,6 +49,8 @@
 #include "roundie_elf_crash.h"
 #include "storage_mode_screen.h"
 #include "storage_import.h"
+#include "io_worker.h"
+#include "roundie_storage_io.h"
 #include "audio_diagnostics.h"
 #include "roundie_audio.h"
 #include "local_time.h"
@@ -332,14 +334,10 @@ static void poll_time_commands(int serial_fd, sensor_state_t *shared,
                 } else
 #endif
 #if CONFIG_ROUNDIE_DEV_ELF
-                if (strncmp(frame->line, "!RP1 ", 5) == 0) {
-                    roundie_package_command(frame->line, frame->discard);
-                } else
-                if (strncmp(frame->line, "!RF1 ", 5) == 0) {
-                    roundie_face_command(frame->line, frame->discard);
-                } else
-                if (strncmp(frame->line, "!RE1 ", 5) == 0) {
-                    roundie_elf_command(frame->line, frame->discard);
+                /* /storage lines belong to io_worker; never wait for it. */
+                if (strncmp(frame->line, "!RP1 ", 5) == 0 || strncmp(frame->line, "!RF1 ", 5) == 0 ||
+                    strncmp(frame->line, "!RE1 ", 5) == 0) {
+                    roundie_io_worker_forward(frame->line, frame->discard);
                 } else
 #endif
                 {
@@ -410,15 +408,6 @@ static void sensor_worker(void *argument)
     if (watchdog_error != ESP_OK) {
         ESP_LOGE(TAG, "System worker watchdog: %s", esp_err_to_name(watchdog_error));
     }
-#if CONFIG_ROUNDIE_APP_RUNTIME
-    /* Home is the system WatchFaceHost (docs/watch-face-platform.md). The one
-     * normal trial after Safe Mode starts on the list and shows only the
-     * built-in face: no installed face may have caused the failure again. */
-    roundie_boot_status_t boot_status;
-    roundie_boot_status(&boot_status);
-    roundie_app_runtime_faces_init(boot_status.trial);
-    roundie_launcher_set_home_face(!boot_status.trial);
-#endif
     int64_t next_sample_us = esp_timer_get_time() + 5000000;
     for (;;) {
         if (watchdog_error == ESP_OK) {
@@ -431,15 +420,17 @@ static void sensor_worker(void *argument)
         if (ota_health.boot_checked && !ota_health.boot_passed && !roundie_recovery_active()) {
             roundie_boot_enter_safe(ROUNDIE_SAFE_GUI);
         }
-        roundie_recovery_poll(esp_timer_get_time());
 #if CONFIG_ROUNDIE_APP_RUNTIME
-        roundie_app_runtime_poll(esp_timer_get_time());
-        roundie_storage_import_poll(esp_timer_get_time());
-        roundie_launcher_poll(roundie_app_runtime_allowed(), roundie_app_runtime_upload_busy());
+        /* The OTA claim (OTA BEGIN) ends when the OTA manager is idle again. */
+        if (roundie_storage_claim_ota_active() && ota_health.phase == ROUNDIE_OTA_IDLE) {
+            roundie_storage_claim_ota_release();
+        }
 #endif
+        roundie_recovery_poll(esp_timer_get_time());
 #if CONFIG_ROUNDIE_POWER
-        /* May sleep this worker; it owns every Flash writer, so none is
-         * in progress. Returns after wake with the watchdog restarted. */
+        /* May sleep this worker. io_worker owns the /storage writers and is
+         * parked at a chunk boundary before sleep (bounded wait). Returns after
+         * wake with the watchdog restarted. */
         roundie_power_worker_poll(esp_timer_get_time());
 #endif
 #if CONFIG_ROUNDIE_DEV_TIME_SYNC || CONFIG_ROUNDIE_RECOVERY_USB
@@ -1235,6 +1226,12 @@ void app_main(void)
     /* RP1 adds nested validation/hash/VFS calls. Budget 12 KiB, then observe
      * the worker high-water mark through RP1 instead of assuming host stacks
      * establish the Xtensa call-chain margin. */
+    /* io_worker takes over /storage from the main task (docs/storage-io.md). */
+    esp_err_t io_error = roundie_io_worker_start();
+    if (io_error != ESP_OK) {
+        roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);
+        ESP_LOGE(TAG, "io_worker creation failed: %s; /storage lines answer BUSY", esp_err_to_name(io_error));
+    }
     if (xTaskCreate(sensor_worker, "system_worker", 12288, &sensors, 4, &sensor_task) != pdPASS) {
         roundie_boot_diag_safe_site(ROUNDIE_SAFE_SITE_SYSTEM_WORKER);
         roundie_boot_enter_safe(ROUNDIE_SAFE_CORE);

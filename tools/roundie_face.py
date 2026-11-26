@@ -398,7 +398,7 @@ def inspect(path):
 # --- Device client (RF1, docs/watch-face-packages.md) -------------------------
 
 def parse_reply(line, request_id):
-    from roundie_time import DeviceError, TransportError
+    from roundie_time import DeviceBusy, DeviceError, TransportError
     prefix = f"!RF1 {request_id} ".encode()
     if not line.startswith(prefix):
         return None
@@ -409,6 +409,8 @@ def parse_reply(line, request_id):
         if re.fullmatch(rb"-?[0-9]{1,10}", code) is None:
             raise ValueError("code")
         status = json.loads(raw)
+        if status == {"format": 1, "error": "busy"}:
+            raise DeviceBusy("device busy: io_worker queue full, retry later")
         if status["format"] != 1:
             raise ValueError("format")
         for key in ("phase", "received", "total", "count", "objects", "pool", "bytes", "loads",

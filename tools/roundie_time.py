@@ -30,6 +30,10 @@ class DeviceError(Exception):
     """Device RTC or wall-clock validation failure (exit 3)."""
 
 
+class DeviceBusy(DeviceError):
+    """The device answered BUSY: its io_worker line queue was full (retry later)."""
+
+
 def parse_reply(line, request_id):
     """Ignore logs/other requests; reject malformed replies addressed to us."""
     prefix = f"!RT1 {request_id} ".encode("ascii")

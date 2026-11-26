@@ -181,6 +181,7 @@ const char *roundie_power_refusal_name(roundie_power_refusal_t refusal)
     case ROUNDIE_POWER_REFUSED_INHIBITED: return "inhibited";
     case ROUNDIE_POWER_REFUSED_BUSY: return "busy";
     case ROUNDIE_POWER_REFUSED_UNSUPPORTED: return "unsupported";
+    case ROUNDIE_POWER_REFUSED_STORAGE: return "storage";
     }
     return "unknown";
 }

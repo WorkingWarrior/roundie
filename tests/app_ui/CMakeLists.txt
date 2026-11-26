@@ -24,12 +24,14 @@ add_library(roundie_watchface STATIC
     "${ROOT}/components/roundie_watchface/declarative.c"
     "${ROOT}/components/roundie_watchface/fallback.c"
     "${ROOT}/components/roundie_watchface/gui.c"
-    "${ROOT}/components/roundie_watchface/store.c")
+    "${ROOT}/components/roundie_watchface/store.c"
+    "${ROOT}/components/roundie_storage/bounded_io.c")
 target_compile_options(roundie_watchface PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(roundie_watchface PRIVATE FACES_DIRECTORY="storage/faces")
 target_include_directories(roundie_watchface PRIVATE ../elf_mocks ../ota_mocks
     "${ROOT}/components/roundie_platform/include" "${ROOT}/components/roundie_platform/idf"
-    "${ROOT}/components/roundie_fonts/include" "${ROOT}/components/roundie_watchface")
+    "${ROOT}/components/roundie_fonts/include" "${ROOT}/components/roundie_storage/include"
+    "${ROOT}/components/roundie_watchface")
 target_include_directories(roundie_watchface PUBLIC "${ROOT}/components/roundie_watchface/include"
     "${ROOT}/components/roundie_elf/include" "${ROOT}/include")
 target_link_libraries(roundie_watchface PRIVATE lvgl crypto)

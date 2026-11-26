@@ -16,6 +16,7 @@
 #include "roundie_elf.h"
 #include "roundie_app_ui.h"
 #include "roundie_ota_protocol.h"
+#include "roundie_bounded_io.h"
 #include "app_runtime.h"
 
 #ifndef DEVELOPMENT_DIRECTORY
@@ -23,11 +24,8 @@
 #endif
 #define TEMPORARY_ELF DEVELOPMENT_DIRECTORY "/.hello.part"
 #define STAGED_ELF DEVELOPMENT_DIRECTORY "/hello.elf"
-/* One VFS call holds the LittleFS lock; 4 KiB bounds that hold (E0 §14:
- * chunk_max 58-80 ms at 4 KiB, 184-240 ms at 16 KiB; docs/storage-io.md). */
-#define VFS_CALL_MAX 4096U
 
-/* The existing system worker is the sole staging/VFS/USB owner. No open file
+/* io_worker is the sole staging/VFS owner (docs/storage-io.md). No open file
  * or worker accesses relocated code. StorageManager retains mount ownership. */
 static int file = -1;
 static uint32_t session;
@@ -81,12 +79,8 @@ static uint8_t *read_candidate(const char *path, size_t *size, const uint8_t dig
     if (bytes == NULL) {
         goto failed;
     }
-    for (size_t done = 0; done < *size;) {
-        size_t step = *size - done < VFS_CALL_MAX ? *size - done : VFS_CALL_MAX;
-        if (read(descriptor, bytes + done, step) != (ssize_t)step) {
-            goto failed;
-        }
-        done += step;
+    if (!roundie_io_read_exact(descriptor, bytes, *size)) {
+        goto failed;
     }
     int closed = close(descriptor);
     descriptor = -1;

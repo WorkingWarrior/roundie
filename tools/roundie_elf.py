@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 
-from roundie_time import DeviceError, TransportError, open_serial, read_serial_reply, write_command
+from roundie_time import DeviceBusy, DeviceError, TransportError, open_serial, read_serial_reply, write_command
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_FILE = 65536
@@ -60,6 +60,8 @@ def parse_reply(line, request_id):
         if re.fullmatch(rb"-?[0-9]{1,10}", code) is None:
             raise ValueError("error code")
         status = json.loads(raw)
+        if status == {"format": 1, "error": "busy"}:
+            raise DeviceBusy("device busy: io_worker queue full, retry later")
         for key in ("allowed", "busy", "executed", "over_budget"):
             if type(status[key]) is not int or status[key] not in (0, 1):
                 raise ValueError(key)

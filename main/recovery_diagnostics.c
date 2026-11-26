@@ -17,6 +17,7 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "roundie_elf_crash.h"
+#include "io_worker.h"
 #if CONFIG_ROUNDIE_APP_RUNTIME
 #include "app_runtime.h"
 #include "roundie_elf.h"
@@ -156,6 +157,7 @@ void roundie_recovery_poll(int64_t now_us)
         deferred_safe_restart = false;
         if (roundie_boot_persistence_sync()) {
             roundie_boot_planned_restart();
+            (void)roundie_io_worker_park(ROUNDIE_IO_PARK_TIMEOUT_US);
             esp_restart();
         } else {
             ESP_LOGE("recovery", "Deferred Safe Mode persistence failed; restart refused");
@@ -440,8 +442,9 @@ void roundie_recovery_command(char *line, bool discard)
                 } else if (strcmp(operation, "REQUEST") == 0 && idle_valid) {
                     roundie_boot_enter_safe(ROUNDIE_SAFE_REQUEST);
 #if CONFIG_ROUNDIE_APP_RUNTIME
+                    /* io_worker's next poll (at most 10 ms) starts the teardown;
+                     * the deferred restart below waits for it. */
                     roundie_elf_set_allowed(false);
-                    roundie_app_runtime_poll(esp_timer_get_time());
 #endif
                     /* NVS commit is a Flash write too. REQUEST first closes
                      * admission; persistence/restart follow completed teardown. */
@@ -573,6 +576,7 @@ void roundie_recovery_command(char *line, bool discard)
         }
         usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
         vTaskDelay(pdMS_TO_TICKS(100));
+        (void)roundie_io_worker_park(ROUNDIE_IO_PARK_TIMEOUT_US);
         esp_restart();
     }
 }

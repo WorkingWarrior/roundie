@@ -116,7 +116,7 @@ HOST_MODULES = [
     "test_roundie_display", "test_roundie_elf", "test_roundie_gauge", "test_roundie_launcher", "test_roundie_ota",
     "test_roundie_safe", "test_roundie_time", "test_e0_board", "test_run_e0", "test_run_e0_followup",
     "test_run_e0_stall", "test_run_m8", "test_stack_overflow_model", "test_storage_layout",
-    "test_storage_mode", "test_tone", "test_watchface",
+    "test_storage_io", "test_storage_mode", "test_tone", "test_watchface",
 ]
 
 # name: (title, [(pattern, timing)], environment, primary)

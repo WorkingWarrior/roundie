@@ -12,7 +12,7 @@ from roundie_time import DeviceError, TransportError, open_serial, read_serial_r
 
 STATES = ("active", "screen_off", "light_sleep")
 PHASES = ("idle", "requested", "park", "parked", "resumed")
-REFUSALS = ("none", "safe_mode", "not_stable", "ota", "app", "wake_source", "inhibited", "busy", "unsupported")
+REFUSALS = ("none", "safe_mode", "not_stable", "ota", "app", "wake_source", "inhibited", "busy", "unsupported", "storage")
 PM_STATES = ("ACTIVE", "SCREEN_OFF", "LIGHT_SLEEP_PENDING", "LIGHT_SLEEP", "RESUMING", "DEEP_SLEEP_PENDING",
              "DEEP_SLEEP")
 GUARDS = ("pending", "armed", "failed")

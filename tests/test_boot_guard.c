@@ -555,8 +555,12 @@ int main(void)
     fresh();
     stable();
     elf_busy = true;
-    finish_during_poll = true; /* Teardown races REQUEST before its reply. */
+    finish_during_poll = true; /* Teardown finishes right after REQUEST. */
     assert(command("REQUEST", false));
+    /* system_worker never runs the teardown itself: that is io_worker's
+     * VFS work (docs/storage-io.md), so REQUEST leaves it pending. */
+    assert(elf_busy && writes == 0 && resets == 0);
+    roundie_app_runtime_poll(100); /* io_worker's next poll. */
     assert(!elf_busy && writes == 0 && resets == 0);
     roundie_recovery_poll(100);
     assert(writes == 1 && commits == 1 && resets == 1);

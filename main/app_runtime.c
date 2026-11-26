@@ -14,6 +14,7 @@
 #include "roundie_storage_mode.h"
 #include "roundie_watchface.h"
 #include "storage_diagnostics.h"
+#include "roundie_storage_io.h"
 #if CONFIG_ROUNDIE_DEV_ELF
 #include "elf_diagnostics.h"
 #endif
@@ -43,7 +44,8 @@ static bool admission_conditions(void)
     return !boot.safe && boot.stage == ROUNDIE_BOOT_STABLE &&
         ota.initialized && ota.boot_checked && ota.boot_passed &&
         ota.running.state == ESP_OTA_IMG_VALID && ota.phase == ROUNDIE_OTA_IDLE &&
-        strcmp(ota.running.label, ota.boot) == 0 && roundie_storage_available();
+        strcmp(ota.running.label, ota.boot) == 0 && roundie_storage_available() &&
+        !roundie_storage_claim_ota_active();
 }
 
 /* No application starts in USB storage mode; packages are still installed there. */

@@ -50,8 +50,13 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "components/roundie_app_ui/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),
                             "-I" + str(ROOT / "components/roundie_storage_mode/include"),
+                            "-I" + str(ROOT / "components/roundie_storage/include"),
+                            "-I" + str(ROOT / "components/roundie_platform/include"),
+                            "-I" + str(ROOT / "platform/linux/include"), "-pthread",
                             str(ROOT / "components/roundie_storage_mode/storage_mode.c"),
                             str(ROOT / "tests/test_elf_development.c"), str(ROOT / "main/app_runtime.c"),
+                            str(ROOT / "components/roundie_storage/bounded_io.c"),
+                            str(ROOT / "components/roundie_storage/claim.c"),
                             str(ROOT / "components/roundie_elf/validate.c"),
                             str(ROOT / "components/roundie_ota/ota_protocol.c"), "-lcrypto", "-o", staging], check=True)
             subprocess.run([staging, str(Path(example) / "hello.app.elf")], check=True, timeout=10)
@@ -62,6 +67,10 @@ class ElfTests(unittest.TestCase):
                             "-I" + str(ROOT / "tests/ota_mocks"),
                             "-I" + str(ROOT / "components/roundie_ota/include"),
                             "-I" + str(ROOT / "components/roundie_boot_guard/include"),
+                            "-I" + str(ROOT / "components/roundie_storage/include"), "-I" + str(ROOT / "main"),
+                            "-I" + str(ROOT / "components/roundie_platform/include"),
+                            "-I" + str(ROOT / "platform/linux/include"), "-pthread", str(ROOT / "tests/io_worker_stub.c"),
+                            str(ROOT / "components/roundie_storage/claim.c"),
                             str(ROOT / "tests/test_runtime_policy.c"), "-o", policy], check=True)
             subprocess.run([policy], check=True, timeout=10)
             for variant, reason in ((1, "import:esp_restart"), (2, "ABI-version")):

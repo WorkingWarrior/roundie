@@ -118,10 +118,36 @@ Rules (from the task, binding for every session):
 
 - 4 KiB cap: `read_exact`/`write_exact` in `manager.c` and `store.c`, `data_write` header and blob, `read_candidate` in `elf_diagnostics.c`. Other writes are ≤ 512 B (RP1 data field `roundie_ota_protocol.h:18`, `ROUNDIE_IMPORT_CHUNK`). **Verified:** host 287/287 PASS (with IDF exported; without it `test_rep_deployment` errors on `IDF_PATH`, an environment issue), target build 1.85B rep 0 warnings. **Not verified:** `manager.c` has no host build, and no host test is known to read a file over 4 KiB through `store.c`; the device gate (step 4) covers ELF load and data write.
 
+- Step 2, `io_worker` (this commit):
+  - **Implemented:** `main/io_worker.c` (prio 1, 12 KiB stack, TWDT, queue of 2 lines) runs the package/face/launcher/import loop and executes RP1/RF1/RE1. `system_worker` forwards the lines without waiting (`roundie_io_forward`, `components/roundie_storage/io_forward.c`).
+  - **Cross-task points:**
+    - The OTA/packages claim is in `claim.c`. The mutex guards only the flags and the `runtime_busy` check, never VFS. OTA BEGIN is refused (259) during an io step or a package job; admission refuses while OTA holds the claim; the claim is released when the OTA phase is IDLE again.
+    - Recovery: RS1 REQUEST no longer runs the teardown on `system_worker`; io_worker's next poll (≤ 10 ms) does.
+    - Power: park at a 4 KiB chunk boundary (bounded I/O hook) or between jobs, with a 250 ms wait. On timeout PowerManager gives up the sleep with the new refusal `storage`. Restarts park with the same bound, then proceed (LittleFS is power-loss safe).
+    - Busy getters read word-sized fields (**assumption**).
+  - **Decisions:**
+    - BUSY reply: `!XX1 <id> 259 {"format":1,"error":"busy"}`. The host tools raise `DeviceBusy`.
+    - The 4 KiB helpers live in the portable `components/roundie_storage/bounded_io.c`. In `elf_diagnostics.c` `read_candidate`, a short read now continues instead of failing (behaviour change).
+    - `tests/test_boot_guard.c`: the "teardown races REQUEST" case now expects the teardown on io_worker's poll, not inside REQUEST.
+  - **Host:** 289/289 PASS, `--check-coverage` 335 tests and 0 problems. New `test_storage_io`:
+    - a full queue makes exactly one non-blocking send attempt, then the exact BUSY line;
+    - an invalid id answers `00000000`;
+    - an oversized line is forwarded marked discard;
+    - claim refusal during an io step and while busy, with `runtime_busy` called under the mutex;
+    - grant, re-grant, release;
+    - the three host parsers raise `DeviceBusy`.
+  - **Target:** all 6 configurations (2 boards × rep, rep-nodev, legacy), 0 warnings.
+  - **Device, 1.85B, image 0.3.88-eabi (`build-eabi`, SHA-256 `653cafb4…a348b0`):**
+    - OTA upload/activate: running `ota_0`, VALID, verify exit 0;
+    - package `org.roundie.eabiprobe` 1.0.0 (6000 B RPK, 5776 B ELF, the stopwatch ELF under a new id) installed and read back (SHA-256 `0ae81247…dfc85c`), count 7, `stack_min` 6408 B;
+    - app data: the watch 1.3.0 theme changed by an injected press on widget 2 (`input_accepted` 1), then EXIT and relaunch: reply 0, no `app_storage` warning in the 4 s console capture. **Not verified:** that the theme read back matches (not visible from the host; the capture showed no log lines at all);
+    - development ELF: the stopwatch ELF over RE1 (5776 B) loaded through START: `loader_result` 0, code 1932/data 997 match the artifact, running, then STOP. My first attempt used `run`, the one-shot command; ABI 3 refuses it with 258. That was an operator error, not a test retry.
+  - **Not covered yet:** fake-VFS short reads / mid-chunk EOF (step 3); priority, starvation and parking under CPU load (step 4).
+
 ### Next
 - P1 implementation, in this order, each verified and committed:
   1. ~~4 KiB cap in the read/write helpers~~ done (see below);
-  2. `io_worker` task and line forwarding, with the four cross-task points; target build of all configurations;
+  2. ~~`io_worker` task and line forwarding, with the four cross-task points; target build of all configurations~~ done (see above);
   3. owner assertion plus host negative test;
   4. priority variants V0/V1 on 1.85B with `run_e0_stall.py --only lowprio` plus a starvation case; choose from the measurements and record it here and in docs/storage-io.md.
 

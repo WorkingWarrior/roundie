@@ -43,7 +43,7 @@ Paths: `/storage/packages` (`manager.c:14`), `/storage/packages/<id>/data` (app 
 </content>
 </invoke>
 
-## Design for P1 (proposal, 2026-11-26; not implemented yet)
+## Design for P1 (2026-11-26; implemented in P1 step 2, see docs/progress.md)
 
 **Assumption to check while implementing:** no other code touches the state of the
 packages manager, watch face store, launcher core and app runtime outside `system_worker`,
@@ -99,3 +99,30 @@ covers it, plus a negative test: a call from another task is caught.
 - Criteria: GUI gap ≤ 33 ms, `system_worker` reply ≤ 33 ms, read and write throughput, and
   starvation: an `io_worker` read makes bounded progress while a development app loads the
   CPU. Tool: `run_e0_stall.py --only lowprio`, extended with the starvation case.
+
+## P1 requirements added by the user (2026-11-26)
+
+These refine the design above and are implemented in P1 steps 2–4.
+
+1. **Full `io_worker` queue: answer BUSY at once.** `system_worker` never waits for room in
+   the `io_worker` line queue (enqueue with zero timeout). On a full queue it replies to the
+   forwarded line immediately with the protocol's BUSY reply and counts it, instead of
+   dropping the line silently (this replaces "drops the line" in "Task split"). Host test:
+   the forwarding decision with a full queue yields BUSY and no enqueue. (Step 2.)
+2. **OTA ↔ package mutex guards only flags.** The mutex of cross-task point 1 is held only
+   while checking and setting the claim flags; it is never held across a VFS call. A
+   development-build assertion catches a VFS call while the calling task holds the mutex,
+   plus a host negative test that triggers it. (Step 2 the mutex; step 3 the assertion and
+   test, together with the owner assertion.)
+3. **Bounded park before light sleep.** `io_worker` parks only at a 4 KiB chunk boundary
+   (between VFS calls, never inside one transfer step). `PowerManager` waits for the park
+   acknowledgement for a bounded time; on timeout it gives up this sleep attempt (stays
+   awake and retries on a later idle decision) instead of waiting indefinitely. The step 4
+   starvation test also covers parking while a development app loads the CPU. (Step 2 the
+   mechanism; step 4 the measurement.)
+4. **4 KiB cap under short reads.** A host test with a substituted VFS that returns short
+   reads and EOF in the middle of a 4 KiB chunk covers every loop changed by the cap:
+   `manager.c`, `store.c`, app data, development ELF. If `manager.c` cannot be built on the
+   host, its read loops move into a host-testable module. Already in step 2, a short trial
+   on the 1.85B: install a package larger than 4 KiB, read app data, load the development
+   ELF. (Step 2 the trial; step 3 the host test.)
