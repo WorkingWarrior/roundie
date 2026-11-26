@@ -93,3 +93,11 @@ and writes them on each long-press theme change.
   2. Exit with the edge swipe.
   3. Relaunch: the theme is kept.
   4. Reboot and relaunch: the theme is still kept.
+- **Automated, 1.85B, 0.3.94-eabi (EABI P1 fix 4):** `tools/hardware_validation/run_p1_datahash.py`
+  reads the blob through the development command `RP1 DATAHASH <id>` (length and
+  SHA-256 of the payload; `CONFIG_ROUNDIE_DEV_PACKAGES` only). Four launches of the
+  watch with 1, 0, 1 and 1 injected presses on the hands widget gave `{1, t0+1}`,
+  the same hash again, `{1, t0+2}` and `{1, t0}`, with t0 = 2. The last two hashes are
+  only reachable if the watch read the stored theme in `init`. This covers the
+  glue in `main/app_runtime.c` on the device. A reboot between launches is not part of
+  the run.

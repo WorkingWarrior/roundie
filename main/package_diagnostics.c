@@ -17,6 +17,8 @@
 #include "storage_bench.h"
 #include "memory_probe.h"
 #include "stall_probe.h"
+#include "psa/crypto.h"
+#include "rep/rep_storage_v1.h"
 
 static esp_err_t transfer_command(const roundie_ota_command_t *command)
 {
@@ -66,6 +68,54 @@ static bool navigation_number(const char **text, uint32_t *value)
     }
     *value = number;
     *text = cursor;
+    return true;
+}
+
+/* "DATAHASH <id>" (P1 fix 4): length and SHA-256 of an installed package's
+ * app data blob, as roundie_packages_data_read() returns it (the payload, not
+ * the RPD1 file). Lets a device test compare state across a relaunch instead of
+ * judging the screen. Read only; runs on io_worker like every RP1 line. */
+static bool data_hash_command(const char *operation, const char *reply_id, esp_err_t parsed)
+{
+    if (strncmp(operation, "DATAHASH ", 9) != 0) {
+        return false;
+    }
+    const char *id = operation + 9;
+    static uint8_t blob[REP_STORAGE_CAPACITY];
+    size_t length = 0;
+    uint8_t digest[32] = {0};
+    size_t digest_length = 0;
+    roundie_package_record_t record;
+    esp_err_t error = parsed;
+    if (error == ESP_OK) {
+        error = roundie_packages_scan();
+    }
+    if (error == ESP_OK) {
+        error = roundie_packages_find(id, &record);
+    }
+    if (error == ESP_OK) {
+        error = roundie_packages_data_read(id, blob, sizeof(blob), &length);
+    }
+    if (error == ESP_OK &&
+        (psa_hash_compute(PSA_ALG_SHA_256, blob, length, digest, sizeof(digest), &digest_length) != PSA_SUCCESS ||
+         digest_length != sizeof(digest))) {
+        error = ESP_FAIL;
+    }
+    if (error != ESP_OK) {
+        length = 0;
+        memset(digest, 0, sizeof(digest));
+    }
+    char hex[65];
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+    }
+    char response[192];
+    int count = snprintf(response, sizeof(response),
+        "\n!RP1 %s %d {\"format\":1,\"datahash\":%zu,\"sha256\":\"%s\"}\n",
+        reply_id, (int)error, length, hex);
+    if (count > 0 && (size_t)count < sizeof(response)) {
+        usb_serial_jtag_write_bytes(response, (size_t)count, pdMS_TO_TICKS(100));
+    }
     return true;
 }
 
@@ -165,6 +215,9 @@ void roundie_package_command(char *line, bool discard)
             return;
         }
         if (roundie_race_probe_command(operation, command.id, parsed)) {
+            return;
+        }
+        if (data_hash_command(operation, command.id, parsed)) {
             return;
         }
     }

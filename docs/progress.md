@@ -199,6 +199,11 @@ Rules (from the task, binding for every session):
   - **Device, 1.85B, 0.3.93-eabi (VALID, SHA-256 `13708850…392804`), `run_p1_refusal.py` (`build-ci/eabi/p1-refusal/`): PASS.** RO1 STATUS 0/"none"; with eabiprobe running, BEGIN 259/"app" and the host message carries the unload instruction; with an open RE1 transfer, 259/"transfer" with the abort instruction; io_worker stalled and 5 RE1 STATUS lines: codes `[0, 0, 503, 503, 503]` with the BUSY payload, then serving again; final `safe` 0, `failures` 0.
   - Run that did not count (0.3.92-eabi, before the id fix): lines 3–5 got no addressed reply. A diagnostic run with ids `0000000N` showed the 503 replies, which led to the id fix above.
   - Not verified on the device: the "io" refusal (the window between io_worker's check and claim cannot be produced on demand) and the host retry loop against a real BUSY (host-tested only).
+- Fix 4 (user, before step 4): a development command replaces judging the watch theme by eye.
+  - **Implemented:** `RP1 DATAHASH <id>` in `main/package_diagnostics.c` (whole file is `CONFIG_ROUNDIE_DEV_PACKAGES`, off in production). It replies `{"format":1,"datahash":<length>,"sha256":"<hex>"}` for the payload that `roundie_packages_data_read` returns, and NOT_FOUND for a package that is not installed. Read only; it runs on io_worker like every RP1 line, so it goes through the guarded helpers.
+  - **Device, 1.85B, 0.3.94-eabi (VALID, SHA-256 `44e51c4a…dcd46a5`), `run_p1_datahash.py` (`build-ci/eabi/p1-datahash/`): PASS.** Stored theme t0 = 2. Launch, 1 press on the hands, exit: `{1, 0}`. Launch, no input, exit: the same hash. Launch, press, exit: `{1, 1}`. Launch, press, exit: `{1, 2}`. The app was stopped and unloaded before each hash, every press was accepted, an unknown id was refused, and the final state was `safe` 0, `failures` 0. The last step's value can only come from a watch that read the stored theme: one starting at theme 0 would write `{1, 1}`. The board is left with its original theme.
+  - **Host / target:** host 299/299 PASS, coverage 345/0; 6 configurations, 0 warnings.
+  - Not verified: persistence across a reboot (not part of the run); no host test of the C handler (development command, IDF-only; the runner decodes against hashes computed on the host).
 
 ### Next
 - P1 implementation, in this order, each verified and committed:
