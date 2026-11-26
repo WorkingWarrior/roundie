@@ -14,3 +14,8 @@ bool roundie_io_worker_park(int64_t timeout_us)
 void roundie_io_worker_resume(void)
 {
 }
+
+void roundie_io_worker_stall(uint32_t stall_ms)
+{
+    (void)stall_ms;
+}

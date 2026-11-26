@@ -93,6 +93,21 @@ static void storage_guard(void)
 }
 #endif
 
+#if CONFIG_ROUNDIE_DEV_ELF
+static _Atomic int64_t stall_until_us;
+
+/* Development hook (RS1 IOSTALL): io_worker serves nothing until the deadline
+ * but keeps feeding its watchdog, so only the "no service" condition is
+ * tested, not a watchdog reset. */
+static void stall_point(void)
+{
+    while (esp_timer_get_time() < atomic_load(&stall_until_us)) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        esp_task_wdt_reset();
+    }
+}
+#endif
+
 static void execute(roundie_io_line_t *item)
 {
 #if CONFIG_ROUNDIE_DEV_ELF
@@ -130,6 +145,9 @@ static void io_worker(void *argument)
         if (watchdog_error == ESP_OK) {
             esp_task_wdt_reset();
         }
+#if CONFIG_ROUNDIE_DEV_ELF
+        stall_point();
+#endif
         bool received = xQueueReceive(queue, &item, pdMS_TO_TICKS(10)) == pdTRUE;
         park_point();
         roundie_storage_claim_io_enter();
@@ -143,6 +161,16 @@ static void io_worker(void *argument)
     }
 }
 #endif
+
+void roundie_io_worker_stall(uint32_t stall_ms)
+{
+#if CONFIG_ROUNDIE_APP_RUNTIME && CONFIG_ROUNDIE_DEV_ELF
+    atomic_store(&stall_until_us, esp_timer_get_time() + (int64_t)stall_ms * 1000);
+    ESP_LOGW(TAG, "Development stall for %" PRIu32 " ms", stall_ms);
+#else
+    (void)stall_ms;
+#endif
+}
 
 bool roundie_io_worker_park(int64_t timeout_us)
 {

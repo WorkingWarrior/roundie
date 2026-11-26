@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
 #include "esp_heap_caps.h"
@@ -22,6 +23,7 @@
 #include "app_runtime.h"
 #include "roundie_elf.h"
 static bool deferred_safe_restart;
+static int64_t deferred_safe_deadline_us;
 #endif
 
 /* HEALTH counters. The callback runs in the failing caller's context, so it
@@ -162,6 +164,20 @@ void roundie_recovery_poll(int64_t now_us)
         } else {
             ESP_LOGE("recovery", "Deferred Safe Mode persistence failed; restart refused");
         }
+        return;
+    }
+    if (deferred_safe_restart && now_us >= deferred_safe_deadline_us) {
+        /* io_worker did not confirm the teardown in time (blocked or starved):
+         * Safe Mode must not depend on it. The request is already sealed in the
+         * RTC record (roundie_boot_enter_safe), so a planned restart enters Safe
+         * Mode without the NVS write, which is skipped while an application may
+         * still run. Power loss before Safe Mode persists it loses the request. */
+        deferred_safe_restart = false;
+        ESP_LOGW("recovery", "Teardown not confirmed in %lld ms: Safe Mode restart without it",
+                 (long long)(ROUNDIE_SAFE_TEARDOWN_TIMEOUT_US / 1000));
+        roundie_boot_planned_restart();
+        (void)roundie_io_worker_park(ROUNDIE_IO_PARK_TIMEOUT_US);
+        esp_restart();
         return;
     }
 #endif
@@ -453,8 +469,11 @@ void roundie_recovery_command(char *line, bool discard)
                      * or storage teardown is performed by the USB owner. */
                     restart = error == ESP_OK;
 #if CONFIG_ROUNDIE_APP_RUNTIME
-                    if (restart && !app_idle) {
+                    if (restart && !app_idle && !deferred_safe_restart) {
                         deferred_safe_restart = true;
+                        deferred_safe_deadline_us = esp_timer_get_time() + ROUNDIE_SAFE_TEARDOWN_TIMEOUT_US;
+                    }
+                    if (restart && !app_idle) {
                         restart = false;
                     }
 #endif
@@ -504,6 +523,20 @@ void roundie_recovery_command(char *line, bool discard)
                            strcmp(operation + 5, ota.running.elf) == 0) {
                     hang = true;
                     error = ESP_OK;
+#endif
+#if CONFIG_ROUNDIE_DEV_ELF
+                } else if (strncmp(operation, "IOSTALL ", 8) == 0) {
+                    /* Development only: io_worker stops serving for the given
+                     * time (it keeps feeding its watchdog), to test the Safe
+                     * Mode path without io_worker. */
+                    char *end = NULL;
+                    unsigned long stall_ms = strtoul(operation + 8, &end, 10);
+                    if (end != operation + 8 && *end == '\0' && stall_ms >= 1 && stall_ms <= 30000) {
+                        roundie_io_worker_stall((uint32_t)stall_ms);
+                        error = ESP_OK;
+                    } else {
+                        error = ESP_ERR_INVALID_ARG;
+                    }
 #endif
                 } else {
                     error = ESP_ERR_INVALID_STATE;

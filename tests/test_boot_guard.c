@@ -54,7 +54,8 @@ void roundie_app_runtime_poll(int64_t now)
         elf_busy = false;
     }
 }
-int64_t esp_timer_get_time(void) { return 100; }
+static int64_t clock_us = 100;
+int64_t esp_timer_get_time(void) { return clock_us; }
 const esp_app_desc_t *esp_app_get_description(void)
 {
     static esp_app_desc_t description;
@@ -564,6 +565,26 @@ int main(void)
     assert(!elf_busy && writes == 0 && resets == 0);
     roundie_recovery_poll(100);
     assert(writes == 1 && commits == 1 && resets == 1);
+    /* io_worker blocked: the teardown is never confirmed. Safe Mode must not
+     * depend on it: at the deadline system_worker restarts with the request
+     * sealed in the RTC record, without an NVS write while the app may run. */
+    fresh();
+    stable();
+    elf_busy = true;
+    clock_us = 1000;
+    assert(command("REQUEST", false) && status().safe && resets == 0);
+    clock_us = 2000; /* A repeated REQUEST must not move the deadline. */
+    assert(command("REQUEST", false));
+    roundie_recovery_poll(1000 + ROUNDIE_SAFE_TEARDOWN_TIMEOUT_US - 1);
+    assert(resets == 0 && writes == 0);
+    roundie_recovery_poll(1000 + ROUNDIE_SAFE_TEARDOWN_TIMEOUT_US);
+    assert(resets == 1 && writes == 0 && commits == 0);
+    clock_us = 100;
+    start(ROUNDIE_RESET_SOFTWARE);
+    assert(status().safe && status().reason == ROUNDIE_SAFE_REQUEST && status().fault_app[0] == '\0');
+    elf_busy = false;
+    roundie_recovery_poll(100); /* Safe Mode, no deferred restart pending. */
+    assert(resets == 1);
     char hang[80];
     fresh();
     snprintf(hang, sizeof(hang), "HANG %s", ota.running.elf);

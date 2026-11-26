@@ -4,6 +4,12 @@
 
 bool roundie_recovery_active(void);
 bool roundie_recovery_skip_gui(void);
+/* RS1 REQUEST with an application running waits this long for io_worker to
+ * finish the teardown, then restarts into Safe Mode without it. Callbacks are
+ * bounded at 100 ms (ROUNDIE_ELF_CALLBACK_BUDGET_US); a normal teardown
+ * finishes well inside this. */
+#define ROUNDIE_SAFE_TEARDOWN_TIMEOUT_US 3000000LL
+
 /* Existing system worker only, same bounded framer as RT1/RO1. */
 void roundie_recovery_poll(int64_t now_us);
 void roundie_recovery_command(char *line, bool discard);

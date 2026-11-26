@@ -169,6 +169,20 @@ Rules (from the task, binding for every session):
     - Then, all with exit 0: remove and reinstall of `eabiprobe`; watch launch, press, exit, relaunch, exit; development ELF upload, START, STOP, UNLOAD.
     - Boot status before and after: `safe` 0, `failures` 0, `reset` 2. So no abort from the guard on these paths.
 
+- Fix 1 (user, before step 4): Safe Mode must not depend on io_worker.
+  - **Verified fact (source):** a running application is torn down by `rep_executor` (`roundie_elf_set_allowed(false)` sets `mailbox.shutdown`, `roundie_elf_step` unloads), not by io_worker. The step 2 note "io_worker's next poll runs the teardown" holds only for what io_worker owns: aborting an open RE1/RP1 transfer and package jobs (`staging_busy`, `roundie_packages_busy`).
+  - **Implemented:** `recovery_diagnostics.c`: a deferred REQUEST gets a deadline (`ROUNDIE_SAFE_TEARDOWN_TIMEOUT_US`, 3 s; a repeated REQUEST does not move it). At the deadline system_worker makes a planned restart without the NVS write. The request is already sealed in the RTC record by `roundie_boot_enter_safe`, so the next boot is Safe Mode (reason request).
+  - **Decision / known limit:** no NVS write while an application may still run, as before. So in that boot `latch` is 0 and no cause record is written: a power loss in that Safe Mode boot returns to normal mode. BootGuard logic is unchanged.
+  - Development hook `RS1 IOSTALL <1..30000 ms>` (`CONFIG_ROUNDIE_DEV_ELF` only): io_worker serves nothing until the deadline but keeps feeding its watchdog.
+  - **Host:** `test_boot_guard` new case: busy runtime, no reset 1 µs before the deadline, reset at it with 0 NVS writes, the next software boot is Safe Mode/request with no fault_app. Mutant without the deadline branch fails. Host 292/292 PASS, coverage 338/0.
+  - **Target:** 6 configurations, 0 warnings.
+  - **Device, 1.85B, 0.3.90-eabi (ota_0, VALID, SHA-256 `89d93182…c0b1ff`), `run_p1_iostall.py` (`build-ci/eabi/p1-iostall/`): PASS.**
+    - control (open RE1 transfer, io_worker serving): restart 1.01 s after REQUEST, latch 1;
+    - stall (open transfer, IOSTALL 8000): restart 4.25 s after REQUEST (3 s timeout plus about 1.2 s boot, the same overhead as the control), latch 0, no fault_app;
+    - app_stall (package running, IOSTALL 8000): restart 1.28 s, latch 1, which confirms the executor fact above;
+    - each case ended with REBOOT and normal operation.
+  - Runs that did not count (runner errors, new configurations): run 1 launched the app instead of opening a transfer, so the clean path ran (this is how the executor fact was found). Run 2 stopped because an app I had launched by hand was still loaded. Run 3 accepted a HEALTH reply from before the restart (REQUEST sets `safe` at once) and sent REBOOT to the old boot; the runner now requires a reply from a boot after REQUEST.
+
 ### Next
 - P1 implementation, in this order, each verified and committed:
   1. ~~4 KiB cap in the read/write helpers~~ done (see below);
