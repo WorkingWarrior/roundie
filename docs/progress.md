@@ -175,6 +175,17 @@ Rules (from the task, binding for every session):
   2. ~~`io_worker` task and line forwarding, with the four cross-task points; target build of all configurations~~ done (see above);
   3. ~~owner assertion plus host negative test~~ done (see above);
   4. priority variants V0/V1 on 1.85B with `run_e0_stall.py --only lowprio` plus a starvation case; choose from the measurements and record it here and in docs/storage-io.md.
+     Notes for step 4:
+     - The 1.85B runs 0.3.89-eabi (`ota_1`, guard active). io_worker priority is `IO_WORKER_PRIORITY` in `main/io_worker.c` (interim 1).
+     - Versioned images are built with `idf.py -B build-eabi ... -DPROJECT_VER=<v>` (`build-eabi/` is in `.git/info/exclude`).
+     - Unload any stopped development ELF before OTA (BEGIN answers 259 otherwise).
+     - The test `eabiprobe` package (stopwatch ELF, 6000 B) is installed.
+     - Still to measure:
+       - GUI gap and system_worker reply ≤ 33 ms;
+       - read/write throughput;
+       - starvation (an io_worker read makes bounded progress while a development app loads the CPU);
+       - `roundie_io_worker_park` under CPU load (≤ 250 ms, otherwise the sleep is refused with "storage");
+       - the TWDT risk (10 s) if io_worker starves.
 
 - Then Stage B (EABI). Scope: the EABI section of docs/roadmap.md. Branch `eabi` from main after stage A is merged. Commit after each subphase. Do not raise runtime limits. Do not implement later-stage services (random, deadline, sensor, ...) or the resource runtime.
   - P1, storage and io_worker:
