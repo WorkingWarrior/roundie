@@ -69,14 +69,31 @@ Rules (from the task, binding for every session):
   - Sequence: PRESS dial (start) → `bench_with_traces` (full-refresh bench) on the running stopwatch → HEALTH → PRESS dial (stop) → PRESS lap → settle 1 s.
   - This is **not** the STOP race (§8.6), because EXIT had not been sent yet.
   - The same scenario passed on 0.3.83/0.3.84-e0 (`build-ci/e0/followup-185b-3`).
-- Hypotheses (unverified):
-  - (a) a regression since 0.3.84 (A2 RW1 frame, A4 diagnostics, STALL commands);
-  - (b) the UI queue overflows after the bench while the 100 ms timer keeps queueing updates;
-  - (c) intermittent behaviour that 0.3.84 hid.
-- Next step (a new test, not a retry):
-  1. Run `run_e0_followup.py --only worst_stack` on 0.3.84-e0 (OTA from commit 3ef9c14 or the VALID slot) and on 0.3.86-e0, so the regression is attributed by comparison.
-  2. Read the refused set's error code (RW1 STATUS/`ui` counters after the failure).
-  3. Fix the cause, then repeat the followup gate.
+- Diagnostic experiments (new configurations, not retries; `build-ci/e0/a6-matrix/`):
+
+  | Report | Image | Runner | Purpose | Result |
+  |---|---|---|---|---|
+  | r1-i086 | 0.3.86-e0 | before v2 (c8aa780) | old runner on new image | PASS (max_depth 11, rejected 0) |
+  | r2-i086 | 0.3.86-e0 | v2 | reproduce the gate | FAIL −24 (max_depth 12, rejected 1) |
+  | r1-i084 | 0.3.84-e0 (OTA, 3ef9c14) | before v2 | regression check | FAIL −24, same sequence |
+  | r2n-i084 | 0.3.84-e0 | v2 with RG1 BATTERY disabled (v2 as is: BLOCKED, no RG1 BATTERY on 0.3.84) | runner reads | FAIL −24 |
+  | r2-i087 | 0.3.87-e0 (refusal counters, e021994) | v2 | refusal cause | FAIL −24, `reject_reason=FULL`, `reject_depth=12`, admission 0, request 0, GUI pumped 26.3 ms earlier |
+
+- Verified facts:
+  - Both images fail and the old runner passes once on the new image, so the failure follows timing, not the image. **Not a stage A regression.**
+  - The cause is a full UI queue, not closed admission. PRESS stop and PRESS lap arrive 10 ms apart. Stop (about 6 commands) and reset (about 7) are queued before the next GUI pump, so the 13th command, inside `show_state`, is refused.
+  - I²C hypothesis rejected:
+    - the 26 ms pump age is one normal GUI iteration (stopwatch frames 15–62 ms, `LV_DEF_REFR_PERIOD=33`);
+    - runner v2 reads RG1 BATTERY only before the scenario;
+    - gauge sampling (system_worker, 5 s) is unchanged since 0.3.84;
+    - the A4 battery record copies the existing sample.
+- Decision: a contract defect that existed earlier and was exposed by timing.
+  - The stopwatch (1.1.1, a431103) treats a refused update as a stale view and redraws everything on the next tick. Only a refusal lasting 50 ticks is an error.
+  - Host regression test: "Backpressure" block in `tests/test_app_round.c`. It reproduced the failure before the fix and passes after it.
+  - UI backpressure semantics ("busy" code, distinct from "stopping") are EABI P2 in docs/roadmap.md.
+- Image 0.3.87-e0 = HEAD firmware (rebuild gives the same binary, 0 warnings). Stopwatch 1.1.1 installed: SHA-256 `2f54ed84…5f47f540`.
+- Follow-up after the fix (`a6-185b-gate/followup-fix`, 0.3.87-e0, stopwatch 1.1.1, runner v2, defaults): **PASS**, all 4 steps (memprobe, cycles, worst_stack, fsbench_gui), 0 unexpected resets. In worst_stack the app ended through EXIT with result `[0,0,0]`.
+  - Not verified on the device: whether the queue actually overflowed in this run. At the lap PRESS, 6 stop commands were still pending (the same state as in the failures). No UI snapshot was taken between the reset and EXIT. The host regression test is the evidence for the refused path.
 - A7 (publication) waits for this: every automatically checkable gate item must be PASS.
 
 ### Next

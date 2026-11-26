@@ -12,9 +12,16 @@ options and changed the system button look (see below).
   - All arithmetic is 32-bit after one 64-bit subtraction, so the ELF imports
     only `rep_abi_v3`.
 - **Updates.**
-  - A 100 ms timer runs only while the stopwatch runs.
+  - A 100 ms timer runs while the stopwatch runs, and while a refused update
+    waits for its redraw.
   - Each tick updates the time text, and each new second updates the dial's
     ring. Stop cancels the timer.
+  - **Refused updates.** The 12-entry UI queue refuses commands while the GUI
+    catches up. A stop and a reset within one GUI frame queue 13 (E0 A6
+    `worst_stack`). A refused update is not an error: the view is marked stale
+    and the next tick redraws time, laps and buttons, then the timer stops if
+    the stopwatch is stopped. Only a refusal lasting 50 ticks (5 s) ends the
+    app with its code (−21…−24). Startup stays strict.
 - **Controls, chosen by the user after 1.0.**
   - A **tap anywhere on the face** starts and stops.
   - The lap button stays at the top, above the time, so the lap list below can
