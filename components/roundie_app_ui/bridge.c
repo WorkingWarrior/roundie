@@ -37,6 +37,7 @@ static uint32_t requested;
 static uint32_t completed;
 static bool transition_result;
 static bool closed;
+static int64_t last_pump_us; /* start of the GUI task's latest pump; diagnostics */
 
 static void maximum(uint32_t *value, uint32_t sample)
 {
@@ -221,10 +222,40 @@ static bool round_format(const rep_ui_widget_v2_t *widget, uint32_t *items)
     return true; /* EDGE_BUTTON */
 }
 
+static roundie_ui_reject_t admission_refusal(uint32_t generation)
+{
+    if (generation == 0 || generation != status.generation || !status.admitting || closed) {
+        return ROUNDIE_UI_REJECT_CLOSED;
+    }
+    if (status.error != 0) {
+        return ROUNDIE_UI_REJECT_ERROR;
+    }
+    if (requested != completed) {
+        return ROUNDIE_UI_REJECT_TRANSITION;
+    }
+    return ROUNDIE_UI_REJECT_NONE;
+}
+
 static bool admission(uint32_t generation)
 {
-    return generation != 0 && generation == status.generation && status.admitting &&
-        !closed && status.error == 0 && requested == completed;
+    return admission_refusal(generation) == ROUNDIE_UI_REJECT_NONE;
+}
+
+/* Under the lock: count one refused call by cause. */
+static void reject(roundie_ui_reject_t reason)
+{
+    status.rejected++;
+    if (reason == ROUNDIE_UI_REJECT_FULL) {
+        status.rejected_full++;
+    } else if (reason == ROUNDIE_UI_REJECT_REQUEST) {
+        status.rejected_request++;
+    } else {
+        status.rejected_admission++;
+    }
+    status.reject_reason = reason;
+    status.reject_depth = count;
+    int64_t age = last_pump_us == 0 ? 0 : roundie_time_us() - last_pump_us;
+    status.reject_pump_age_us = age < 0 ? 0 : age > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)age;
 }
 
 static bool enqueue(roundie_ui_command_t *command)
@@ -291,7 +322,12 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
         }
     }
     uint32_t result = 0;
-    if (format && parent && admission(generation) && handle_serial != UINT32_MAX) {
+    roundie_ui_reject_t refusal = admission_refusal(generation);
+    if (refusal == ROUNDIE_UI_REJECT_NONE && !(format && parent && handle_serial != UINT32_MAX)) {
+        refusal = ROUNDIE_UI_REJECT_REQUEST;
+    }
+    if (refusal == ROUNDIE_UI_REJECT_NONE) {
+        refusal = ROUNDIE_UI_REJECT_REQUEST; /* no free widget slot, unless found below */
         for (unsigned i = 0; i < REP_UI_WIDGET_LIMIT; i++) {
             if (slots[i].handle != 0) {
                 continue;
@@ -299,7 +335,9 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
             roundie_ui_command_t command = {
                 .generation = generation, .handle = handle_serial + 1, .widget = *request,
             };
+            refusal = ROUNDIE_UI_REJECT_FULL;
             if (enqueue(&command)) {
+                refusal = ROUNDIE_UI_REJECT_NONE;
                 result = ++handle_serial;
                 memset(&slots[i], 0, sizeof(slots[i]));
                 slots[i].handle = result;
@@ -335,7 +373,7 @@ uint32_t roundie_ui_create(uint32_t generation, const rep_ui_widget_v2_t *reques
         }
     }
     if (result == 0) {
-        status.rejected++;
+        reject(refusal);
     }
     maximum(&status.enqueue_max_us, (uint32_t)(roundie_time_us() - started));
     roundie_unlock(&lock);
@@ -354,7 +392,8 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
     int32_t value = (int32_t)update->value;
     roundie_lock(&lock);
     int index = find(update->widget);
-    bool valid = format && admission(generation) && index >= 0;
+    roundie_ui_reject_t refusal = admission_refusal(generation);
+    bool valid = format && refusal == ROUNDIE_UI_REJECT_NONE && index >= 0;
     if (valid && update->property != REP_UI_COLOR) {
         valid = slots[index].type != REP_UI_VIEW; /* root visibility is lifecycle-owned */
     }
@@ -388,6 +427,11 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
         };
         memcpy(command.widget.base.text, update->text, sizeof(update->text));
         valid = enqueue(&command);
+        if (!valid) {
+            refusal = ROUNDIE_UI_REJECT_FULL;
+        }
+    } else if (refusal == ROUNDIE_UI_REJECT_NONE) {
+        refusal = ROUNDIE_UI_REJECT_REQUEST;
     }
     if (valid && value_change) {
         slots[index].requested = value;
@@ -397,7 +441,7 @@ int32_t roundie_ui_update(uint32_t generation, const rep_ui_update_t *update)
         }
     }
     if (!valid) {
-        status.rejected++;
+        reject(refusal);
     }
     maximum(&status.enqueue_max_us, (uint32_t)(roundie_time_us() - started));
     roundie_unlock(&lock);
@@ -416,14 +460,15 @@ void roundie_ui_close_admission(uint32_t generation)
 int32_t roundie_ui_destroy(uint32_t generation, uint32_t view)
 {
     roundie_lock(&lock);
-    bool valid = admission(generation) && view != 0 && view == status.view;
+    roundie_ui_reject_t refusal = admission_refusal(generation);
+    bool valid = refusal == ROUNDIE_UI_REJECT_NONE && view != 0 && view == status.view;
     if (valid) {
         closed = true;
         status.admitting = false;
         transition = ROUNDIE_UI_DESTROY;
         requested++;
     } else {
-        status.rejected++;
+        reject(refusal == ROUNDIE_UI_REJECT_NONE ? ROUNDIE_UI_REJECT_REQUEST : refusal);
     }
     roundie_unlock(&lock);
     return valid ? 0 : -1;
@@ -689,6 +734,7 @@ void roundie_ui_gui_pump(void)
         return;
     }
     roundie_lock(&lock);
+    last_pump_us = roundie_time_us();
     bool inject = injection.pending;
     uint32_t inject_generation = injection.generation;
     uint32_t inject_widget = injection.widget;
