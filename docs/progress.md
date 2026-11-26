@@ -6,6 +6,7 @@ Rules (from the task, binding for every session):
   - BLOCKED: items that need a connected 1.75C;
   - PENDING: physical tests (current, finger touch, image, audibility, wake moment, brownout).
 - Hardware: flash/OTA and automatic tests on connected boards are allowed. Never erase all Flash, the storage partition or NVS. No eFuse, Secure Boot or Flash Encryption. At most one retry of a test on a board.
+  - The one-retry limit applies to repeating the same test in the same configuration (image, runner, scenario, parameters). Diagnostic experiments in different configurations are allowed; record each in the report with its purpose and result.
 - Git: commit after every subphase. Never commit AGENTS.md or `.log`.
 - Publication after each stage:
   1. push the branch;
