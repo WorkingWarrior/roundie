@@ -15,6 +15,7 @@ Rules (from the task, binding for every session):
   4. merge commit (no squash), only when CI is green and every automatically checkable gate item is PASS;
   5. delete the remote branch.
   If push or `gh` fails, stop and report it. Don't work around it.
+- Backup push (user, 2026-11-26): pushing the working branch (`eabi`) to origin as a backup is allowed and recommended after every subphase. PR and merge still come only after the stage is finished, per the publication procedure.
 
 ## Stage A: E0 closure (branch e0-baseline)
 
@@ -124,6 +125,9 @@ Rules (from the task, binding for every session):
     - lifecycle RUNNING → STOPPING → UNLOADED; core/UI/audio tables; modular service getters; event routing by import, subscription, owner and generation;
     - in STOPPING, UI operations return a non-critical code. A result after a system-requested STOP is not shown to the user as an error (except crash or timeout). The ELFDELAY regression for −23 (show_laps) and −24 (show_state) must return to Home;
     - UI backpressure "busy" code (roadmap "Backpressure UI (P2)");
+    - UI update coalescing (user, 2026-11-26): a `ui_update` of the same widget and the same property overwrites the pending value instead of adding a queue entry. The queue holds only non-coalescable operations (create, delete, dialogs, ...); the "busy" code stays for those. A host test replays the stop+lap sequence within 10 ms (13 commands) and must show no refusals after the change;
+    - test app `examples/lifecycle_probe` (development only): records every returned UI operation code and the lifecycle state; the runner reads them. The STOP (ELFDELAY) regression test uses it instead of the stopwatch;
+    - after scenarios that use the UI queue, the runner reads the refusal counters by cause and writes them to the report;
     - both ELF validators (Xtensa, x86-64) and the Linux backend.
   - P3, package format per the roadmap:
     - header + manifest + bounded requirement list `(service_id, feature_mask)` + ELF;
