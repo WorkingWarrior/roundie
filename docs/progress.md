@@ -144,11 +144,36 @@ Rules (from the task, binding for every session):
     - development ELF: the stopwatch ELF over RE1 (5776 B) loaded through START: `loader_result` 0, code 1932/data 997 match the artifact, running, then STOP. My first attempt used `run`, the one-shot command; ABI 3 refuses it with 258. That was an operator error, not a test retry.
   - **Not covered yet:** fake-VFS short reads / mid-chunk EOF (step 3); priority, starvation and parking under CPU load (step 4).
 
+- Step 3, owner and mutex assertion plus fake-VFS tests (this commit):
+  - **Implemented:**
+    - `roundie_storage_owner_set` / `roundie_storage_access_check` in `claim.c`. The owner is the main task at startup, then io_worker from its first line. Before any owner is set, every caller passes.
+    - `bounded_io.c` calls an access guard before every VFS call.
+    - Development builds (`CONFIG_ROUNDIE_DEV_ELF`) install a guard in `io_worker.c` that logs and calls `abort()` when the caller is not the owner or holds the claim mutex.
+    - **Scope:** only the bounded read/write calls are checked. open/stat/rename/unlink are not.
+  - **Host:** 292/292 PASS, `--check-coverage` 338 tests and 0 problems.
+    - `tests/test_storage_guard.c` over a fake VFS:
+      - 4 KiB cap; hook only between calls; short reads; EOF in the middle of the second chunk and after a short read; error on call 2; short and zero writes;
+      - negative cases: a call from another thread gives NOT_OWNER; a VFS call inside the claim mutex (from `runtime_busy`) gives UNDER_CLAIM.
+      - Three mutants (no UNDER_CLAIM, no NOT_OWNER, no guard call) each fail the test (exit 134).
+    - `tests/fake_vfs.c` (short limit; EOF / zero write after k bytes). The packages, watchface and ELF-development harnesses run a second time with 700 B short reads and pass unchanged.
+    - Mid-chunk EOF cases with files over 4 KiB:
+      - package install and launch (`manager.c:66/84/95/131`);
+      - app data read (`:539/:545`, a 6000 B file with a test capacity of 8192 B; the runtime limit is 512 B) and data write (`:591`);
+      - face load and discovery (`store.c:231/312/135`) and transfer write (`:500`);
+      - development ELF `read_candidate` (`elf_diagnostics.c:82`).
+    - Mutant "a short read fails" (`count != step`): the short-read variants of packages, watchface and ELF fail; the base runs pass. **Not covered by an EOF case:** `store.c:118/171` (56 B and 16 B, only in the short-read run).
+  - **Target:** all 6 configurations, 0 warnings.
+  - **Device, 1.85B, 0.3.89-eabi (guard active, SHA-256 `87a9ef69…e6008d606`):**
+    - OTA: running `ota_1`, VALID, verify exit 0.
+    - My first BEGIN got 259: the stopwatch development ELF from step 2 was stopped but not unloaded (state 11). This is the existing rule in `ota_diagnostics.c:154`, not a regression. Unload, then upload passed.
+    - Then, all with exit 0: remove and reinstall of `eabiprobe`; watch launch, press, exit, relaunch, exit; development ELF upload, START, STOP, UNLOAD.
+    - Boot status before and after: `safe` 0, `failures` 0, `reset` 2. So no abort from the guard on these paths.
+
 ### Next
 - P1 implementation, in this order, each verified and committed:
   1. ~~4 KiB cap in the read/write helpers~~ done (see below);
   2. ~~`io_worker` task and line forwarding, with the four cross-task points; target build of all configurations~~ done (see above);
-  3. owner assertion plus host negative test;
+  3. ~~owner assertion plus host negative test~~ done (see above);
   4. priority variants V0/V1 on 1.85B with `run_e0_stall.py --only lowprio` plus a starvation case; choose from the measurements and record it here and in docs/storage-io.md.
 
 - Then Stage B (EABI). Scope: the EABI section of docs/roadmap.md. Branch `eabi` from main after stage A is merged. Commit after each subphase. Do not raise runtime limits. Do not implement later-stage services (random, deadline, sensor, ...) or the resource runtime.

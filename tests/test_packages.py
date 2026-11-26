@@ -14,8 +14,13 @@ import roundie_package
 from xtensa_toolchain import TOOLCHAIN
 
 
+SHORT_LIMIT = 700
+
+
 class PackageTests(unittest.TestCase):
-    def test_production_transaction_registry_and_format(self):
+    def run_production(self, vfs):
+        """Builds the example packages and the host harness; vfs substitutes
+        the VFS under bounded_io.c (short reads/writes, EOF in a chunk)."""
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             env = dict(os.environ, PATH=str(TOOLCHAIN) + os.pathsep + os.environ["PATH"])
@@ -23,7 +28,8 @@ class PackageTests(unittest.TestCase):
             for example, stem, app_id, name in (
                     ("hello_elf", "hello", "org.roundie.hello", "Hello"),
                     ("event_elf", "event", "org.roundie.events", "Events"),
-                    ("ui_elf", "ui", "org.roundie.ui", 'UI "Próba"')):
+                    ("ui_elf", "ui", "org.roundie.ui", 'UI "Próba"'),
+                    ("stopwatch_elf", "stopwatch", "org.roundie.stopwatch", "Stopwatch")):
                 build = directory / example
                 subprocess.run(["cmake", "-S", str(ROOT / "examples" / example), "-B", str(build)],
                                env=env, check=True, capture_output=True)
@@ -36,19 +42,37 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(first, second)
                 packages.append(str(package))
             executable = directory / "tests"
+            defines = []
+            sources = []
+            if vfs:
+                defines = ["-DROUNDIE_IO_READ=fake_read", "-DROUNDIE_IO_WRITE=fake_write",
+                           "-DFAKE_VFS_SHORT=" + str(SHORT_LIMIT)]
+                sources = [str(ROOT / "tests/fake_vfs.c")]
             subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-I" + str(ROOT / "tests/elf_mocks"),
+                            "-I" + str(ROOT / "tests"),
                             "-I" + str(ROOT / "tests/ota_mocks"), "-I" + str(ROOT / "include"),
                             "-I" + str(ROOT / "components/roundie_elf/include"),
                             "-I" + str(ROOT / "components/roundie_packages/include"),
                             "-I" + str(ROOT / "components/roundie_storage/include"),
-                            '-DPACKAGES_DIRECTORY="' + str(directory / "packages") + '"',
+                            '-DPACKAGES_DIRECTORY="' + str(directory / "packages") + '"', *defines,
                             str(ROOT / "tests/test_packages.c"),
                             str(ROOT / "components/roundie_packages/format.c"),
                             str(ROOT / "components/roundie_elf/validate.c"),
-                            str(ROOT / "components/roundie_storage/bounded_io.c"),
+                            str(ROOT / "components/roundie_storage/bounded_io.c"), *sources,
                             "-lcrypto", "-o", str(executable)], check=True)
-            subprocess.run([str(executable), *packages], check=True, timeout=20)
+            # The harness takes the first three packages; the fourth (ELF larger
+            # than one 4 KiB chunk) is for the substituted-VFS cases only.
+            subprocess.run([str(executable), *(packages if vfs else packages[:3])], check=True, timeout=60)
+
+    def test_production_transaction_registry_and_format(self):
+        self.run_production(vfs=False)
+
+    def test_short_reads_and_mid_chunk_eof_in_bounded_loops(self):
+        """Whole harness with every bounded call cut to SHORT_LIMIT bytes, then
+        EOF/zero-write injected inside a 4 KiB chunk of the hash loop, ELF
+        load, app data read and app data write."""
+        self.run_production(vfs=True)
 
     def test_version_identity_and_invalid_host_input(self):
         for value in ("a..b", "../hello", "org.Roundie", "org.1", "a.b/evil", "a." + "x" * 63):

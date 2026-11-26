@@ -34,6 +34,11 @@ class StorageIoTests(unittest.TestCase):
         output = compile_and_run("test_storage_io.c", STORAGE / "io_forward.c", STORAGE / "claim.c")
         self.assertIn("storage io: PASS", output)
 
+    def test_bounded_io_fake_vfs_and_guard(self):
+        output = compile_and_run("test_storage_guard.c", STORAGE / "bounded_io.c", STORAGE / "claim.c",
+                                 defines=("-DROUNDIE_IO_READ=fake_read", "-DROUNDIE_IO_WRITE=fake_write"))
+        self.assertIn("storage guard: PASS", output)
+
     def test_hosts_recognize_busy(self):
         for module, prefix in ((roundie_package, "RP1"), (roundie_elf, "RE1"), (roundie_face, "RF1")):
             with self.subTest(prefix=prefix):

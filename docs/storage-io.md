@@ -126,3 +126,9 @@ These refine the design above and are implemented in P1 steps 2–4.
    host, its read loops move into a host-testable module. Already in step 2, a short trial
    on the 1.85B: install a package larger than 4 KiB, read app data, load the development
    ELF. (Step 2 the trial; step 3 the host test.)
+
+### Status after P1 step 3 (2026-11-26)
+- Requirement 1 (BUSY): implemented and host-tested (step 2).
+- Requirement 2 (flags only under the mutex): development-build guard in `bounded_io.c` and `io_worker.c`, with negative host tests (step 3). Only the bounded read/write calls are checked.
+- Requirement 3 (bounded park): implemented (step 2). The measurement under CPU load is still pending (step 4).
+- Requirement 4 (4 KiB, short reads, mid-chunk EOF): host tests for manager.c, store.c, app data and the development ELF (step 3). 1.85B trial done (step 2).

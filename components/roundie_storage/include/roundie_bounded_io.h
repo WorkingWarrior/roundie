@@ -22,3 +22,7 @@ bool roundie_io_write_exact(int file, const void *data, size_t size);
 /* Called between two calls of one transfer: the 4 KiB chunk boundary where
  * io_worker may park before light sleep. NULL (the default) does nothing. */
 void roundie_io_set_chunk_hook(void (*hook)(void));
+
+/* Called before every VFS call of a transfer: development builds check there
+ * that the caller owns /storage and holds no claim mutex. NULL does nothing. */
+void roundie_io_set_access_guard(void (*guard)(void));

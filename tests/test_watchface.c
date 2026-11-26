@@ -15,6 +15,10 @@
 #include <unistd.h>
 #include "private.h"
 #include "roundie_face_host.h"
+#ifdef ROUNDIE_IO_READ
+#include "fake_vfs.h"
+#include "roundie_bounded_io.h"
+#endif
 
 #define CHECK(condition) \
     do { \
@@ -653,6 +657,55 @@ static void test_store(int count, char **cases, const char *directory)
     capacity = 1024;
     expect_error(roundie_watchface_install_file(info), "face-storage-reserve");
     capacity = 64U * 1024U * 1024U;
+#ifdef ROUNDIE_IO_READ
+    /* Substituted VFS: EOF or a zero write inside a chunk is refused whole.
+     * The analog face is larger than one 4 KiB chunk. */
+    char analog_path[512];
+    snprintf(analog_path, sizeof(analog_path), "%s/org.roundie.face.analog.rwf", directory);
+    struct stat analog_info;
+    CHECK(stat(analog_path, &analog_info) == 0 && analog_info.st_size > (off_t)ROUNDIE_IO_CHUNK + 100);
+    unsigned loads = store_status().loads;
+    unsigned failures = store_status().load_failures;
+    const size_t eof_at[] = {20, 2000, ROUNDIE_IO_CHUNK + 100};
+    for (unsigned i = 0; i < sizeof(eof_at) / sizeof(eof_at[0]); i++) {
+        /* load_file() through select: no offer is posted. */
+        fake_vfs_eof_after(eof_at[i]);
+        esp_err_t refused = roundie_watchface_select("org.roundie.face.analog");
+        fake_vfs_disarm();
+        expect_error(refused, "face-read");
+        CHECK(!take(id, &purpose, &serial, NULL) && allocated == 0);
+        CHECK(store_status().loads == loads + i + 1 && store_status().load_failures == failures + i + 1);
+        /* load_file() through install_file: nothing is installed. */
+        fake_vfs_eof_after(eof_at[i]);
+        refused = roundie_watchface_install_file(analog);
+        fake_vfs_disarm();
+        expect_error(refused, "face-read");
+        CHECK(store_status().count == 2 && store_status().phase == ROUNDIE_WATCHFACE_IDLE);
+        CHECK(!exists(directory, ".transfer") && allocated == 0);
+    }
+    CHECK(roundie_watchface_select("org.roundie.face.analog") == ESP_OK);
+    CHECK(take(id, &purpose, &serial, NULL) && strcmp(id, "org.roundie.face.analog") == 0);
+    /* Discovery prefix read and preference read: EOF leaves no healthy entry
+     * and no preference; the files stay and a later start recovers. */
+    fake_vfs_eof_after(50);
+    roundie_watchface_init(&store_platform, false);
+    fake_vfs_disarm();
+    CHECK(store_status().count == 2 && !store_status().entries[0].healthy && !store_status().entries[1].healthy);
+    CHECK(store_status().preferred[0] == '\0' && exists(directory, "active"));
+    (void)take(id, &purpose, &serial, NULL);
+    roundie_watchface_init(&store_platform, false);
+    CHECK(store_status().entries[0].healthy && store_status().entries[1].healthy);
+    CHECK(strcmp(store_status().preferred, "org.roundie.face.minimal") == 0);
+    (void)take(id, &purpose, &serial, NULL);
+    /* Transfer write: a call that writes nothing cancels the transfer. */
+    CHECK(roundie_watchface_begin(7, 1000, digest) == ESP_OK);
+    fake_vfs_write_fail_after(100);
+    esp_err_t write_result = roundie_watchface_write(7, 0, chunk, 512);
+    fake_vfs_disarm();
+    CHECK(write_result == ESP_FAIL);
+    expect_error(write_result, "transfer-write");
+    CHECK(store_status().phase == ROUNDIE_WATCHFACE_IDLE && !exists(directory, ".transfer"));
+#endif
     CHECK(allocated == 0);
 }
 

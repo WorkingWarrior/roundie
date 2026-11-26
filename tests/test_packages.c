@@ -10,6 +10,9 @@
 #include <unistd.h>
 #include "roundie_packages.h"
 #include "psa/crypto.h"
+#ifdef ROUNDIE_IO_READ
+#include "fake_vfs.h"
+#endif
 
 static ssize_t injected_write(int file, const void *bytes, size_t size);
 static int injected_sync(int file);
@@ -171,9 +174,122 @@ static void group(const char *name)
     printf("package group %u PASS: %s\n", groups, name);
 }
 
+#ifdef ROUNDIE_IO_READ
+/* Substituted VFS: end of file in the middle of a chunk must refuse, never
+ * accept a prefix. Needs a package whose ELF is larger than one 4 KiB chunk. */
+static void expect_reason(const char *reason)
+{
+    if (strcmp(status.error, reason) != 0) {
+        fprintf(stderr, "expected '%s', got '%s'\n", reason, status.error);
+        abort();
+    }
+}
+
+static void launch_with_eof(size_t bytes, esp_err_t expected, const char *reason)
+{
+    unsigned before = submissions;
+    fake_vfs_eof_after(bytes);
+    assert(roundie_packages_launch("org.roundie.stopwatch") == expected);
+    fake_vfs_disarm();
+    expect_reason(reason);
+    assert(submissions == before && retained == NULL && allocations == 0 && !runtime_busy);
+    assert(!roundie_packages_busy());
+}
+
+static void install_with_eof(size_t bytes, const char *reason)
+{
+    assert(stage() == ESP_OK);
+    fake_vfs_eof_after(bytes);
+    assert(install() == ESP_ERR_INVALID_ARG);
+    fake_vfs_disarm();
+    expect_reason(reason);
+    assert(!roundie_packages_busy() && access(TRANSFER, F_OK) != 0 && allocations == 0);
+    assert(roundie_packages_scan() == ESP_OK && status.count == 0);
+}
+
+static void data_read_with_eof(const char *id, size_t bytes, size_t capacity, const uint8_t *expected,
+                               size_t expected_length, const char *path)
+{
+    static uint8_t buffer[8192];
+    size_t length = 1;
+    fake_vfs_eof_after(bytes);
+    assert(roundie_packages_data_read(id, buffer, capacity, &length) == ESP_ERR_INVALID_CRC);
+    fake_vfs_disarm();
+    expect_reason("data-corrupt");
+    assert(length == 0 && access(path, F_OK) == 0);
+    assert(roundie_packages_data_read(id, buffer, capacity, &length) == ESP_OK && length == expected_length &&
+           memcmp(buffer, expected, length) == 0);
+}
+
+static void eof_cases(const char *path_elf)
+{
+    fixture(path_elf);
+    size_t elf_size = package_size - ROUNDIE_PACKAGE_PREFIX;
+    assert(elf_size > ROUNDIE_IO_CHUNK + 512);
+    const char *id = "org.roundie.stopwatch";
+    /* Install: the package hash loop (512 B blocks) and the ELF load (4 KiB
+     * chunks) of validate_file() on the transfer file. */
+    install_with_eof(20, "package-integrity-or-envelope");
+    install_with_eof(ROUNDIE_PACKAGE_PREFIX + 512 + 100, "package-integrity-or-envelope");
+    install_with_eof(package_size + 2000, "package-ELF-read");
+    install_with_eof(package_size + ROUNDIE_IO_CHUNK + 100, "package-ELF-read");
+    group("EOF mid-chunk: install hash loop and ELF load refused, nothing installed");
+    assert(stage() == ESP_OK && install() == ESP_OK);
+    /* launch: scan (selection + inspect), then validate_file (inspect + ELF). */
+    fake_vfs_reset_read_total();
+    assert(roundie_packages_launch(id) == ESP_OK);
+    assert(fake_vfs_read_total() == SELECTION_SIZE + 2 * package_size + elf_size);
+    unload();
+    roundie_package_record_t record;
+    fake_vfs_eof_after(10);
+    assert(roundie_packages_scan() == ESP_OK);
+    fake_vfs_disarm();
+    assert(roundie_packages_find(id, &record) == ESP_OK && record.health == ROUNDIE_PACKAGE_CORRUPT);
+    launch_with_eof(SELECTION_SIZE + ROUNDIE_PACKAGE_PREFIX + 512 + 100, ESP_ERR_INVALID_STATE,
+                    "launch-unhealthy-package");
+    launch_with_eof(SELECTION_SIZE + package_size + ROUNDIE_PACKAGE_PREFIX + 512 + 100, ESP_ERR_INVALID_ARG,
+                    "package-integrity-or-envelope");
+    launch_with_eof(SELECTION_SIZE + 2 * package_size + 2000, ESP_ERR_INVALID_ARG, "package-ELF-read");
+    launch_with_eof(SELECTION_SIZE + 2 * package_size + ROUNDIE_IO_CHUNK + 100, ESP_ERR_INVALID_ARG,
+                    "package-ELF-read");
+    assert(roundie_packages_launch(id) == ESP_OK);
+    unload();
+    group("EOF mid-chunk: launch selection, hash loop and ELF load refused, still launchable");
+    /* App data: the 512 B REP_STORAGE_CAPACITY keeps firmware reads below one
+     * chunk, but the function takes a capacity: 6000 B spans two chunks. */
+    static uint8_t blob[6000];
+    static uint8_t other[6000];
+    for (size_t i = 0; i < sizeof(blob); i++) {
+        blob[i] = (uint8_t)(i * 7 + 1);
+        other[i] = (uint8_t)(i * 3 + 2);
+    }
+    char path[PATH_SIZE];
+    path_for(path, id, "data");
+    assert(roundie_packages_data_write(id, blob, sizeof(blob)) == ESP_OK);
+    data_read_with_eof(id, 20, sizeof(blob), blob, sizeof(blob), path);
+    data_read_with_eof(id, DATA_HEADER + 2000, sizeof(blob), blob, sizeof(blob), path);
+    data_read_with_eof(id, DATA_HEADER + ROUNDIE_IO_CHUNK + 100, sizeof(blob), blob, sizeof(blob), path);
+    assert(roundie_packages_data_write(id, other, 400) == ESP_OK);
+    data_read_with_eof(id, DATA_HEADER + 200, 512, other, 400, path);
+    assert(roundie_packages_data_write(id, blob, sizeof(blob)) == ESP_OK);
+    group("EOF mid-chunk: app data read refused, file kept");
+    /* A write that returns 0 in the middle of a chunk keeps the old data. */
+    path_for(path, id, "data.tmp");
+    fake_vfs_write_fail_after(DATA_HEADER + ROUNDIE_IO_CHUNK + 100);
+    assert(roundie_packages_data_write(id, other, sizeof(other)) == ESP_FAIL);
+    fake_vfs_disarm();
+    expect_reason("data-commit");
+    assert(access(path, F_OK) != 0);
+    path_for(path, id, "data");
+    data_read_with_eof(id, DATA_HEADER + 2000, sizeof(blob), blob, sizeof(blob), path);
+    group("write returning 0 mid-chunk: app data commit refused, old data kept");
+    assert(roundie_packages_remove(id) == ESP_OK && status.count == 0 && allocations == 0);
+}
+#endif
+
 int main(int argc, char **argv)
 {
-    assert(argc == 4);
+    assert(argc == 4 || argc == 5);
     fixture(argv[1]);
     roundie_package_metadata_t decoded;
     char error[ROUNDIE_ELF_ERROR_SIZE];
@@ -460,5 +576,9 @@ int main(int argc, char **argv)
     hash(elf, package_size - ROUNDIE_PACKAGE_PREFIX, package + 24);
     assert(stage() != ESP_OK && strstr(status.error, "relocation") != NULL);
     group("unsupported relocations rejected inside package validation");
+#ifdef ROUNDIE_IO_READ
+    assert(argc == 5);
+    eof_cases(argv[4]);
+#endif
     printf("Production packages PASS: %u scenario groups; no native instructions executed on host\n", groups);
 }

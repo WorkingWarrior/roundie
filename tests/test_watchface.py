@@ -15,6 +15,7 @@ import roundie_face
 from roundie_time import TransportError
 
 HEADER = roundie_face.HEADER
+SHORT_LIMIT = 700
 MANIFEST_AT = HEADER
 SECTIONS_AT = HEADER + roundie_face.MANIFEST
 FACES = ("classic_analog", "minimal_digital", "information")
@@ -97,7 +98,7 @@ class WatchFaceTests(unittest.TestCase):
             arguments.append(f"{path}={reason}")
         return arguments
 
-    def test_store_host_and_text(self):
+    def run_store(self, vfs):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             packages = self.build_faces(directory)
@@ -105,13 +106,27 @@ class WatchFaceTests(unittest.TestCase):
             faces = directory / "faces"
             executable = directory / "tests"
             component = ROOT / "components/roundie_watchface"
+            defines = ['-DFACES_DIRECTORY="' + str(faces) + '"']
+            sources = []
+            if vfs:
+                defines += ["-I" + str(ROOT / "tests"), "-DROUNDIE_IO_READ=fake_read",
+                            "-DROUNDIE_IO_WRITE=fake_write", "-DFAKE_VFS_SHORT=" + str(SHORT_LIMIT)]
+                sources = [ROOT / "tests/fake_vfs.c"]
             compile_sources(executable, ROOT / "tests/test_watchface.c", component / "format.c",
                             component / "text.c", component / "host.c", component / "store.c",
-                            ROOT / "components/roundie_storage/bounded_io.c",
-                            defines=['-DFACES_DIRECTORY="' + str(faces) + '"'])
+                            ROOT / "components/roundie_storage/bounded_io.c", *sources,
+                            defines=defines)
             arguments = [str(directory), str(packages["classic_analog"]), str(packages["minimal_digital"]),
                          str(packages["information"]), str(packages["analog_v2"]), *bad]
             subprocess.run([str(executable), *arguments], check=True, timeout=60)
+
+    def test_store_host_and_text(self):
+        self.run_store(vfs=False)
+
+    def test_short_reads_and_mid_chunk_eof_in_store(self):
+        """Whole store harness with every bounded call cut to SHORT_LIMIT
+        bytes, plus EOF/zero-write cases inside a 4 KiB chunk."""
+        self.run_store(vfs=True)
 
     def test_compiler_refuses_bad_sources(self):
         good = (ROOT / "faces/minimal_digital/face.xml").read_text(encoding="utf-8")

@@ -52,3 +52,16 @@ void roundie_storage_claim_ota_release(void);
 bool roundie_storage_claim_ota_active(void);
 /* True while the calling task holds the claim mutex (for the VFS assertion). */
 bool roundie_storage_claim_held(void);
+
+/* Owner check for /storage VFS calls (docs/storage-io.md, P1 step 3). The
+ * calling task becomes the owner: the main task at startup, then io_worker.
+ * Before any owner is set every caller passes. */
+typedef enum {
+    ROUNDIE_STORAGE_ACCESS_OK,
+    ROUNDIE_STORAGE_ACCESS_NOT_OWNER,
+    ROUNDIE_STORAGE_ACCESS_UNDER_CLAIM,
+} roundie_storage_access_t;
+
+void roundie_storage_owner_set(void);
+/* The calling task's right to a VFS call now; UNDER_CLAIM wins over NOT_OWNER. */
+roundie_storage_access_t roundie_storage_access_check(void);

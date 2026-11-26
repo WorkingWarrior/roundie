@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
@@ -79,6 +80,19 @@ static void park_point(void)
     atomic_store(&parked, false);
 }
 
+#if CONFIG_ROUNDIE_DEV_ELF
+/* Development builds: a bounded VFS call outside io_worker (after startup) or
+ * under the claim mutex is a design error, not a runtime condition. */
+static void storage_guard(void)
+{
+    roundie_storage_access_t access = roundie_storage_access_check();
+    if (access != ROUNDIE_STORAGE_ACCESS_OK) {
+        ESP_LOGE(TAG, "VFS call %s", access == ROUNDIE_STORAGE_ACCESS_UNDER_CLAIM ? "under the claim mutex" : "outside the owner");
+        abort();
+    }
+}
+#endif
+
 static void execute(roundie_io_line_t *item)
 {
 #if CONFIG_ROUNDIE_DEV_ELF
@@ -97,6 +111,7 @@ static void execute(roundie_io_line_t *item)
 static void io_worker(void *argument)
 {
     (void)argument;
+    roundie_storage_owner_set();
     /* Same rule as system_worker: a stall resets into BootGuard instead of
      * silently removing packages, faces and the launcher. */
     esp_err_t watchdog_error = esp_task_wdt_add(NULL);
@@ -160,6 +175,10 @@ esp_err_t roundie_io_worker_start(void)
 {
 #if CONFIG_ROUNDIE_APP_RUNTIME
     roundie_storage_claim_init();
+    roundie_storage_owner_set(); /* the main task until io_worker takes over */
+#if CONFIG_ROUNDIE_DEV_ELF
+    roundie_io_set_access_guard(storage_guard);
+#endif
     resume_signal = xSemaphoreCreateBinary();
     queue = xQueueCreate(IO_QUEUE_LENGTH, sizeof(roundie_io_line_t));
     if (resume_signal == NULL || queue == NULL) {

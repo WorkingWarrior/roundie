@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 from xtensa_toolchain import TOOLCHAIN
 
 
+SHORT_LIMIT = 700
+
+
 class ElfTests(unittest.TestCase):
     def test_validation_lifecycle_and_target_sdk_layout(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -37,7 +40,7 @@ class ElfTests(unittest.TestCase):
                             "-o", executable], check=True)
             subprocess.run([executable, str(Path(example) / "hello.app.elf"), str(Path(event) / "event.app.elf")], check=True, timeout=20)
             staging = str(Path(temporary) / "staging")
-            subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
+            staging_command = ["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-ffunction-sections", "-Wl,--gc-sections",
                             "-DCONFIG_ROUNDIE_DEV_PACKAGES=1",
                             "-I" + str(ROOT / "main"),
@@ -58,8 +61,22 @@ class ElfTests(unittest.TestCase):
                             str(ROOT / "components/roundie_storage/bounded_io.c"),
                             str(ROOT / "components/roundie_storage/claim.c"),
                             str(ROOT / "components/roundie_elf/validate.c"),
-                            str(ROOT / "components/roundie_ota/ota_protocol.c"), "-lcrypto", "-o", staging], check=True)
+                            str(ROOT / "components/roundie_ota/ota_protocol.c"), "-lcrypto"]
+            subprocess.run([*staging_command, "-o", staging], check=True)
             subprocess.run([staging, str(Path(example) / "hello.app.elf")], check=True, timeout=10)
+            # Substituted VFS: the same harness with every bounded call cut to
+            # SHORT_LIMIT bytes, then EOF inside a 4 KiB chunk of the
+            # development ELF read (read_candidate) on a larger ELF.
+            stopwatch = str(Path(temporary) / "stopwatch")
+            subprocess.run(["cmake", "-S", str(ROOT / "examples/stopwatch_elf"), "-B", stopwatch], env=env,
+                           check=True, capture_output=True)
+            subprocess.run(["cmake", "--build", stopwatch], env=env, check=True, capture_output=True)
+            vfs = str(Path(temporary) / "staging-vfs")
+            subprocess.run([*staging_command, "-I" + str(ROOT / "tests"), "-DROUNDIE_IO_READ=fake_read",
+                            "-DROUNDIE_IO_WRITE=fake_write", "-DFAKE_VFS_SHORT=" + str(SHORT_LIMIT),
+                            str(ROOT / "tests/fake_vfs.c"), "-o", vfs], check=True)
+            subprocess.run([vfs, str(Path(example) / "hello.app.elf"), str(Path(stopwatch) / "stopwatch.app.elf")],
+                           check=True, timeout=20)
             policy = str(Path(temporary) / "policy")
             subprocess.run(["cc", "-std=gnu2x", "-Wall", "-Wextra", "-Werror", "-g",
                             "-fsanitize=address,undefined", "-ffunction-sections", "-Wl,--gc-sections",

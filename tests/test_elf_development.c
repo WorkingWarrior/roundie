@@ -8,6 +8,10 @@
 #include "roundie_boot_guard.h"
 #include "roundie_ota.h"
 #include "roundie_watchface.h"
+#ifdef ROUNDIE_IO_READ
+#include "fake_vfs.h"
+#include "roundie_bounded_io.h"
+#endif
 
 static roundie_ota_status_t ota;
 static roundie_boot_status_t boot;
@@ -152,7 +156,7 @@ static void assert_staged_original(void)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 2);
+    assert(argc == 2 || argc == 3);
     FILE *source = fopen(argv[1], "rb");
     assert(source != NULL);
     fixture_size = fread(fixture, 1, sizeof(fixture), source);
@@ -247,5 +251,48 @@ int main(int argc, char **argv)
     assert(command("END 12345678") != ESP_OK && strcmp(last_error, "magic") == 0);
     assert_staged_original();
     assert(submissions == 1 && heap_live == 0);
+#ifdef ROUNDIE_IO_READ
+    /* Substituted VFS: EOF inside a 4 KiB chunk of read_candidate() (END reads
+     * the temporary file, RUN the staged one) is refused; the staged ELF is
+     * never replaced and nothing is submitted. Needs an ELF over one chunk. */
+    assert(argc == 3);
+    static uint8_t original[ROUNDIE_ELF_MAX_FILE];
+    static uint8_t large[ROUNDIE_ELF_MAX_FILE];
+    size_t original_size = fixture_size;
+    memcpy(original, fixture, original_size);
+    source = fopen(argv[2], "rb");
+    assert(source != NULL);
+    size_t large_size = fread(large, 1, sizeof(large), source);
+    assert(fclose(source) == 0 && large_size > ROUNDIE_IO_CHUNK + 512);
+    char large_hex[65];
+    digest(large, large_size, large_hex);
+    const size_t eof_at[] = {20, 2000, ROUNDIE_IO_CHUNK + 100};
+    for (unsigned i = 0; i < sizeof(eof_at) / sizeof(eof_at[0]); i++) {
+        fixture_size = large_size;
+        send_file(large, large_hex);
+        fake_vfs_eof_after(eof_at[i]);
+        assert(command("END 12345678") != ESP_OK);
+        fake_vfs_disarm();
+        assert(strcmp(last_error, "candidate-read-or-allocation") == 0);
+        assert(access(TEMPORARY_ELF, F_OK) != 0);
+        fixture_size = original_size;
+        assert_staged_original();
+    }
+    fixture_size = large_size;
+    memcpy(fixture, large, large_size);
+    send_file(large, large_hex);
+    assert(command("END 12345678") == ESP_OK);
+    assert_staged_original();
+    unsigned before = submissions;
+    for (unsigned i = 0; i < sizeof(eof_at) / sizeof(eof_at[0]); i++) {
+        fake_vfs_eof_after(eof_at[i]);
+        assert(command("RUN %s", large_hex) != ESP_OK);
+        fake_vfs_disarm();
+        assert(strcmp(last_error, "candidate-read-or-allocation") == 0);
+        assert(submissions == before && heap_live == 0);
+        assert_staged_original();
+    }
+    assert(command("RUN %s", large_hex) == ESP_OK && submissions == before + 1 && heap_live == 0);
+#endif
     printf("ELF production RE1 staging/policy PASS: Safe Mode, OTA, hash, bounds, timeout, preservation\n");
 }
