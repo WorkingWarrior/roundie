@@ -17,6 +17,9 @@
 #define FACES_DIRECTORY "/storage/faces"
 #endif
 #define TRANSFER FACES_DIRECTORY "/.transfer"
+/* One VFS call holds the LittleFS lock; 4 KiB bounds that hold (E0 §14:
+ * chunk_max 58-80 ms at 4 KiB, 184-240 ms at 16 KiB; docs/storage-io.md). */
+#define VFS_CALL_MAX 4096U
 #define PREFERENCE FACES_DIRECTORY "/active"
 #define PREFERENCE_TEMPORARY FACES_DIRECTORY "/active.tmp"
 #define PATH_SIZE (sizeof(FACES_DIRECTORY) + ROUNDIE_FACE_ID + 16)
@@ -111,7 +114,8 @@ static bool read_exact(int file, void *out, size_t size)
 {
     uint8_t *bytes = out;
     while (size > 0) {
-        ssize_t count = read(file, bytes, size);
+        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
+        ssize_t count = read(file, bytes, step);
         if (count <= 0) {
             return false;
         }
@@ -123,7 +127,16 @@ static bool read_exact(int file, void *out, size_t size)
 
 static bool write_exact(int file, const void *data, size_t size)
 {
-    return write(file, data, size) == (ssize_t)size;
+    const uint8_t *bytes = data;
+    while (size > 0) {
+        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
+        if (write(file, bytes, step) != (ssize_t)step) {
+            return false;
+        }
+        size -= step;
+        bytes += step;
+    }
+    return true;
 }
 
 /* tmp + fsync + rename: the previous file stays until the new one is complete. */

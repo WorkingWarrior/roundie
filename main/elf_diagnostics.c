@@ -23,6 +23,9 @@
 #endif
 #define TEMPORARY_ELF DEVELOPMENT_DIRECTORY "/.hello.part"
 #define STAGED_ELF DEVELOPMENT_DIRECTORY "/hello.elf"
+/* One VFS call holds the LittleFS lock; 4 KiB bounds that hold (E0 §14:
+ * chunk_max 58-80 ms at 4 KiB, 184-240 ms at 16 KiB; docs/storage-io.md). */
+#define VFS_CALL_MAX 4096U
 
 /* The existing system worker is the sole staging/VFS/USB owner. No open file
  * or worker accesses relocated code. StorageManager retains mount ownership. */
@@ -75,8 +78,15 @@ static uint8_t *read_candidate(const char *path, size_t *size, const uint8_t dig
     }
     *size = (size_t)info.st_size;
     bytes = heap_caps_malloc(*size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (bytes == NULL || read(descriptor, bytes, *size) != (ssize_t)*size) {
+    if (bytes == NULL) {
         goto failed;
+    }
+    for (size_t done = 0; done < *size;) {
+        size_t step = *size - done < VFS_CALL_MAX ? *size - done : VFS_CALL_MAX;
+        if (read(descriptor, bytes + done, step) != (ssize_t)step) {
+            goto failed;
+        }
+        done += step;
     }
     int closed = close(descriptor);
     descriptor = -1;

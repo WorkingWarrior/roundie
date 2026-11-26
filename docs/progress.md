@@ -116,9 +116,11 @@ Rules (from the task, binding for every session):
 - 6f981d2: inventory of every `/storage` access with file/line and calling task, in docs/storage-io.md. **Fact:** after startup all of it runs in `system_worker` (prio 4); there is no production `io_worker`.
 - Design proposal in docs/storage-io.md "Design for P1": task split (storage service loop and RP1/RF1/RE1 lines move to `io_worker`), four cross-task points (OTA vs packages mutex, recovery wake, power park, atomic getters), 4 KiB call cap, owner assertion, priority variants V0/V1.
 
+- 4 KiB cap: `read_exact`/`write_exact` in `manager.c` and `store.c`, `data_write` header and blob, `read_candidate` in `elf_diagnostics.c`. Other writes are ≤ 512 B (RP1 data field `roundie_ota_protocol.h:18`, `ROUNDIE_IMPORT_CHUNK`). **Verified:** host 287/287 PASS (with IDF exported; without it `test_rep_deployment` errors on `IDF_PATH`, an environment issue), target build 1.85B rep 0 warnings. **Not verified:** `manager.c` has no host build, and no host test is known to read a file over 4 KiB through `store.c`; the device gate (step 4) covers ELF load and data write.
+
 ### Next
 - P1 implementation, in this order, each verified and committed:
-  1. 4 KiB cap in the read/write helpers (host tests: `tests/test_app_ui.py` builds `store.c`);
+  1. ~~4 KiB cap in the read/write helpers~~ done (see below);
   2. `io_worker` task and line forwarding, with the four cross-task points; target build of all configurations;
   3. owner assertion plus host negative test;
   4. priority variants V0/V1 on 1.85B with `run_e0_stall.py --only lowprio` plus a starvation case; choose from the measurements and record it here and in docs/storage-io.md.

@@ -16,6 +16,9 @@
 #define TRANSFER PACKAGES_DIRECTORY "/.transfer"
 #define PATH_SIZE (sizeof(PACKAGES_DIRECTORY) + ROUNDIE_PACKAGE_ID + 24)
 #define SELECTION_SIZE 40U
+/* One VFS call holds the LittleFS lock; 4 KiB bounds that hold (E0 §14:
+ * chunk_max 58-80 ms at 4 KiB, 184-240 ms at 16 KiB; docs/storage-io.md). */
+#define VFS_CALL_MAX 4096U
 
 static roundie_packages_status_t status;
 static roundie_package_record_t registry[ROUNDIE_PACKAGES_MAX];
@@ -50,11 +53,26 @@ static bool path_for(char out[PATH_SIZE], const char *id, const char *name)
     return length > 0 && (size_t)length < PATH_SIZE;
 }
 
+static bool write_exact(int file, const void *data, size_t size)
+{
+    const uint8_t *bytes = data;
+    while (size > 0) {
+        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
+        if (write(file, bytes, step) != (ssize_t)step) {
+            return false;
+        }
+        size -= step;
+        bytes += step;
+    }
+    return true;
+}
+
 static bool read_exact(int file, void *out, size_t size)
 {
     uint8_t *bytes = out;
     while (size > 0) {
-        ssize_t count = read(file, bytes, size);
+        size_t step = size < VFS_CALL_MAX ? size : VFS_CALL_MAX;
+        ssize_t count = read(file, bytes, step);
         if (count <= 0) {
             return false;
         }
@@ -601,8 +619,7 @@ esp_err_t roundie_packages_data_write(const char *id, const void *data, size_t l
     if (file < 0) {
         return failed(ESP_FAIL, "data-open");
     }
-    bool written = write(file, header, sizeof(header)) == sizeof(header) &&
-        write(file, data, length) == (ssize_t)length;
+    bool written = write_exact(file, header, sizeof(header)) && write_exact(file, data, length);
     int synced = written ? fsync(file) : -1;
     int closed = close(file);
     if (!written || synced != 0 || closed != 0 || rename(temporary, path) != 0) {
