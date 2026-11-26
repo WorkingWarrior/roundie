@@ -3,15 +3,17 @@
 #include <stdio.h>
 #include <string.h>
 
-#define BUSY_CODE 259 /* ESP_ERR_INVALID_STATE */
-
 size_t roundie_io_busy_reply(const char *line, char *out, size_t capacity)
 {
     char id[9] = "00000000";
     size_t length = strlen(line);
     bool valid = length >= 14 && line[13] == ' ';
+    /* The same id alphabet as the protocol parser (roundie_transfer_parse):
+     * lowercase hex, which is what the hosts send (secrets.token_hex). */
     for (size_t i = 5; valid && i < 13; i++) {
-        if (line[i] < '0' || line[i] > '9') {
+        bool decimal = line[i] >= '0' && line[i] <= '9';
+        bool hex_letter = line[i] >= 'a' && line[i] <= 'f';
+        if (!decimal && !hex_letter) {
             valid = false;
         }
     }
@@ -19,7 +21,7 @@ size_t roundie_io_busy_reply(const char *line, char *out, size_t capacity)
         memcpy(id, line + 5, 8);
     }
     int written = snprintf(out, capacity, "\n%.5s%s %d {\"format\":1,\"error\":\"busy\"}\n",
-                           line, id, BUSY_CODE);
+                           line, id, ROUNDIE_IO_BUSY_CODE);
     if (written < 0 || (size_t)written >= capacity) {
         return 0;
     }

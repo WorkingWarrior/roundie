@@ -33,7 +33,14 @@ typedef struct {
  * handler answers it as an oversized frame. */
 bool roundie_io_forward(roundie_io_forwarder_t *forwarder, const char *line, bool discard);
 
-/* The BUSY reply for a forwarded line: "\n!RP1 <id> 259 {"format":1,"error":"busy"}\n".
+/* Reply code for a transient refusal: the request was not executed and the
+ * host may send it again (io_worker queue full, or an io_worker step under way
+ * for OTA BEGIN). A refusal because a precondition does not hold (an ELF still
+ * loaded, Safe Mode, ...) keeps ESP_ERR_INVALID_STATE (259) and is not retried.
+ * 503 is not an esp_err_t value. */
+#define ROUNDIE_IO_BUSY_CODE 503
+
+/* The BUSY reply for a forwarded line: "\n!RP1 <id> 503 {"format":1,"error":"busy"}\n".
  * 259 is ESP_ERR_INVALID_STATE, the code these protocols already use for a busy
  * device. An id that is not 8 decimal digits becomes "00000000", as in the
  * transfer parser. Returns the length, or 0 if it does not fit. */
@@ -47,6 +54,13 @@ void roundie_storage_claim_init(void);
 void roundie_storage_claim_io_enter(void);
 void roundie_storage_claim_io_leave(void);
 /* runtime_busy is called under the mutex and must not touch the filesystem. */
+typedef enum {
+    ROUNDIE_STORAGE_CLAIM_GRANTED = 0,
+    ROUNDIE_STORAGE_CLAIM_IO_STEP,      /* io_worker is between two jobs' check and claim: transient */
+    ROUNDIE_STORAGE_CLAIM_RUNTIME_BUSY, /* runtime_busy() returned true: precondition */
+} roundie_storage_claim_result_t;
+roundie_storage_claim_result_t roundie_storage_claim_ota_try(bool (*runtime_busy)(void));
+/* roundie_storage_claim_ota_try() == ROUNDIE_STORAGE_CLAIM_GRANTED. */
 bool roundie_storage_claim_ota(bool (*runtime_busy)(void));
 void roundie_storage_claim_ota_release(void);
 bool roundie_storage_claim_ota_active(void);

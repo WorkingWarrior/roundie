@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { connectionError, WebSerialTransport, type SerialPortLike } from '../src/transport.ts';
-import { ProtocolClient } from '../src/protocol.ts';
-import { MockTransport } from './mock.ts';
+import { BUSY_ATTEMPTS, BUSY_CODE, DeviceError, ProtocolClient } from '../src/protocol.ts';
+import { MockTransport, packageStatus } from './mock.ts';
 import { boundedCleanup, ConnectionDiagnostics, ConnectionFailure } from '../src/diagnostics.ts';
 import { runSerialProbe, type ProbeLevel } from '../src/serial-probe.ts';
 
@@ -252,3 +252,35 @@ for (const level of ['B', 'C', 'D'] as ProbeLevel[]) {
     assert.equal(f.state.closes, 1); assert.equal(f.port.writable.locked, false);
   });
 }
+
+test('BUSY (503) is retried a bounded number of times; a precondition refusal (259) is not', async () => {
+  const busy = { responseCode: BUSY_CODE, format: 1, error: 'busy' };
+  let calls = 0;
+  const mock = new MockTransport(() => (++calls < BUSY_ATTEMPTS ? busy : packageStatus()));
+  const client = new ProtocolClient(mock, () => '12345678');
+  try {
+    assert.equal((await client.package('STATUS')).allowed, 1);
+    assert.equal(mock.writes.length, BUSY_ATTEMPTS);
+    calls = -100;
+    mock.writes = [];
+    await assert.rejects(client.package('STATUS'), (error: unknown) =>
+      error instanceof DeviceError && error.code === BUSY_CODE && /busy, request not executed/.test(error.message));
+    assert.equal(mock.writes.length, BUSY_ATTEMPTS);
+    assert.equal(client.connected, true);
+    mock.handler = () => packageStatus({ responseCode: 259, error: 'native application owns runtime' });
+    mock.writes = [];
+    await assert.rejects(client.package('INSTALL ' + '0'.repeat(64)), (error: unknown) =>
+      error instanceof DeviceError && error.code === 259 && /Refused in the current device state/.test(error.message));
+    assert.equal(mock.writes.length, 1);
+  } finally { await client.close(); }
+});
+
+test('the BUSY payload under any code other than 503 still fails closed on RP1', async () => {
+  const mock = new MockTransport(() => ({ responseCode: 259, format: 1, error: 'busy' }));
+  const client = new ProtocolClient(mock, () => '12345678');
+  try {
+    await assert.rejects(client.package('STATUS'));
+    assert.equal(mock.writes.length, 1);
+    assert.equal(client.connected, false);
+  } finally { await client.close(); }
+});

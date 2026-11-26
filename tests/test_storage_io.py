@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +15,7 @@ import roundie_face  # noqa: E402
 import roundie_package  # noqa: E402
 sys.path.insert(0, str(ROOT / "tools/ci"))
 import check_storage_vfs  # noqa: E402
-from roundie_time import DeviceBusy  # noqa: E402
+from roundie_time import BUSY_ATTEMPTS, BUSY_CODE, DeviceBusy, DeviceError, TransportError  # noqa: E402
 
 
 def compile_and_run(test, *sources, defines=()):
@@ -42,11 +43,41 @@ class StorageIoTests(unittest.TestCase):
         self.assertIn("storage guard: PASS", output)
 
     def test_hosts_recognize_busy(self):
+        """P1 fix 3: only 503 with the BUSY payload is DeviceBusy; the payload under 259 is malformed."""
         for module, prefix in ((roundie_package, "RP1"), (roundie_elf, "RE1"), (roundie_face, "RF1")):
             with self.subTest(prefix=prefix):
-                line = f'\n!{prefix} 12345678 259 {{"format":1,"error":"busy"}}\n'.encode()[1:]
+                line = f'!{prefix} 12345678 503 {{"format":1,"error":"busy"}}\n'.encode()
                 with self.assertRaises(DeviceBusy):
                     module.parse_reply(line, "12345678")
+                line = f'!{prefix} 12345678 259 {{"format":1,"error":"busy"}}\n'.encode()
+                with self.assertRaises(TransportError):
+                    module.parse_reply(line, "12345678")
+
+    def test_hosts_retry_only_busy(self):
+        for module in (roundie_package, roundie_elf, roundie_face):
+            with self.subTest(module=module.__name__), patch("roundie_time.read_serial_reply", return_value=b""), \
+                    patch.object(module, "read_serial_reply", return_value=b"", create=True), \
+                    patch("roundie_time.write_command"), patch.object(module, "write_command", create=True), \
+                    patch("roundie_time.time.sleep"):
+                busy = DeviceBusy("busy")
+                with patch.object(module, "parse_reply", side_effect=[busy, {"ok": 1}]) as parse:
+                    self.assertEqual(module.request(None, "STATUS"), {"ok": 1})
+                    self.assertEqual(parse.call_count, 2)
+                with patch.object(module, "parse_reply", side_effect=[busy] * 5) as parse, \
+                        self.assertRaises(DeviceBusy):
+                    module.request(None, "STATUS")
+                self.assertEqual(parse.call_count, BUSY_ATTEMPTS)
+                with patch.object(module, "parse_reply", side_effect=[DeviceError("259"), {"ok": 1}]) as parse, \
+                        self.assertRaises(DeviceError):
+                    module.request(None, "INSTALL")
+                self.assertEqual(parse.call_count, 1)
+
+    def test_precondition_hint_only_for_259(self):
+        for module in (roundie_package, roundie_elf, roundie_face):
+            with self.subTest(module=module.__name__):
+                self.assertIn("precondition, not retried", module.precondition_hint(259))
+                self.assertEqual(module.precondition_hint(258), "")
+                self.assertEqual(module.precondition_hint(BUSY_CODE), "")
 
 
 class StorageVfsRuleTests(unittest.TestCase):

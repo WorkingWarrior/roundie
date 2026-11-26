@@ -124,7 +124,10 @@ the inspected RPK1/RE1 compatibility contract, not invented live telemetry.
 Error replies use signed decimal `esp_err_t` and the actual PackageManager
 `error` string. Common codes are -1 FAIL, 257 NO_MEM, 258 INVALID_ARG,
 259 INVALID_STATE, 260 INVALID_SIZE, 261 NOT_FOUND, 262 NOT_SUPPORTED and
-263 TIMEOUT. Unknown codes retain their numeric value. Messages such as
+263 TIMEOUT. 259 is a precondition refusal and is not retried. 503 (not an
+`esp_err_t`) is the transient BUSY reply `{"format":1,"error":"busy"}` of a full
+io_worker queue: the request was not executed, and the Manager sends it again,
+at most 3 attempts 200 ms apart (docs/storage-io.md). Unknown codes retain their numeric value. Messages such as
 `package-admission`, `package-storage-reserve`, `transfer-state`,
 `transfer-offset-or-length`, `replace-requires-healthy-older-version`,
 `selection-commit` and `registry-admission` are preserved for diagnosis.

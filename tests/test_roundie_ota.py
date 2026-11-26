@@ -203,7 +203,7 @@ class OTATests(unittest.TestCase):
     def test_reply_schema_and_device_error(self):
         good = status()
         self.assertIsNone(tool.parse_reply(b"ordinary diagnostic log\n", "1234abcd"))
-        self.assertEqual(tool.parse_reply(reply("1234abcd"), "1234abcd"), good)
+        self.assertEqual(tool.parse_reply(reply("1234abcd"), "1234abcd"), {**good, "refusal": "none"})
         for changed in ({"received": -1}, {"received": 100, "total": 50}, {"ota_state": "garbage"},
                         {"elf": "xx"}, {"phase": "BOGUS"}, {"passed": 2}, {"session": "x"},
                         {"total": tool.CAPACITY + 1}, {"running": "nvs"}, {"version": 1}):
@@ -211,6 +211,47 @@ class OTATests(unittest.TestCase):
                 tool.parse_reply(reply("1234abcd", {**good, **changed}), "1234abcd")
         with self.assertRaises(tool.DeviceError):
             tool.parse_reply(reply("1234abcd", code=258), "1234abcd")
+
+    def test_busy_and_precondition_refusals(self):
+        """P1 fix 3: 503 is transient (DeviceBusy, retried); 259 names a precondition."""
+        good = status()
+        refused = {**good, "refusal": "io"}
+        with self.assertRaises(tool.DeviceBusy):
+            tool.parse_reply(reply("1234abcd", refused, code=tool.BUSY_CODE), "1234abcd")
+        instructions = {"app": "unload --instance", "transfer": "abort --session", "package": "busy 0",
+                        "safe-mode": "roundie_safe.py reboot", "not-ready": "activate"}
+        for reason, hint in instructions.items():
+            with self.subTest(reason=reason):
+                with self.assertRaises(tool.DeviceError) as caught:
+                    tool.parse_reply(reply("1234abcd", {**good, "refusal": reason}, code=259), "1234abcd")
+                self.assertNotIsInstance(caught.exception, tool.DeviceBusy)
+                self.assertIn("precondition, not retried", str(caught.exception))
+                self.assertIn(hint, str(caught.exception))
+        for state, code in (({**good, "refusal": "none"}, tool.BUSY_CODE), (refused, 259),
+                            ({**good, "refusal": "bogus"}, 259)):
+            with self.subTest(state=state["refusal"], code=code), self.assertRaises(tool.TransportError):
+                tool.parse_reply(reply("1234abcd", state, code=code), "1234abcd")
+        # An image from before fix 3 sends no "refusal"; OTA from it still parses.
+        self.assertEqual(tool.parse_reply(reply("1234abcd", good), "1234abcd")["refusal"], "none")
+
+    def test_request_retries_only_busy(self):
+        port = FakeSerial()
+        busy = tool.DeviceBusy("busy")
+        with patch.object(tool, "read_serial_reply", return_value=b""), \
+                patch("roundie_time.time.sleep") as sleep:
+            with patch.object(tool, "parse_reply", side_effect=[busy, busy, {"phase": "IDLE"}]) as parse:
+                self.assertEqual(tool.request(port, "STATUS"), {"phase": "IDLE"})
+                self.assertEqual(parse.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+            with patch.object(tool, "parse_reply", side_effect=[busy] * 5) as parse, \
+                    self.assertRaises(tool.DeviceBusy):
+                tool.request(port, "STATUS")
+            self.assertEqual(parse.call_count, tool.retry_busy.__defaults__[0])
+            refusal = tool.DeviceError("OTA refused (259, precondition, not retried)")
+            with patch.object(tool, "parse_reply", side_effect=[refusal, {"phase": "IDLE"}]) as parse, \
+                    self.assertRaises(tool.DeviceError):
+                tool.request(port, "STATUS")
+            self.assertEqual(parse.call_count, 1)
 
     def test_verify_requires_valid_boot_and_expected_identity(self):
         tool.verify(status())

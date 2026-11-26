@@ -31,7 +31,35 @@ class DeviceError(Exception):
 
 
 class DeviceBusy(DeviceError):
-    """The device answered BUSY: its io_worker line queue was full (retry later)."""
+    """The device answered BUSY (503): the request was not executed and may be sent again."""
+
+
+# Reply codes shared by RP1/RE1/RF1/RO1 (docs/storage-io.md, P1 fix 3).
+BUSY_CODE = 503  # ROUNDIE_IO_BUSY_CODE: transient, not executed; retry
+PRECONDITION_CODE = 259  # ESP_ERR_INVALID_STATE: refused in the current state; do not retry
+BUSY_PAYLOAD = {"format": 1, "error": "busy"}
+BUSY_ATTEMPTS = 3
+BUSY_DELAY_S = 0.2
+
+
+def check_busy(code, status):
+    """Raises DeviceBusy for the io_worker BUSY reply. The BUSY payload under any
+    other code is malformed (ValueError), so a precondition refusal never retries."""
+    if status == BUSY_PAYLOAD:
+        if code != BUSY_CODE:
+            raise ValueError("busy payload with code")
+        raise DeviceBusy(f"device busy ({BUSY_CODE}): io_worker queue full, not executed")
+
+
+def retry_busy(send, attempts=BUSY_ATTEMPTS, delay=BUSY_DELAY_S):
+    """Calls send() again only after DeviceBusy, at most attempts times in all."""
+    for attempt in range(attempts):
+        try:
+            return send()
+        except DeviceBusy:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay)
 
 
 def parse_reply(line, request_id):

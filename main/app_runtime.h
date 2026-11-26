@@ -6,6 +6,9 @@
  * All entry points belong to the existing system worker. */
 bool roundie_app_runtime_allowed(void); /* Confirmed normal/STABLE policy. */
 bool roundie_app_runtime_busy(void); /* Native, package or staged work remains. */
+/* Why roundie_app_runtime_busy() is true: "app" (an ELF is loaded or reserved),
+ * "transfer" (an RE1/RP1 upload is open), "package" (a package job); NULL when idle. */
+const char *roundie_app_runtime_busy_reason(void);
 bool roundie_app_runtime_packages_ready(void); /* A package transaction would be admitted now. */
 bool roundie_app_runtime_upload_busy(void);
 bool roundie_app_runtime_admit(void);

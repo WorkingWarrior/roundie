@@ -13,7 +13,8 @@ import tempfile
 import time
 
 import roundie_elf
-from roundie_time import DeviceBusy, DeviceError, TransportError, open_serial, read_serial_reply, write_command
+from roundie_time import (PRECONDITION_CODE, DeviceBusy, DeviceError, TransportError, check_busy, open_serial,
+                          read_serial_reply, retry_busy, write_command)
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = 224
@@ -83,6 +84,13 @@ def build(elf, output, app_id, name, version, target="esp32s3.rep1"):
     return checked
 
 
+
+def precondition_hint(code):
+    """Instruction for a precondition refusal (259), which is not retried."""
+    if code != PRECONDITION_CODE:
+        return ""
+    return " (precondition, not retried: check `roundie_package.py status` and `roundie_elf.py status`; unload a loaded application (`roundie_elf.py stop/unload --instance N`), finish or abort an open transfer, or wait for the package job)"
+
 def parse_reply(line, request_id):
     prefix = f"!RP1 {request_id} ".encode()
     if not line.startswith(prefix):
@@ -94,8 +102,7 @@ def parse_reply(line, request_id):
         if re.fullmatch(rb"-?[0-9]{1,10}", code) is None:
             raise ValueError("code")
         status = json.loads(raw)
-        if status == {"format": 1, "error": "busy"}:
-            raise DeviceBusy("device busy: io_worker queue full, retry later")
+        check_busy(int(code), status)
         if status["format"] != 1:
             raise ValueError("format")
         for key in ("allowed", "busy"):
@@ -133,15 +140,18 @@ def parse_reply(line, request_id):
     except (ValueError, TypeError, KeyError, DeviceError) as error:
         raise TransportError(f"malformed package response: {error}") from error
     if int(code) != 0:
-        raise DeviceError(f"package rejected ({int(code)}): {status}")
+        raise DeviceError(f"package rejected ({int(code)}): {status}" + precondition_hint(int(code)))
     return status
 
 
 def request(port, operation, timeout=8):
-    request_id = secrets.token_hex(4)
-    write_command(port, f"!RP1 {request_id} {operation}")
-    return parse_reply(read_serial_reply(port, f"!RP1 {request_id} ".encode(),
-                                        time.monotonic() + timeout, 1900), request_id)
+    def send():
+        request_id = secrets.token_hex(4)
+        write_command(port, f"!RP1 {request_id} {operation}")
+        return parse_reply(read_serial_reply(port, f"!RP1 {request_id} ".encode(),
+                                            time.monotonic() + timeout, 1900), request_id)
+    # BUSY (503) means the line was not queued, so sending it again is safe.
+    return retry_busy(send)
 
 
 def upload(port, path, info):

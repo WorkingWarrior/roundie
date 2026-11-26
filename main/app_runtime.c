@@ -65,6 +65,20 @@ bool roundie_app_runtime_busy(void)
     return staging_busy() || roundie_elf_busy() || roundie_packages_busy();
 }
 
+const char *roundie_app_runtime_busy_reason(void)
+{
+    if (roundie_elf_busy()) {
+        return "app";
+    }
+    if (staging_busy()) {
+        return "transfer";
+    }
+    if (roundie_packages_busy()) {
+        return "package";
+    }
+    return NULL;
+}
+
 bool roundie_app_runtime_upload_busy(void)
 {
     return staging_busy() || roundie_packages_busy();

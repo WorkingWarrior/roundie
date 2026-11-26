@@ -12,11 +12,20 @@ export interface PackageStatus {
   name: string; sha256: string; elf_size: number;
 }
 export class ProtocolError extends Error { override name = 'ProtocolError'; }
+// docs/storage-io.md, P1 fix 3: 503 = not executed, transient (retried);
+// 259 = a precondition does not hold (not retried, the user must act).
+export const BUSY_CODE = 503;
+export const BUSY_ATTEMPTS = 3;
+const BUSY_DELAY_MS = 200;
+function isBusyPayload(status: object): boolean {
+  const s = status as JsonRecord;
+  return Object.keys(s).length === 2 && s.format === 1 && s.error === 'busy';
+}
 export class DeviceError extends Error {
   readonly code: number;
   readonly status: JsonRecord;
   constructor(code: number, status: JsonRecord) {
-    const names: Record<number, string> = { 257: 'Out of memory or storage', 258: 'Invalid argument', 259: 'Device busy or admission denied', 260: 'Invalid size', 261: 'Not found', 262: 'Unsupported operation', 263: 'Device timeout', [-1]: 'Device failure' };
+    const names: Record<number, string> = { 257: 'Out of memory or storage', 258: 'Invalid argument', 259: 'Refused in the current device state (check that no app is loaded and no transfer or package job is open)', 260: 'Invalid size', 261: 'Not found', 262: 'Unsupported operation', 263: 'Device timeout', [BUSY_CODE]: 'Device busy, request not executed', [-1]: 'Device failure' };
     super(`${names[code] ?? 'Device rejected request'} (${code})${status.error ? `: ${String(status.error)}` : ''}`);
     this.code = code;
     this.status = status;
@@ -125,6 +134,16 @@ export class ProtocolClient {
   get failure(): Error | undefined { return this.first; }
 
   async request(protocol: Protocol, operation: string, timeoutMs = 8000): Promise<JsonRecord> {
+    for (let attempt = 1; ; attempt++) {
+      try { return await this.requestOnce(protocol, operation, timeoutMs); }
+      catch (error) {
+        if (!(error instanceof DeviceError) || error.code !== BUSY_CODE || attempt >= BUSY_ATTEMPTS) { throw error; }
+        this.diagnostics.note('BUSY_RETRY', { wireProtocol: protocol, attempt });
+        await new Promise(resolve => setTimeout(resolve, BUSY_DELAY_MS));
+      }
+    }
+  }
+  private async requestOnce(protocol: Protocol, operation: string, timeoutMs: number): Promise<JsonRecord> {
     if (this.dead) { throw new ProtocolError('Disconnected. Reconnect and refresh device state.'); }
     if (this.pending) { throw new ProtocolError('Another serial command is in progress.'); }
     const id = this.nextId();
@@ -179,13 +198,16 @@ export class ProtocolClient {
     let status: unknown;
     try { status = JSON.parse(match[2]); } catch (cause) { throw new ProtocolError('Malformed response JSON.', { cause }); }
     requireCondition(status !== null && typeof status === 'object' && !Array.isArray(status));
-    // Validate RP1 error payloads as strictly as successful responses.
-    if (p.protocol === 'RP1') { decodePackage(status as JsonRecord); }
+    const code = Number(match[1]);
+    const busy = code === BUSY_CODE && isBusyPayload(status);
+    // Validate RP1 error payloads as strictly as successful responses; only
+    // the io_worker BUSY reply (503) has its own fixed payload.
+    if (p.protocol === 'RP1' && !busy) { decodePackage(status as JsonRecord); }
     clearTimeout(p.timer);
-    this.diagnostics.note('RESPONSE_MATCHED', { wireProtocol: p.protocol, code: Number(match[1]) });
+    this.diagnostics.note('RESPONSE_MATCHED', { wireProtocol: p.protocol, code });
     this.diagnostics.state.pendingId = null;
     this.pending = undefined;
-    if (Number(match[1]) !== 0) { p.reject(new DeviceError(Number(match[1]), status as JsonRecord)); }
+    if (code !== 0) { p.reject(new DeviceError(code, status as JsonRecord)); }
     else { p.resolve(status as JsonRecord); }
   }
   private fail(error: Error): void {

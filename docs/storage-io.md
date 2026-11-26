@@ -127,6 +127,19 @@ These refine the design above and are implemented in P1 steps 2–4.
    on the 1.85B: install a package larger than 4 KiB, read app data, load the development
    ELF. (Step 2 the trial; step 3 the host test.)
 
+### Fixes before P1 step 4 (2026-11-26)
+- **Safe Mode without io_worker (fix 1):** a REQUEST deferred because the runtime is busy restarts into Safe Mode at `ROUNDIE_SAFE_TEARDOWN_TIMEOUT_US` (3 s) even if io_worker never finishes the teardown (no NVS write in that case). Details and measurements: docs/progress.md.
+- **Every /storage VFS call through the guarded helpers (fix 2):** `roundie_io_*` in `roundie_bounded_io.h` cover open, close, read, write, lseek, fstat, fsync, stat, rename, unlink, mkdir, rmdir, opendir, readdir and closedir. The owner check now applies to all of them, not only the bounded read/write calls. `tools/ci/check_storage_vfs.py` forbids direct libc VFS calls outside `components/roundie_storage/`.
+- **Reply codes (fix 3):**
+
+  | Code | Meaning | Host |
+  |---|---|---|
+  | 503 (`ROUNDIE_IO_BUSY_CODE`) | transient, the request was not executed: the io_worker queue is full (RP1/RE1/RF1, payload `{"format":1,"error":"busy"}`), or OTA BEGIN met an io_worker step (RO1 `refusal` "io") | `DeviceBusy`; `request()` sends it again, at most 3 attempts, 200 ms apart (Python tools and Manager) |
+  | 259 (`ESP_ERR_INVALID_STATE`) | a precondition does not hold; RO1 names it in `refusal`: "app" (an ELF is loaded or reserved), "transfer", "package", "safe-mode", "not-ready" | `DeviceError` with an instruction; never retried |
+
+  The BUSY payload under any code other than 503 is a malformed reply. Each RO1 reply carries `"refusal"` ("none" when nothing was refused). `roundie_ota.py` still accepts replies without it, so OTA from older images works.
+  The BUSY reply addresses the request id from the line when it is 8 lowercase hex characters, the same alphabet as the protocol parsers. Before fix 3 it accepted decimal digits only, so a host id with a–f got a reply for `00000000` and the host timed out.
+
 ### Status after P1 step 3 (2026-11-26)
 - Requirement 1 (BUSY): implemented and host-tested (step 2).
 - Requirement 2 (flags only under the mutex): development-build guard in `bounded_io.c` and `io_worker.c`, with negative host tests (step 3). Only the bounded read/write calls are checked.

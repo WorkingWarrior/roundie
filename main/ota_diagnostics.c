@@ -151,26 +151,51 @@ void roundie_ota_command(char *line, bool discard)
     roundie_ota_command_t command;
     esp_err_t error = roundie_ota_parse(line, discard, &command);
     bool restart = false;
+    /* Why a request was refused before execution (docs/storage-io.md, P1 fix 3):
+     * "none"; a precondition with code 259 ("app", "transfer", "package",
+     * "safe-mode", "not-ready"); or "io" with ROUNDIE_IO_BUSY_CODE (transient). */
+    const char *refusal = "none";
     if (error == ESP_OK) {
 #if CONFIG_ROUNDIE_APP_RUNTIME
-        if (command.operation != ROUNDIE_OTA_STATUS && roundie_app_runtime_busy()) {
+        const char *busy_reason = NULL;
+        roundie_storage_claim_result_t claim = ROUNDIE_STORAGE_CLAIM_GRANTED;
+        if (command.operation != ROUNDIE_OTA_STATUS) {
+            busy_reason = roundie_app_runtime_busy_reason();
+        }
+        if (busy_reason == NULL && command.operation == ROUNDIE_OTA_BEGIN) {
+            claim = roundie_storage_claim_ota_try(roundie_app_runtime_busy);
+            if (claim == ROUNDIE_STORAGE_CLAIM_RUNTIME_BUSY) {
+                /* Work started between the two checks. */
+                busy_reason = roundie_app_runtime_busy_reason();
+                if (busy_reason == NULL) {
+                    busy_reason = "package";
+                }
+            }
+        }
+        if (busy_reason != NULL) {
             error = ESP_ERR_INVALID_STATE;
-        } else if (command.operation == ROUNDIE_OTA_BEGIN && !roundie_storage_claim_ota(roundie_app_runtime_busy)) {
-            /* io_worker is between check and claim of a package job, or one
-             * started: busy, as above (docs/storage-io.md point 1). */
-            error = ESP_ERR_INVALID_STATE;
+            refusal = busy_reason;
+        } else if (claim == ROUNDIE_STORAGE_CLAIM_IO_STEP) {
+            /* io_worker is between check and claim of a package job: it ends
+             * within one step, so the host may retry (docs/storage-io.md point 1). */
+            error = ROUNDIE_IO_BUSY_CODE;
+            refusal = "io";
         } else
 #endif
         if (command.operation == ROUNDIE_OTA_RESTART) {
             restart = roundie_ota_restart_allowed() ||
                 (roundie_recovery_active() && roundie_recovery_restart_allowed());
             error = restart ? ESP_OK : ESP_ERR_INVALID_STATE;
+            if (!restart) {
+                refusal = "not-ready";
+            }
         } else if ((command.operation == ROUNDIE_OTA_BEGIN || command.operation == ROUNDIE_OTA_ACTIVATE) &&
                    !roundie_recovery_confirmation_allowed(ESP_OTA_IMG_PENDING_VERIFY)) {
             /* A new image started from this Safe Mode inherits the latch and
              * can never confirm, so it would end INVALID (0.3.59, M9.1).
              * Leave Safe Mode first (RS1 REBOOT). */
             error = ESP_ERR_INVALID_STATE;
+            refusal = "safe-mode";
         } else {
             error = roundie_ota_execute(&command);
         }
@@ -197,13 +222,14 @@ void roundie_ota_command(char *line, bool discard)
         "\"running\":\"%s\",\"address\":%lu,\"ota_state\":\"%s\","
         "\"other\":\"%s\",\"other_state\":\"%s\",\"other_image\":%u,"
         "\"other_elf\":\"%s\",\"boot\":\"%s\",\"version\":\"%s\",\"elf\":\"%s\","
-        "\"digest\":\"%s\",\"rollback\":%u,\"checked\":%u,\"passed\":%u,\"last_error\":%d}\n",
+        "\"digest\":\"%s\",\"rollback\":%u,\"checked\":%u,\"passed\":%u,\"last_error\":%d,"
+        "\"refusal\":\"%s\"}\n",
         command.id, (int)error, roundie_ota_phase_name(status.phase),
         (unsigned long)status.session, status.received, status.total, status.running.label, (unsigned long)status.running.address,
         roundie_ota_image_state_name(status.running.state), status.other.label,
         roundie_ota_image_state_name(status.other.state), status.other.image_valid, status.other.elf,
         status.boot, status.running.version, status.running.elf, status.digest,
-        status.rollback_possible, status.boot_checked, status.boot_passed, (int)status.last_error);
+        status.rollback_possible, status.boot_checked, status.boot_passed, (int)status.last_error, refusal);
     int written = -1;
     if (length > 0 && (size_t)length < sizeof(response)) {
         written = usb_serial_jtag_write_bytes(response, (size_t)length, pdMS_TO_TICKS(100));

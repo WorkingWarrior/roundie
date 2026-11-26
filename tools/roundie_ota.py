@@ -11,12 +11,25 @@ import struct
 import sys
 import time
 
-from roundie_time import (DeviceError, TransportError, open_serial,
-                          read_serial_reply, write_command)
+from roundie_time import (BUSY_CODE, PRECONDITION_CODE, DeviceBusy, DeviceError, TransportError, open_serial,
+                          read_serial_reply, retry_busy, write_command)
 
 CHUNK = 512
 CAPACITY = 0x380000
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+# RO1 "refusal": why a request was refused before execution (docs/storage-io.md, P1 fix 3).
+REFUSALS = {
+    "none": "",
+    "io": "io_worker is starting a step; retried automatically",
+    "app": "an application ELF is loaded: stop and unload it first (`roundie_elf.py stop --instance N`, "
+           "then `roundie_elf.py unload --instance N`)",
+    "transfer": "an RE1/RP1/RF1 upload is open: finish it or abort it (`roundie_elf.py abort --session S` "
+                "or `roundie_package.py abort --session S`)",
+    "package": "a package job is running: wait until `roundie_package.py status` shows busy 0",
+    "safe-mode": "the device is in Safe Mode, where a new image could never confirm: leave it first "
+                 "(`roundie_safe.py reboot`)",
+    "not-ready": "restart is not allowed in this OTA state: activate a verified image first",
+}
 PHASES = {"IDLE", "RECEIVING", "VERIFYING", "READY", "ACTIVATION_PENDING"}
 STATES = {"NEW", "PENDING_VERIFY", "VALID", "INVALID", "ABORTED", "UNDEFINED", "NO_METADATA"}
 
@@ -35,8 +48,10 @@ def parse_reply(line, request_id):
         required = {"phase", "session", "received", "total", "running", "address", "ota_state",
                     "other", "other_state", "other_image", "other_elf", "boot", "version", "elf",
                     "digest", "rollback", "checked", "passed", "last_error"}
-        if not isinstance(status, dict) or set(status) != required:
+        # Images before P1 fix 3 send no "refusal"; OTA from them must still work.
+        if not isinstance(status, dict) or set(status) not in (required, required | {"refusal"}):
             raise ValueError("status fields")
+        status.setdefault("refusal", "none")
         if status["phase"] not in PHASES or status["ota_state"] not in STATES or status["other_state"] not in STATES:
             raise ValueError("state")
         for field in ("received", "total"):
@@ -57,21 +72,32 @@ def parse_reply(line, request_id):
                 raise ValueError(field)
         if type(status["address"]) is not int or status["address"] not in (0, 0x10000, 0x390000):
             raise ValueError("address")
+        if status["refusal"] not in REFUSALS:
+            raise ValueError("refusal")
+        if (int(code) == BUSY_CODE) != (status["refusal"] == "io"):
+            raise ValueError("busy code/refusal")
         if type(status["last_error"]) is not int or not isinstance(status["version"], str) or len(status["version"]) > 32:
             raise ValueError("descriptor/result")
     except (ValueError, TypeError, KeyError) as error:
         raise TransportError(f"malformed OTA response: {error}") from error
+    if int(code) == BUSY_CODE:
+        raise DeviceBusy(f"OTA busy ({BUSY_CODE}): {REFUSALS['io']}")
+    if int(code) == PRECONDITION_CODE and status["refusal"] != "none":
+        raise DeviceError(f"OTA refused ({int(code)}, precondition, not retried): {REFUSALS[status['refusal']]}")
     if int(code) != 0:
         raise DeviceError(f"OTA rejected ({int(code)}): {status}")
     return status
 
 
 def request(port, command, timeout=8.0):
-    request_id = secrets.token_hex(4)
-    deadline = time.monotonic() + timeout
-    write_command(port, f"!RO1 {request_id} {command}")
-    reply = read_serial_reply(port, f"!RO1 {request_id} ".encode("ascii"), deadline, 1024)
-    return parse_reply(reply, request_id)
+    def send():
+        request_id = secrets.token_hex(4)
+        deadline = time.monotonic() + timeout
+        write_command(port, f"!RO1 {request_id} {command}")
+        reply = read_serial_reply(port, f"!RO1 {request_id} ".encode("ascii"), deadline, 1024)
+        return parse_reply(reply, request_id)
+    # BUSY (503) means the request was not executed, so sending it again is safe.
+    return retry_busy(send)
 
 
 def inspect_image(stream):

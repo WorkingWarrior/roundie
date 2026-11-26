@@ -79,17 +79,27 @@ void roundie_storage_claim_io_leave(void)
     claim_unlock();
 }
 
-bool roundie_storage_claim_ota(bool (*runtime_busy)(void))
+roundie_storage_claim_result_t roundie_storage_claim_ota_try(bool (*runtime_busy)(void))
 {
     claim_lock();
     /* A held claim is granted again: OTA BEGIN during its own session is the OTA
      * manager's decision, not a conflict with /storage. */
-    bool granted = !io_step && (atomic_load(&ota_claimed) || !runtime_busy());
-    if (granted) {
+    roundie_storage_claim_result_t result = ROUNDIE_STORAGE_CLAIM_GRANTED;
+    if (io_step) {
+        result = ROUNDIE_STORAGE_CLAIM_IO_STEP;
+    } else if (!atomic_load(&ota_claimed) && runtime_busy()) {
+        result = ROUNDIE_STORAGE_CLAIM_RUNTIME_BUSY;
+    }
+    if (result == ROUNDIE_STORAGE_CLAIM_GRANTED) {
         atomic_store(&ota_claimed, true);
     }
     claim_unlock();
-    return granted;
+    return result;
+}
+
+bool roundie_storage_claim_ota(bool (*runtime_busy)(void))
+{
+    return roundie_storage_claim_ota_try(runtime_busy) == ROUNDIE_STORAGE_CLAIM_GRANTED;
 }
 
 void roundie_storage_claim_ota_release(void)

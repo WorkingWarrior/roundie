@@ -58,15 +58,21 @@ static void test_forward(void)
     assert(!roundie_io_forward(&forwarder, "!RE1 00000042 RUN", false));
     assert(send_calls == 1);
     assert(write_calls == 1);
-    assert(strcmp(written, "\n!RE1 00000042 259 {\"format\":1,\"error\":\"busy\"}\n") == 0);
+    assert(strcmp(written, "\n!RE1 00000042 503 {\"format\":1,\"error\":\"busy\"}\n") == 0);
     assert(written_length == strlen(written));
     assert(forwarder.forwarded == 1 && forwarder.busy == 1);
+
+    /* A hex id, as the hosts send, is answered under that id. */
+    reset();
+    assert(!roundie_io_forward(&forwarder, "!RP1 9f3ab0ce STATUS", false));
+    assert(strcmp(written, "\n!RP1 9f3ab0ce 503 {\"format\":1,\"error\":\"busy\"}\n") == 0);
 
     /* An id the parser would refuse is answered as its "00000000". */
     reset();
     assert(!roundie_io_forward(&forwarder, "!RF1 12x45678 STATUS", true));
-    assert(strcmp(written, "\n!RF1 00000000 259 {\"format\":1,\"error\":\"busy\"}\n") == 0);
-    assert(forwarder.busy == 2);
+    assert(strcmp(written, "\n!RF1 00000000 503 {\"format\":1,\"error\":\"busy\"}\n") == 0);
+    assert(!roundie_io_forward(&forwarder, "!RF1 1234567F STATUS", true));
+    assert(strcmp(written, "\n!RF1 00000000 503 {\"format\":1,\"error\":\"busy\"}\n") == 0);
 
     /* A line longer than the queue entry goes over truncated, marked discard. */
     reset();
