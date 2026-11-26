@@ -29,3 +29,9 @@ void roundie_io_worker_resume(void);
  * stall_ms, feeding its watchdog, so tests can check that system_worker paths
  * (Safe Mode) do not depend on it. */
 void roundie_io_worker_stall(uint32_t stall_ms);
+
+/* Development builds only (CONFIG_ROUNDIE_DEV_ELF), called by RS1: IOSTAT
+ * [RESET], IOPARK and BURN <ms> <core 0|1|2=both> <priority 1..3> (P1 step 4
+ * measurements). Writes its own reply and returns true when it handled the
+ * operation; false otherwise and in other builds. */
+bool roundie_io_worker_dev_command(const char *operation, const char *id);

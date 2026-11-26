@@ -428,6 +428,11 @@ void roundie_recovery_command(char *line, bool discard)
             memcpy(id, line + 5, 8);
             if (!discard && length < 128) {
                 const char *operation = line + 14;
+#if CONFIG_ROUNDIE_DEV_ELF
+                if (roundie_io_worker_dev_command(operation, id)) {
+                    return;
+                }
+#endif
                 roundie_ota_status_t ota;
                 roundie_ota_status(&ota);
                 bool idle_valid = ota.initialized && ota.running.state == ESP_OTA_IMG_VALID &&

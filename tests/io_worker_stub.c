@@ -19,3 +19,10 @@ void roundie_io_worker_stall(uint32_t stall_ms)
 {
     (void)stall_ms;
 }
+
+bool roundie_io_worker_dev_command(const char *operation, const char *id)
+{
+    (void)operation;
+    (void)id;
+    return false;
+}
